@@ -75,7 +75,7 @@ async function usuarioDaSessao(request, env) {
   const id = await sha256(token);
   const agora = Date.now();
   const u = await env.DB.prepare(
-    `SELECT u.id, u.login, u.nome, u.email, u.setor_id, u.perfil, u.equipe, s.nome AS setor_nome, ss.ultimo_uso
+    `SELECT u.id, u.login, u.nome, u.email, u.setor_id, u.perfil, u.equipe, u.vendedor, u.comprador, s.nome AS setor_nome, ss.ultimo_uso
        FROM sessoes ss JOIN usuarios u ON u.id = ss.usuario_id LEFT JOIN setores s ON s.id = u.setor_id
       WHERE ss.id = ? AND ss.expira_em > ? AND u.ativo = 1`
   ).bind(id, agora).first();
@@ -83,7 +83,15 @@ async function usuarioDaSessao(request, env) {
   if (agora - u.ultimo_uso > 5 * 60 * 1e3) {
     await env.DB.prepare("UPDATE sessoes SET ultimo_uso = ?, expira_em = ? WHERE id = ?").bind(agora, agora + duracao(u.perfil), id).run();
   }
+  u.vendedor = !!u.vendedor;
+  u.comprador = !!u.comprador;
   u.permissoes = await permissoes(env, u);
+  try {
+    const { results: veics } = await env.DB.prepare("SELECT vehicle_id FROM usuario_veiculos WHERE usuario_id = ? ORDER BY vehicle_id").bind(u.id).all();
+    u.veiculos_ids = (veics || []).map((r) => Number(r.vehicle_id)).filter((n) => n > 0);
+  } catch {
+    u.veiculos_ids = [];
+  }
   return u;
 }
 async function permissoes(env, u) {
@@ -93,7 +101,11 @@ async function permissoes(env, u) {
     return results2.map((r) => r.id);
   }
   const { results } = await env.DB.prepare("SELECT item_id FROM usuario_permissoes WHERE usuario_id = ?").bind(u.id).all();
-  return results.map((r) => r.item_id).filter((id) => id !== "usuarios");
+  const lista = results.map((r) => r.item_id).filter((id) => id !== "usuarios");
+  const set = new Set(lista);
+  if (u.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => set.add(x));
+  if (u.comprador) set.add("op-compras");
+  return [...set];
 }
 async function login(request, env) {
   let dados;
@@ -170,7 +182,7 @@ function validarSenha(s) {
 var PERFIS = { superadmin: "Super Admin", administrador: "Administrador", usuario: "Usu\xE1rio", tecnico: "T\xE9cnico" };
 async function carregar(env) {
   const [us, ps, setores, itens] = await env.DB.batch([
-    env.DB.prepare(`SELECT id, login, nome, email, setor_id, perfil, equipe, ativo, ultimo_acesso, bloqueado_ate, vendedor
+    env.DB.prepare(`SELECT id, login, nome, email, setor_id, perfil, equipe, ativo, ultimo_acesso, bloqueado_ate, vendedor, comprador
                       FROM usuarios ORDER BY perfil = 'superadmin' DESC, nome COLLATE NOCASE`),
     env.DB.prepare("SELECT usuario_id, item_id FROM usuario_permissoes"),
     env.DB.prepare("SELECT id, nome FROM setores WHERE ativo = 1 ORDER BY nome"),
@@ -181,15 +193,55 @@ async function carregar(env) {
     if (!perm.has(p.usuario_id)) perm.set(p.usuario_id, []);
     perm.get(p.usuario_id).push(p.item_id);
   }
+  let veiculos = [];
+  let links = [];
+  try {
+    veiculos = (await env.DB.prepare(
+      "SELECT id, name, plate, active FROM public.fleet_vehicles ORDER BY name",
+    ).all()).results || [];
+    veiculos = veiculos.filter((v) => v.active === true || v.active === 1 || v.active === "t" || v.active == null);
+  } catch (e) {
+    console.error("[sgo] fleet_vehicles p/ usuarios:", e && e.message ? e.message : e);
+    try {
+      veiculos = (await env.DB.prepare("SELECT id, name, plate FROM fleet_vehicles ORDER BY name").all()).results || [];
+    } catch (e2) {
+      console.error("[sgo] fleet_vehicles fallback:", e2 && e2.message ? e2.message : e2);
+      veiculos = [];
+    }
+  }
+  try {
+    links = (await env.DB.prepare("SELECT usuario_id, vehicle_id FROM usuario_veiculos").all()).results || [];
+  } catch (_) {
+    links = [];
+  }
+  const porUser = /* @__PURE__ */ new Map();
+  for (const l of links) {
+    if (!porUser.has(l.usuario_id)) porUser.set(l.usuario_id, []);
+    porUser.get(l.usuario_id).push(Number(l.vehicle_id));
+  }
   return {
-    usuarios: us.results.map((u) => ({ ...u, ativo: !!u.ativo, vendedor: !!u.vendedor, permissoes: perm.get(u.id) || [] })),
+    usuarios: us.results.map((u) => ({
+      ...u,
+      ativo: !!u.ativo,
+      vendedor: !!u.vendedor,
+      comprador: !!u.comprador,
+      veiculos_ids: porUser.get(u.id) || [],
+      permissoes: perm.get(u.id) || [],
+    })),
     setores: setores.results,
     itens: itens.results,
     perfis: PERFIS,
-    auxiliares: (await env.DB.prepare("SELECT id, nome, ativo FROM auxiliares ORDER BY nome COLLATE NOCASE").all()).results.map((a) => ({ ...a, ativo: !!a.ativo }))
+    veiculos: veiculos.map((v) => ({ id: Number(v.id), nome: v.name, placa: v.plate || "" })),
+    auxiliares: (await env.DB.prepare("SELECT id, nome, ativo FROM auxiliares ORDER BY nome COLLATE NOCASE").all()).results.map((a) => ({
+      ...a,
+      ativo: !!a.ativo,
+    })),
   };
 }
 function limpar(d) {
+  const veiculos_ids = Array.isArray(d.veiculos_ids)
+    ? [...new Set(d.veiculos_ids.map((x) => parseInt(x, 10)).filter((n) => n > 0))]
+    : [];
   return {
     login: String(d.login || "").trim().toLowerCase(),
     nome: String(d.nome || "").trim(),
@@ -199,9 +251,50 @@ function limpar(d) {
     equipe: String(d.equipe || "").trim() || null,
     ativo: d.ativo === false ? 0 : 1,
     vendedor: d.vendedor ? 1 : 0,
+    comprador: d.comprador ? 1 : 0,
+    veiculos_ids,
     senha: d.senha ? String(d.senha) : "",
-    permissoes: Array.isArray(d.permissoes) ? d.permissoes.map(String) : []
+    permissoes: Array.isArray(d.permissoes) ? d.permissoes.map(String) : [],
   };
+}
+function enriquecerPermissoesFlags(v) {
+  const p = new Set(v.permissoes || []);
+  if (v.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => p.add(x));
+  if (v.comprador) p.add("op-compras");
+  v.permissoes = [...p];
+  return v;
+}
+async function gravarVeiculosUsuario(env, usuarioId, perfil, veiculosIds, flags) {
+  const ids = perfil === "tecnico" ? veiculosIds || [] : [];
+  try {
+    await env.DB.prepare("DELETE FROM usuario_veiculos WHERE usuario_id = ?").bind(usuarioId).run();
+    for (const vid of ids) {
+      await env.DB.prepare("INSERT INTO usuario_veiculos (usuario_id, vehicle_id) VALUES (?, ?)").bind(usuarioId, vid).run();
+    }
+  } catch (e) {
+    console.error("[sgo] usuario_veiculos", e);
+  }
+  const first = ids[0] || null;
+  const isTec = perfil === "tecnico";
+  const isVend = !!(flags && flags.vendedor);
+  const isComp = !!(flags && flags.comprador);
+  try {
+    await env.DB.prepare("DELETE FROM user_vehicles WHERE user_id = ?").bind(usuarioId).run();
+    for (const vid of ids) {
+      await env.DB.prepare(
+        "INSERT INTO user_vehicles (user_id, vehicle_id) VALUES (?, ?) ON CONFLICT (user_id, vehicle_id) DO NOTHING",
+      )
+        .bind(usuarioId, vid)
+        .run();
+    }
+    await env.DB.prepare(
+      "UPDATE users SET default_vehicle_id = ?, is_tecnico = ?, is_vendedor = ?, is_comprador = ? WHERE id = ?",
+    )
+      .bind(first, isTec, isVend, isComp, usuarioId)
+      .run();
+  } catch (_) {
+    /* espelho public pode ainda nao existir */
+  }
 }
 async function validar(env, v, eu, alvo) {
   if (!v.nome || v.nome.length > 80) return "Informe o nome (at\xE9 80 caracteres).";
@@ -250,11 +343,13 @@ async function rotaUsuarios(request, env, url, eu) {
     const erro = await validar(env, v, eu, null) || (v.senha ? null : "Defina a senha inicial do usu\xE1rio.");
     if (erro) return json({ erro }, 400);
     const salt = aleatorio(16);
+    enriquecerPermissoesFlags(v);
     const r = await env.DB.prepare(
-      "INSERT INTO usuarios (login, nome, email, setor_id, perfil, equipe, ativo, vendedor, senha_hash, senha_salt, senha_iter) VALUES (?,?,?,?,?,?,?,?,?,?,100000)"
-    ).bind(v.login, v.nome, v.email, v.setor_id, v.perfil, v.equipe, v.ativo, v.vendedor, await hashSenha(v.senha, salt), salt).run();
+      "INSERT INTO usuarios (login, nome, email, setor_id, perfil, equipe, ativo, vendedor, comprador, senha_hash, senha_salt, senha_iter) VALUES (?,?,?,?,?,?,?,?,?,?,?,100000)"
+    ).bind(v.login, v.nome, v.email, v.setor_id, v.perfil, v.equipe, v.ativo, v.vendedor, v.comprador, await hashSenha(v.senha, salt), salt).run();
     const novo = r.meta.last_row_id;
     await gravarPermissoes(env, novo, v.perfil === "tecnico" ? [] : v.permissoes);
+    await gravarVeiculosUsuario(env, novo, v.perfil, v.veiculos_ids, v);
     return json({ ok: true, id: novo });
   }
   if (id && request.method === "PUT") {
@@ -266,9 +361,10 @@ async function rotaUsuarios(request, env, url, eu) {
     }
     const erro = await validar(env, v, eu, alvo);
     if (erro) return json({ erro }, 400);
+    enriquecerPermissoesFlags(v);
     const ops = [env.DB.prepare(
-      "UPDATE usuarios SET login = ?, nome = ?, email = ?, setor_id = ?, perfil = ?, equipe = ?, ativo = ?, vendedor = ?, atualizado_em = datetime('now') WHERE id = ?"
-    ).bind(v.login, v.nome, v.email, v.setor_id, v.perfil, v.equipe, v.ativo, v.vendedor, id)];
+      "UPDATE usuarios SET login = ?, nome = ?, email = ?, setor_id = ?, perfil = ?, equipe = ?, ativo = ?, vendedor = ?, comprador = ?, atualizado_em = datetime('now') WHERE id = ?"
+    ).bind(v.login, v.nome, v.email, v.setor_id, v.perfil, v.equipe, v.ativo, v.vendedor, v.comprador, id)];
     if (v.senha) {
       const salt = aleatorio(16);
       ops.push(env.DB.prepare("UPDATE usuarios SET senha_hash = ?, senha_salt = ?, senha_iter = 100000, tentativas = 0, bloqueado_ate = 0 WHERE id = ?").bind(await hashSenha(v.senha, salt), salt, id));
@@ -277,6 +373,7 @@ async function rotaUsuarios(request, env, url, eu) {
     if (d.desbloquear) ops.push(env.DB.prepare("UPDATE usuarios SET tentativas = 0, bloqueado_ate = 0 WHERE id = ?").bind(id));
     await env.DB.batch(ops);
     if (alvo.perfil !== "superadmin") await gravarPermissoes(env, id, v.perfil === "tecnico" ? [] : v.permissoes);
+    await gravarVeiculosUsuario(env, id, v.perfil, v.veiculos_ids, v);
     return json({ ok: true });
   }
   return json({ erro: "M\xE9todo n\xE3o permitido" }, 405);

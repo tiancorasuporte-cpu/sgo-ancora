@@ -42,7 +42,29 @@ async function instalar() {
   }
   const { ensureSchema } = await import("@/db/schema");
   await ensureSchema();
+  await garantirExtrasUsuarios(sql);
   await copiarArquivosIniciais();
+}
+
+/** Colunas/tabelas de Usuários: comprador + vínculo N:N com frota. */
+async function garantirExtrasUsuarios(sql: ReturnType<typeof sgoSql>) {
+  await sql.unsafe(`
+    do $$ begin
+      if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'sgo' and table_name = 'usuarios' and column_name = 'comprador'
+      ) then
+        alter table sgo.usuarios add column comprador bigint not null default 0;
+      end if;
+    end $$;
+  `);
+  await sql.unsafe(`
+    create table if not exists sgo.usuario_veiculos (
+      usuario_id bigint not null references sgo.usuarios(id) on delete cascade,
+      vehicle_id bigint not null,
+      primary key (usuario_id, vehicle_id)
+    );
+  `);
 }
 
 async function copiarArquivosIniciais() {

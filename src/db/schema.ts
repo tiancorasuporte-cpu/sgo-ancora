@@ -1234,6 +1234,17 @@ async function migrateSchema() {
     }
   }
 
+  // Técnico ↔ vários veículos da frota
+  if (!(await tableExists("user_vehicles"))) {
+    await sql`
+      create table user_vehicles (
+        user_id integer not null references users(id) on delete cascade,
+        vehicle_id integer not null references fleet_vehicles(id) on delete cascade,
+        primary key (user_id, vehicle_id)
+      )
+    `;
+  }
+
   if (!(await tableExists("fleet_drivers"))) {
     await sql`
       create table fleet_drivers (
