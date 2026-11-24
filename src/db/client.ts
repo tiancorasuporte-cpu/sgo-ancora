@@ -100,6 +100,9 @@ function createClient(config: DatabaseConfig) {
     max: 10,
     idle_timeout: 20,
     connect_timeout: 10,
+    // Sempre public: se PGUSER=sgo, o default do Postgres seria "sgo, public"
+    // e o ensureSchema criaria tabelas no schema errado.
+    connection: { search_path: "public" },
   });
 }
 
