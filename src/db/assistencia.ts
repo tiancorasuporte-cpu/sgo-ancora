@@ -410,7 +410,106 @@ async function loadItems(osIds: number[]) {
   return map;
 }
 
+/** Espelha sgo.equipes_tecnicas → public.assist_teams (PDV / estoque dos técnicos). */
+export async function syncAssistTeamsFromSgo() {
+  const db = await getDb();
+  try {
+    const { sgoSql } = await import("@/sgo/server/d1");
+    const sql = sgoSql();
+    const equipes = (await sql`
+      select e.id, e.nome, e.principal_id, e.membros, e.ativo
+      from sgo.equipes_tecnicas e
+      order by e.nome
+    `) as Array<Record<string, unknown>>;
+    if (!equipes.length) return;
+
+    const tecnicos = (await sql`
+      select id, nome, ativo
+      from sgo.usuarios
+      where perfil = 'tecnico'
+    `) as Array<Record<string, unknown>>;
+    const tecById = new Map(tecnicos.map((t) => [num(t["id"]), t]));
+
+    for (const eq of equipes) {
+      const name = str(eq["nome"]).trim();
+      if (!name) continue;
+      const active = Number(eq["ativo"]) === 1;
+      const [existing] = (await db`
+        select id from assist_teams
+        where lower(trim(name)) = lower(trim(${name}))
+        limit 1
+      `) as Array<{ id: number }>;
+      let teamId = existing ? num(existing.id) : 0;
+      if (teamId) {
+        await db`
+          update assist_teams
+          set name = ${name}, active = ${active}, updated_at = now()
+          where id = ${teamId}
+        `;
+      } else {
+        const [row] = (await db`
+          insert into assist_teams (name, active)
+          values (${name}, ${active})
+          returning id
+        `) as Array<{ id: number }>;
+        teamId = num(row?.id);
+      }
+      if (!teamId) continue;
+
+      let membroIds: number[] = [];
+      try {
+        const raw = eq["membros"];
+        const parsed =
+          typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
+        if (Array.isArray(parsed)) {
+          membroIds = parsed.map((x) => num(x)).filter((n) => n > 0);
+        }
+      } catch {
+        membroIds = [];
+      }
+      const principalId = num(eq["principal_id"]);
+      if (principalId > 0 && !membroIds.includes(principalId)) {
+        membroIds.unshift(principalId);
+      }
+
+      for (const uid of membroIds) {
+        const tec = tecById.get(uid);
+        if (!tec) continue;
+        const memberName = str(tec["nome"]).trim();
+        if (!memberName) continue;
+        const memberActive = Number(tec["ativo"]) === 1 && active;
+        const [mem] = (await db`
+          select id from assist_team_members
+          where team_id = ${teamId}
+            and (
+              user_id = ${uid}
+              or lower(trim(name)) = lower(trim(${memberName}))
+            )
+          limit 1
+        `) as Array<{ id: number }>;
+        if (mem) {
+          await db`
+            update assist_team_members
+            set name = ${memberName},
+                user_id = ${uid},
+                active = ${memberActive}
+            where id = ${num(mem.id)}
+          `;
+        } else {
+          await db`
+            insert into assist_team_members (team_id, name, user_id, active)
+            values (${teamId}, ${memberName}, ${uid}, ${memberActive})
+          `;
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[assistencia] sync equipes SGO→assist_teams", e);
+  }
+}
+
 export async function listAssistTeams(activeOnly = true) {
+  await syncAssistTeamsFromSgo();
   const db = await getDb();
   const teams = (await db`
     select * from assist_teams
