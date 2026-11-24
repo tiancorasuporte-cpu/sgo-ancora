@@ -2373,12 +2373,7 @@ async function migrateSchema() {
     }
   }
 
-  const teamCount = await sql<{ c: number }[]>`
-    select count(*)::int as c from assist_teams
-  `;
-  if (Number(teamCount[0]?.c ?? 0) === 0) {
-    await sql`insert into assist_teams (name) values ('Equipe 01'), ('Equipe 02'), ('Equipe 03')`;
-  }
+  // Sem seed de "Equipe 01/02/03": as equipes vêm de sgo.equipes_tecnicas (sync no PDV).
 
   if (!(await tableExists("mobile_sessions"))) {
     await sql`

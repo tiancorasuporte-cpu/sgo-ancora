@@ -40,6 +40,9 @@ export type AssistTeam = {
   id: number;
   name: string;
   active: boolean;
+  /** Técnico principal (espelho de sgo.equipes_tecnicas.principal_id). */
+  principalUserId: number | null;
+  principalName: string | null;
   members: Array<{ id: number; name: string; userId: number | null; active: boolean }>;
 };
 
@@ -410,25 +413,38 @@ async function loadItems(osIds: number[]) {
   return map;
 }
 
+type SgoTeamSync = {
+  ok: boolean;
+  teamIds: number[];
+  principalByTeamId: Map<number, { userId: number; name: string }>;
+};
+
 /** Espelha sgo.equipes_tecnicas → public.assist_teams (PDV / estoque dos técnicos). */
-export async function syncAssistTeamsFromSgo() {
+export async function syncAssistTeamsFromSgo(): Promise<SgoTeamSync> {
+  const empty: SgoTeamSync = {
+    ok: false,
+    teamIds: [],
+    principalByTeamId: new Map(),
+  };
   const db = await getDb();
   try {
     const { sgoSql } = await import("@/sgo/server/d1");
     const sql = sgoSql();
     const equipes = (await sql`
-      select e.id, e.nome, e.principal_id, e.membros, e.ativo
+      select e.id, e.nome, e.principal_id, e.membros, e.ativo, u.nome as principal_nome
       from sgo.equipes_tecnicas e
+      left join sgo.usuarios u on u.id = e.principal_id
       order by e.nome
     `) as Array<Record<string, unknown>>;
-    if (!equipes.length) return;
 
-    const tecnicos = (await sql`
-      select id, nome, ativo
+    // Inclui qualquer usuário (principal pode não estar com perfil "tecnico").
+    const usuarios = (await sql`
+      select id, nome, ativo, perfil
       from sgo.usuarios
-      where perfil = 'tecnico'
     `) as Array<Record<string, unknown>>;
-    const tecById = new Map(tecnicos.map((t) => [num(t["id"]), t]));
+    const userById = new Map(usuarios.map((t) => [num(t["id"]), t]));
+    const syncedIds: number[] = [];
+    const principalByTeamId = new Map<number, { userId: number; name: string }>();
 
     for (const eq of equipes) {
       const name = str(eq["nome"]).trim();
@@ -455,6 +471,7 @@ export async function syncAssistTeamsFromSgo() {
         teamId = num(row?.id);
       }
       if (!teamId) continue;
+      syncedIds.push(teamId);
 
       let membroIds: number[] = [];
       try {
@@ -472,44 +489,90 @@ export async function syncAssistTeamsFromSgo() {
         membroIds.unshift(principalId);
       }
 
+      const principalNome = str(eq["principal_nome"]).trim();
+      if (principalId > 0 && principalNome) {
+        principalByTeamId.set(teamId, { userId: principalId, name: principalNome });
+      } else if (principalId > 0) {
+        const u = userById.get(principalId);
+        const pName = str(u?.["nome"]).trim();
+        if (pName) {
+          principalByTeamId.set(teamId, { userId: principalId, name: pName });
+        }
+      }
+
       for (const uid of membroIds) {
-        const tec = tecById.get(uid);
-        if (!tec) continue;
-        const memberName = str(tec["nome"]).trim();
+        const user = userById.get(uid);
+        if (!user) continue;
+        const memberName = str(user["nome"]).trim();
         if (!memberName) continue;
-        const memberActive = Number(tec["ativo"]) === 1 && active;
-        const [mem] = (await db`
-          select id from assist_team_members
-          where team_id = ${teamId}
-            and (
-              user_id = ${uid}
-              or lower(trim(name)) = lower(trim(${memberName}))
-            )
-          limit 1
+        const memberActive = Number(user["ativo"]) === 1 && active;
+        // user_id em assist_team_members referencia public.users — o id do SGO
+        // pode não existir lá ainda; nesse caso grava só o nome.
+        const [pubUser] = (await db`
+          select id from users where id = ${uid} limit 1
         `) as Array<{ id: number }>;
-        if (mem) {
-          await db`
-            update assist_team_members
-            set name = ${memberName},
-                user_id = ${uid},
-                active = ${memberActive}
-            where id = ${num(mem.id)}
-          `;
-        } else {
-          await db`
-            insert into assist_team_members (team_id, name, user_id, active)
-            values (${teamId}, ${memberName}, ${uid}, ${memberActive})
-          `;
+        const linkUserId = pubUser ? uid : null;
+        try {
+          const [mem] = (await db`
+            select id from assist_team_members
+            where team_id = ${teamId}
+              and lower(trim(name)) = lower(trim(${memberName}))
+            limit 1
+          `) as Array<{ id: number }>;
+          if (mem) {
+            await db`
+              update assist_team_members
+              set name = ${memberName},
+                  user_id = ${linkUserId},
+                  active = ${memberActive}
+              where id = ${num(mem.id)}
+            `;
+          } else {
+            await db`
+              insert into assist_team_members (team_id, name, user_id, active)
+              values (${teamId}, ${memberName}, ${linkUserId}, ${memberActive})
+            `;
+          }
+        } catch (memberErr) {
+          console.error(
+            "[assistencia] membro equipe",
+            teamId,
+            memberName,
+            memberErr,
+          );
         }
       }
     }
+
+    // Desativa placeholders / equipes que não existem no SGO (ex.: Equipe 01/02/03).
+    if (syncedIds.length) {
+      await db`
+        update assist_teams
+        set active = false, updated_at = now()
+        where active = true
+          and not (id = any(${syncedIds}))
+      `;
+    } else {
+      await db`
+        update assist_teams
+        set active = false, updated_at = now()
+        where active = true
+      `;
+    }
+
+    return { ok: true, teamIds: syncedIds, principalByTeamId };
   } catch (e) {
     console.error("[assistencia] sync equipes SGO→assist_teams", e);
+    return empty;
   }
 }
 
+function isSeedTeamName(name: string) {
+  return /^equipe\s*0*[123]$/i.test(name.trim());
+}
+
 export async function listAssistTeams(activeOnly = true) {
-  await syncAssistTeamsFromSgo();
+  const sync = await syncAssistTeamsFromSgo();
   const db = await getDb();
   const teams = (await db`
     select * from assist_teams
@@ -521,20 +584,35 @@ export async function listAssistTeams(activeOnly = true) {
     where (${activeOnly}::boolean = false or active = true)
     order by name asc
   `) as Record<string, unknown>[];
-  return teams.map((t) => {
+
+  const synced = new Set(sync.teamIds);
+  const filtered = sync.ok
+    ? teams.filter((t) => synced.has(num(t["id"])))
+    : teams.filter((t) => !isSeedTeamName(str(t["name"])));
+
+  return filtered.map((t) => {
     const id = num(t["id"]);
+    const principal = sync.principalByTeamId.get(id) ?? null;
+    const teamMembers = members
+      .filter((m) => num(m["team_id"]) === id)
+      .map((m) => ({
+        id: num(m["id"]),
+        name: str(m["name"]),
+        userId: m["user_id"] == null ? null : num(m["user_id"]),
+        active: Boolean(m["active"]),
+      }));
+    const principalFromMember =
+      principal?.name ||
+      teamMembers.find((m) => principal && m.userId === principal.userId)?.name ||
+      teamMembers.find((m) => m.active)?.name ||
+      null;
     return {
       id,
       name: str(t["name"]),
       active: Boolean(t["active"]),
-      members: members
-        .filter((m) => num(m["team_id"]) === id)
-        .map((m) => ({
-          id: num(m["id"]),
-          name: str(m["name"]),
-          userId: m["user_id"] == null ? null : num(m["user_id"]),
-          active: Boolean(m["active"]),
-        })),
+      principalUserId: principal?.userId ?? null,
+      principalName: principalFromMember,
+      members: teamMembers,
     } satisfies AssistTeam;
   });
 }

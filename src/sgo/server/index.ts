@@ -66,6 +66,63 @@ async function carregarAppTecnico() {
   appCarregado = true;
 }
 
+/** Busca de clientes para tickets/OS: Omie (cache + API) no formato do SGOBusca. */
+async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/cadastros/busca" || request.method !== "GET") return null;
+
+  const tipo = (url.searchParams.get("tipo") || "produto").toLowerCase();
+  if (tipo !== "cliente" && tipo !== "clientes") return null;
+
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 80);
+  const lim = Math.min(30, Math.max(1, parseInt(url.searchParams.get("limite") || "12", 10) || 12));
+  if (q.length < 2) return Response.json({ itens: [] });
+
+  try {
+    const { usuarioSgo } = await import("./sessao");
+    const eu = await usuarioSgo(request);
+    if (!eu) return Response.json({ erro: "Faça login para continuar." }, { status: 401 });
+
+    const { listOmieApps, requireOrcamentosOmieApp } = await import("@/server/omie/client");
+    const { searchOmieClients } = await import("@/server/omie/quotes");
+    let app;
+    try {
+      app = requireOrcamentosOmieApp();
+    } catch {
+      app = listOmieApps()[0];
+    }
+    if (!app) return null; // deixa o worker buscar em parceiros
+
+    const found = await searchOmieClients(app, q);
+    const itens = found.slice(0, lim).map((c) => {
+      const nome = String(c.nome || "").trim();
+      const cidade = [c.cidade, c.estado ? `(${c.estado})` : ""].filter(Boolean).join(" ").trim();
+      return {
+        id: `omie:${c.codigo}`,
+        documento: c.cnpjCpf || null,
+        tipo_pessoa: null,
+        razao: nome,
+        fantasia: nome,
+        tags: ["Cliente", "Omie"],
+        telefone: null,
+        contato: c.contato || null,
+        email: null,
+        cidade: cidade || null,
+        uf: c.estado || null,
+        endereco: c.endereco || null,
+        bairro: null,
+        situacao: "Ativo",
+        origem: "omie",
+        extra: { omie_codigo: c.codigo, omie_app: app.id, cep: c.cep || null },
+      };
+    });
+    return Response.json({ itens, origem: "omie" });
+  } catch (e) {
+    console.error("[sgo] busca clientes Omie", e);
+    return null; // fallback no worker (parceiros)
+  }
+}
+
 async function atenderSyncOmieCadastros(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/cadastros/sync-omie" || request.method !== "POST") return null;
@@ -122,6 +179,9 @@ export async function atenderSgo(request: Request): Promise<Response> {
 
   const syncResp = await atenderSyncOmieCadastros(request);
   if (syncResp) return syncResp;
+
+  const buscaOmie = await atenderBuscaCadastrosOmie(request);
+  if (buscaOmie) return buscaOmie;
 
   const mod = await import("./worker.js");
   const worker = (mod as { default: { fetch: (r: Request, e: unknown) => Promise<Response> } }).default;

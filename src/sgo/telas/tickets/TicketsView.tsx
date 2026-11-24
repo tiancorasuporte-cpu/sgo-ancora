@@ -644,7 +644,7 @@ export function TicketsView({ v }: { v: any }) {
                       <label className={"flabel"} htmlFor={"nt-cli"}>
                         {"Cliente"}
                       </label>
-                      <input id={"nt-cli"} className={"field"} type={"text"} placeholder={"Nome do cliente ou local"} value={s(v["nt"]?.["cli"])} onChange={fn(v["nt"]?.["onCli"])} />
+                      <input id={"nt-cli"} className={"field"} type={"text"} placeholder={"Digite nome ou CNPJ/CPF (Omie)"} autoComplete={"off"} value={s(v["nt"]?.["cli"])} onChange={fn(v["nt"]?.["onCli"])} />
                     </div>
                   </div>
                   <div className={"z18"}>

@@ -1757,7 +1757,7 @@ export function QuadroOsView({ v }: { v: any }) {
                       <label className={"flabel"} htmlFor={"nos-cli"}>
                         {"Cliente"}
                       </label>
-                      <input id={"nos-cli"} className={"field"} type={"text"} value={s(v["newOs"]?.["cliente"])} onChange={fn(v["newOs"]?.["onCli"])} />
+                      <input id={"nos-cli"} className={"field"} type={"text"} placeholder={"Digite nome ou CNPJ/CPF (Omie)"} autoComplete={"off"} value={s(v["newOs"]?.["cliente"])} onChange={fn(v["newOs"]?.["onCli"])} />
                     </div>
                     <div className={"z44"}>
                       <label className={"flabel"} htmlFor={"nos-cid"}>

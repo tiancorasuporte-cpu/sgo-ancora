@@ -20,6 +20,7 @@ import {
 import { APP_NAME } from "@/lib/brand";
 import { osStageName, osTipoLabel } from "@/lib/assistencia-domain";
 import {
+  cancelMatSaidaFn,
   confirmMatSaidaFn,
   emitMatSaidaFn,
   getEstoqueBootstrapFn,
@@ -224,12 +225,48 @@ function EstoquePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveQuery, onlyDivergent, onlyBelowMin]);
 
+  function principalDaEquipe(
+    team:
+      | {
+          principalName?: string | null;
+          members: Array<{ name: string; userId: number | null; active: boolean }>;
+          principalUserId?: number | null;
+        }
+      | null
+      | undefined,
+  ) {
+    if (!team) return "";
+    if (team.principalName?.trim()) return team.principalName.trim();
+    if (team.principalUserId) {
+      const m = team.members.find((x) => x.userId === team.principalUserId && x.active);
+      if (m?.name) return m.name;
+    }
+    return team.members.find((m) => m.active)?.name?.trim() || "";
+  }
+
+  function selectEquipe(nextId: number | "") {
+    setTeamId(nextId);
+    if (nextId === "") {
+      setTecnicoNome("");
+      return;
+    }
+    const team = pdvBoot?.teams.find((t) => t.id === nextId);
+    setTecnicoNome(principalDaEquipe(team));
+  }
+
   async function reloadPdv() {
     const boot = await getEstoquePdvBootstrapFn();
     setPdvBoot(boot);
     setTeamStock(boot.teamStock);
     setTeamMoves(boot.teamMoves);
-    if (!teamId && boot.teams[0]) setTeamId(boot.teams[0].id);
+    const nextId =
+      teamId !== "" && boot.teams.some((t) => t.id === teamId)
+        ? teamId
+        : (boot.teams[0]?.id ?? "");
+    setTeamId(nextId);
+    const team =
+      nextId === "" ? null : (boot.teams.find((t) => t.id === nextId) ?? null);
+    setTecnicoNome(principalDaEquipe(team));
   }
 
   useEffect(() => {
@@ -281,6 +318,14 @@ function EstoquePage() {
     if (!pdvBoot || teamId === "") return null;
     return pdvBoot.teams.find((t) => t.id === teamId) ?? null;
   }, [pdvBoot, teamId]);
+
+  // Garante o técnico principal no campo ao carregar/trocar equipe.
+  useEffect(() => {
+    if (tab !== "pdv") return;
+    const nome = principalDaEquipe(selectedTeam);
+    if (nome) setTecnicoNome(nome);
+    else if (!selectedTeam) setTecnicoNome("");
+  }, [tab, selectedTeam]);
 
   const teamCards = useMemo(() => {
     const teams = pdvBoot?.teams ?? [];
@@ -359,6 +404,7 @@ function EstoquePage() {
   );
 
   function addToCart(product: PdvProduct) {
+    const nome = product.descricao.replace(/\s+/g, " ").trim();
     setCart((prev) => {
       const found = prev.find((l) => l.productId === product.productId);
       if (found) {
@@ -370,7 +416,7 @@ function EstoquePage() {
         ...prev,
         {
           productId: product.productId,
-          nome: product.descricao,
+          nome,
           qtd: 1,
           unidade: product.unidade,
         },
@@ -433,6 +479,30 @@ function EstoquePage() {
         type: "error",
         text:
           error instanceof Error ? error.message : "Falha ao confirmar recebimento.",
+      });
+    }
+  }
+
+  async function desfazerSaida(saidaId: number, num: string) {
+    if (
+      !window.confirm(
+        `Desfazer a saída ${num}? Ela volta a não constar como enviada e os itens de OS (se houver) são removidos.`,
+      )
+    ) {
+      return;
+    }
+    setFeedback(null);
+    try {
+      const saida = await cancelMatSaidaFn({ data: { saidaId } });
+      setFeedback({
+        type: "ok",
+        text: `Saída ${saida.num} desfeita.`,
+      });
+      await reloadPdv();
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        text: error instanceof Error ? error.message : "Falha ao desfazer saída.",
       });
     }
   }
@@ -674,7 +744,7 @@ function EstoquePage() {
                     <select
                       value={teamId}
                       onChange={(e) =>
-                        setTeamId(e.target.value ? Number(e.target.value) : "")
+                        selectEquipe(e.target.value ? Number(e.target.value) : "")
                       }
                       className="field"
                     >
@@ -688,20 +758,44 @@ function EstoquePage() {
                   </label>
                   <label className="lbl" style={{ gridColumn: "1 / -1" }}>
                     Técnico na equipe
-                    <input
-                      value={tecnicoNome}
-                      onChange={(e) => setTecnicoNome(e.target.value)}
-                      list="pdv-tecnicos"
-                      placeholder="Nome do técnico"
-                      className="field"
-                    />
-                    <datalist id="pdv-tecnicos">
-                      {(selectedTeam?.members ?? [])
-                        .filter((m) => m.active)
-                        .map((m) => (
-                          <option key={m.id} value={m.name} />
-                        ))}
-                    </datalist>
+                    {(selectedTeam?.members ?? []).some((m) => m.active) ||
+                    selectedTeam?.principalName ? (
+                      <select
+                        value={tecnicoNome}
+                        onChange={(e) => setTecnicoNome(e.target.value)}
+                        className="field"
+                      >
+                        <option value="">Selecione o técnico</option>
+                        {selectedTeam?.principalName &&
+                        !(selectedTeam.members ?? []).some(
+                          (m) => m.active && m.name === selectedTeam.principalName,
+                        ) ? (
+                          <option value={selectedTeam.principalName}>
+                            {selectedTeam.principalName} (principal)
+                          </option>
+                        ) : null}
+                        {(selectedTeam?.members ?? [])
+                          .filter((m) => m.active)
+                          .map((m) => (
+                            <option key={m.id} value={m.name}>
+                              {m.name}
+                              {selectedTeam?.principalUserId &&
+                              m.userId === selectedTeam.principalUserId
+                                ? " (principal)"
+                                : selectedTeam?.principalName === m.name
+                                  ? " (principal)"
+                                  : ""}
+                            </option>
+                          ))}
+                      </select>
+                    ) : (
+                      <input
+                        value={tecnicoNome}
+                        onChange={(e) => setTecnicoNome(e.target.value)}
+                        placeholder="Nome do técnico"
+                        className="field"
+                      />
+                    )}
                   </label>
                   {destino === "os" ? (
                     <label className="lbl" style={{ gridColumn: "1 / -1" }}>
@@ -740,12 +834,12 @@ function EstoquePage() {
               <ul className="card-b" style={{ flex: 1, overflow: "auto", listStyle: "none", margin: 0 }}>
                 {!cart.length ? <li className="vazio">Nenhum item</li> : null}
                 {cart.map((line) => (
-                  <li key={line.productId} className="lin" style={{ gridTemplateColumns: "1fr auto auto" }}>
-                    <div>
-                      <b>{line.nome}</b>
+                  <li key={line.productId} className="lin-cart">
+                    <div className="lin-cart-nome">
+                      <b>{line.nome.replace(/\s+/g, " ").trim()}</b>
                       {line.unidade ? <div className="cod">{line.unidade}</div> : null}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div className="lin-cart-acoes">
                       <button
                         type="button"
                         className="btn sm"
@@ -792,16 +886,16 @@ function EstoquePage() {
                       >
                         +
                       </button>
+                      <button
+                        type="button"
+                        className="btn sm"
+                        onClick={() =>
+                          setCart((prev) => prev.filter((l) => l.productId !== line.productId))
+                        }
+                      >
+                        Remover
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      className="btn sm"
-                      onClick={() =>
-                        setCart((prev) => prev.filter((l) => l.productId !== line.productId))
-                      }
-                    >
-                      Remover
-                    </button>
                   </li>
                 ))}
               </ul>
@@ -855,6 +949,10 @@ function EstoquePage() {
                               <span className="rounded-full bg-emerald-100 px-xs py-2xs text-label-sm font-semibold text-emerald-900">
                                 Recebida
                               </span>
+                            ) : s.status === "cancelada" ? (
+                              <span className="rounded-full bg-stone-200 px-xs py-2xs text-label-sm font-semibold text-stone-700">
+                                Cancelada
+                              </span>
                             ) : (
                               s.status
                             )}
@@ -862,13 +960,26 @@ function EstoquePage() {
                           <td className="px-sm py-xs">{formatDateTime(s.createdAt)}</td>
                           <td className="px-sm py-xs">
                             {s.status === "aguardando" ? (
-                              <button
-                                type="button"
-                                className="btn sm"
-                                onClick={() => void confirmSaida(s.id)}
-                              >
-                                Confirmar recebimento
-                              </button>
+                              <div className="flex flex-wrap gap-xs">
+                                <button
+                                  type="button"
+                                  className="btn sm"
+                                  onClick={() => void confirmSaida(s.id)}
+                                >
+                                  Confirmar recebimento
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn sm"
+                                  onClick={() => void desfazerSaida(s.id, s.num)}
+                                >
+                                  Desfazer
+                                </button>
+                              </div>
+                            ) : s.status === "cancelada" ? (
+                              <span className="text-label-sm text-on-surface-variant">
+                                Desfeita
+                              </span>
                             ) : (
                               <span className="text-label-sm text-on-surface-variant">
                                 {s.confirmedByName

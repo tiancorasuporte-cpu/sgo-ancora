@@ -382,3 +382,72 @@ export async function confirmMatSaida(input: {
   if (!confirmed) throw new Error("Saída não encontrada após confirmação.");
   return confirmed;
 }
+
+/** Desfaz saída ainda aguardando (não baixou estoque da equipe). */
+export async function cancelMatSaida(input: {
+  saidaId: number;
+  userId: number;
+  userName: string;
+}) {
+  const db = await getDb();
+  const saida = await getMatSaidaById(input.saidaId);
+  if (!saida) throw new Error("Saída não encontrada.");
+  if (saida.status === "cancelada") return saida;
+  if (saida.status !== "aguardando") {
+    throw new Error(
+      saida.status === "recebida"
+        ? `Saída ${saida.num} já foi confirmada. Não é possível desfazer por aqui.`
+        : `Saída ${saida.num} não pode ser desfeita (${saida.status}).`,
+    );
+  }
+
+  await teamStockTransaction(db, async (tx) => {
+    const [locked] = (await tx`
+      select id, status from mat_saidas where id = ${saida.id} for update
+    `) as Array<{ id: number; status: string }>;
+    if (!locked) throw new Error("Saída não encontrada.");
+    if (locked.status === "cancelada") return;
+    if (locked.status !== "aguardando") {
+      throw new Error(`Saída ${saida.num} não está mais aguardando.`);
+    }
+
+    const osItemIds = saida.itens
+      .map((i) => i.osItemId)
+      .filter((id): id is number => id != null && id > 0);
+    if (osItemIds.length) {
+      await tx`
+        delete from assist_os_items
+        where id = any(${osItemIds})
+          and origem = 'pdv'
+      `;
+    }
+
+    await tx`
+      update mat_saida_itens
+      set os_item_id = null
+      where saida_id = ${saida.id}
+    `;
+
+    await tx`
+      update mat_saidas
+      set status = 'cancelada'
+      where id = ${saida.id}
+    `;
+
+    if (saida.osId) {
+      await tx`
+        insert into assist_os_events (os_id, quem, user_id, acao)
+        values (
+          ${saida.osId},
+          ${input.userName},
+          ${input.userId},
+          ${`Saída PDV ${saida.num} desfeita · ${saida.itens.length} item(ns) removidos`}
+        )
+      `;
+    }
+  });
+
+  const canceled = await getMatSaidaById(saida.id);
+  if (!canceled) throw new Error("Saída não encontrada após cancelamento.");
+  return canceled;
+}

@@ -274,6 +274,23 @@ export const confirmMatSaidaFn = createServerFn({ method: "POST" })
     });
   });
 
+export const cancelMatSaidaFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z.object({ saidaId: z.number().int().positive() }).parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("estoque");
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { cancelMatSaida } = await import("@/db/mat-saidas");
+    return cancelMatSaida({
+      saidaId: data.saidaId,
+      userId: user.id,
+      userName: user.name,
+    });
+  });
+
 export const searchEstoqueProductsFn = createServerFn({ method: "GET" })
   .validator((input) =>
     z

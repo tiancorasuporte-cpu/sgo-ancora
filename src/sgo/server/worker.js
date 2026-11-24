@@ -21,9 +21,19 @@ function servirArquivo(caminho) {
 }
 
 // src/util.js
+var corsDev = {};
+function corsDe(request) {
+  const origin = request.headers.get("origin") || "";
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$/.test(origin)) return null;
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-headers": "content-type, x-sgo, x-sgo-app, x-sgo-sessao",
+    "access-control-allow-methods": "GET, POST, PUT, OPTIONS"
+  };
+}
 var json = (data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
   status,
-  headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extraHeaders }
+  headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...corsDev, ...extraHeaders }
 });
 var hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 var deHex = (s) => new Uint8Array(s.match(/../g).map((h2) => parseInt(h2, 16)));
@@ -69,8 +79,13 @@ var ehAdmin = (u) => !!u && PERFIS_TOTAIS.includes(u.perfil);
 function cookieSessao(valor, maxAge) {
   return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
+function tokenDaReq(request) {
+  const header = request.headers.get("x-sgo-sessao") || "";
+  if (/^[0-9a-f]{64}$/.test(header)) return header;
+  return cookie(request, COOKIE);
+}
 async function usuarioDaSessao(request, env) {
-  const token = cookie(request, COOKIE);
+  const token = tokenDaReq(request);
   if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
   const id = await sha256(token);
   const agora = Date.now();
@@ -143,10 +158,20 @@ async function login(request, env) {
     env.DB.prepare("UPDATE usuarios SET tentativas = 0, bloqueado_ate = 0, ultimo_acesso = ? WHERE id = ?").bind(agora, u.id),
     env.DB.prepare("DELETE FROM sessoes WHERE expira_em < ?").bind(agora)
   ]);
-  return json({ ok: true, nome: u.nome, destino: u.perfil === "tecnico" ? "/app" : null }, 200, { "set-cookie": cookieSessao(token, duracao(u.perfil) / 1e3) });
+  if (request.headers.get("x-sgo-app") === "1" && u.perfil !== "tecnico") {
+    return json({ erro: "O app é só para o perfil Técnico." }, 403);
+  }
+  const corpo = {
+    ok: true,
+    nome: u.nome,
+    perfil: u.perfil,
+    destino: u.perfil === "tecnico" ? "/app" : null
+  };
+  if (request.headers.get("x-sgo-app") === "1") corpo.token = token;
+  return json(corpo, 200, { "set-cookie": cookieSessao(token, duracao(u.perfil) / 1e3) });
 }
 async function logout(request, env) {
-  const token = cookie(request, COOKIE);
+  const token = tokenDaReq(request);
   if (token && /^[0-9a-f]{64}$/.test(token)) await env.DB.prepare("DELETE FROM sessoes WHERE id = ?").bind(await sha256(token)).run();
   return json({ ok: true }, 200, { "set-cookie": cookieSessao("", 0) });
 }
@@ -1409,9 +1434,46 @@ async function verFoto(env, caminho) {
   if (!obj) return json({ erro: "Foto n\xE3o encontrada" }, 404);
   return new Response(obj.body, { headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=86400", "x-content-type-options": "nosniff" } });
 }
+async function tecnicoFrota(request, env, url, u) {
+  const c = url.pathname, m = request.method;
+  if (c === "/api/tecnico/frota" && m === "GET") {
+    const { results } = await env.DB.prepare(
+      `SELECT v.id, v.name, v.plate, v.brand, v.model, v.current_odometer
+         FROM usuario_veiculos uv
+         JOIN fleet_vehicles v ON v.id = uv.vehicle_id
+        WHERE uv.usuario_id = ?
+        ORDER BY v.name COLLATE NOCASE`
+    ).bind(u.id).all();
+    return json({ ok: true, veiculos: results || [] });
+  }
+  if (c === "/api/tecnico/frota/km" && m === "POST") {
+    let b = {};
+    try { b = await lerJson(request, 4e3); } catch { return json({ erro: "Dados inválidos" }, 400); }
+    const vehicleId = parseInt(b.vehicleId, 10);
+    const odometer = Number(String(b.odometer ?? "").replace(",", "."));
+    const reason = txt(b.reason || b.usageReason || "Uso assistência", 200);
+    if (!(vehicleId > 0) || !(odometer >= 0)) return json({ erro: "Informe o veículo e o KM." }, 400);
+    const dono = await env.DB.prepare("SELECT 1 AS ok FROM usuario_veiculos WHERE usuario_id = ? AND vehicle_id = ?").bind(u.id, vehicleId).first();
+    if (!dono) return json({ erro: "Este veículo não está vinculado a você." }, 403);
+    const atual = await env.DB.prepare("SELECT current_odometer FROM fleet_vehicles WHERE id = ?").bind(vehicleId).first();
+    if (!atual) return json({ erro: "Veículo não encontrado." }, 404);
+    const prev = Number(atual.current_odometer || 0);
+    if (odometer + 0.05 < prev) return json({ erro: "O KM não pode ser menor que o atual do veículo (" + prev + ")." }, 400);
+    const agora = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO fleet_readings (vehicle_id, occurred_at, odometer, previous_odometer, kind, reason, profile, opened_at, odometer_open, usage_reason, notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(vehicleId, agora, odometer, prev, "daily_km", reason, "assistencia", agora, odometer, reason, txt(b.notes, 300) || null).run();
+    await env.DB.prepare("UPDATE fleet_vehicles SET current_odometer = ? WHERE id = ?").bind(odometer, vehicleId).run();
+    return json({ ok: true });
+  }
+  return null;
+}
 async function rotaTecnico(request, env, url, u) {
   const caminho = url.pathname;
   if (u.perfil !== "tecnico") return json({ erro: "Dispon\xEDvel s\xF3 para o perfil T\xE9cnico." }, 403);
+  const frota = await tecnicoFrota(request, env, url, u);
+  if (frota) return frota;
   if (caminho === "/api/tecnico/os" && request.method === "GET") {
     return json({ docs: await listar(env, u), agora: Date.now(), eu: { id: u.id, nome: u.nome, equipe: u.equipe } });
   }
@@ -3336,6 +3398,9 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const caminho = url.pathname;
+    const cors = corsDe(request);
+    corsDev = cors || {};
+    if (request.method === "OPTIONS" && cors) return new Response(null, { status: 204, headers: cors });
     if (caminho === "/api/health") {
       const row = await env.DB.prepare("SELECT MAX(versao) AS versao FROM schema_migracoes").first();
       return json({ ok: true, banco: "D1", versao_schema: row ? row.versao : null });

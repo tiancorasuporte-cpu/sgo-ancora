@@ -424,6 +424,38 @@
   border-bottom: 1px solid #f1f1ec;
 }
 
+.sgo-estoque .lin-cart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f1f1ec;
+}
+
+.sgo-estoque .lin-cart-nome {
+  min-width: 0;
+}
+
+.sgo-estoque .lin-cart-nome b {
+  display: block;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.sgo-estoque .lin-cart-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sgo-estoque .lin-cart-acoes .qin {
+  width: 72px;
+}
+
 @media (max-width: 700px) {
   .sgo-estoque .pag {
     padding: 14px 12px 30px;
