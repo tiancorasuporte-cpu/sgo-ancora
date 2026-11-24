@@ -1,0 +1,119 @@
+/* Lógica original da tela do SGO (executada pelo motor de telas isoladas: src/sgo/lib/tela-isolada.ts). */
+
+"use strict";
+var S = { d: null, v: "tudo", q: "", custo: false, qtd: {} };
+function $(s, r) { return (r || document).querySelector(s); }
+function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function partes(v) { var s = (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return s; }
+function norm(s) { return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
+function toast(t) { var e = $(".toast"); if (e) e.remove(); e = document.createElement("div"); e.className = "toast"; e.setAttribute("role", "status"); e.textContent = t; document.body.appendChild(e); setTimeout(function () { e.remove(); }, 2600); }
+function api(u) { return fetch(u, { credentials: "same-origin", headers: { "x-sgo": "1" } }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.erro || "Erro " + r.status); return j; }); }); }
+function marca(txt) { var t = esc(txt); if (!S.q) return t; var q = esc(S.q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); try { return t.replace(new RegExp("(" + q + ")", "ig"), "<mark>$1</mark>"); } catch (e) { return t; } }
+var ICONES = {
+  olho: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  escudo: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  pino: '<path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  predio: '<path d="M4 21V5l8-3v19M12 9h8v12M7 7h2M7 11h2M7 15h2M15 13h2M15 17h2M2 21h20"/>',
+  chave: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L20 3M17 6l3 3M14 9l2 2"/>',
+  camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
+  ia: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+  sinal: '<path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.2"/><path d="M2 9a14 14 0 0 1 20 0"/>',
+  relogio: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  sol: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  meio: '<path d="M3 18h18M12 6v2M5.6 9.6l1.4 1.4M18.4 9.6L17 11"/><path d="M7 18a5 5 0 0 1 10 0"/>',
+  ferramenta: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
+  moeda: '<circle cx="12" cy="12" r="9"/><path d="M14.8 9c-.5-.8-1.5-1.2-2.8-1.2-1.6 0-2.8.8-2.8 2 0 2.8 5.6 1.4 5.6 4.1 0 1.2-1.2 2.1-2.8 2.1-1.4 0-2.4-.5-2.9-1.3M12 6v1.8M12 16.2V18"/>'
+};
+function svg(n, s) { return '<svg aria-hidden="true" width="' + (s || 22) + '" height="' + (s || 22) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONES[n] || ICONES.moeda) + "</svg>"; }
+// cor e ícone por tipo de serviço
+function estilo(x) {
+  var t = norm([x.categoria, x.descricao].join(" "));
+  if (/inteligencia|\bia\b/.test(t)) return { ic: "ia", cor: "#6B2BB8", bg: "#F1E6FF", c2: "#6B2BB8" };
+  if (/rastre/.test(t)) return { ic: "pino", cor: "#1D4ED8", bg: "#E7EFFF", c2: "#1D4ED8" };
+  if (/portaria/.test(t)) return { ic: "predio", cor: "#141414", bg: "#FFF6CC", c2: "#141414" };
+  if (/controle de acesso|acesso/.test(t)) return { ic: "chave", cor: "#11694F", bg: "#E0F4EE", c2: "#11694F" };
+  if (/cftv|camera|câmera/.test(t)) return { ic: "camera", cor: "#B7791F", bg: "#FFF6D6", c2: "#8A5A10" };
+  if (/gprs/.test(t)) return { ic: "sinal", cor: "#0E7490", bg: "#E0F4F8", c2: "#0E7490" };
+  if (/monitor/.test(t)) return { ic: "escudo", cor: "#FFD200", bg: "#FFF6CC", c2: "#141414" };
+  return { ic: "moeda", cor: "#9a9a94", bg: "#F1F1EC", c2: "#141414" };
+}
+function estiloMO(x) { var u = norm(x.unidade); return u.indexOf("meio") >= 0 ? { ic: "meio", cor: "#B7791F" } : u === "dia" ? { ic: "sol", cor: "#FFD200" } : u === "hora" ? { ic: "relogio", cor: "#1D4ED8" } : { ic: "ferramenta", cor: "#141414" }; }
+function porUn(u) { var n = norm(u); return n === "mes" ? "/mês" : n === "hora" ? "/hora" : n === "dia" ? "/dia" : n.indexOf("meio") >= 0 ? "/meio dia" : n === "visita" ? "/visita" : "/" + String(u || "").toLowerCase(); }
+function inclusos(obs) { return String(obs || "").split(/\s*(?:\+|;|\n|•| e (?=[A-ZÁÉÍÓÚ]))\s*/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 1; }).slice(0, 5); }
+function bloqCusto(x) {
+  if (!S.custo || !S.d.verCusto) return "";
+  if (x.custo == null || !x.preco_venda) return '<div class="adm"><div class="r"><span>Custo</span><b>' + (x.custo == null ? "a definir" : brl(x.custo)) + "</b></div></div>";
+  var m = (x.preco_venda - x.custo) / x.preco_venda * 100;
+  return '<div class="adm"><div class="r"><span>Custo ' + brl(x.custo) + '</span><b>Margem ' + (Math.round(m * 10) / 10).toString().replace(".", ",") + '%</b></div><div class="mg' + (m < 0 ? " neg" : m < 30 ? " baixa" : "") + '"><i style="width:' + Math.max(2, Math.min(100, m)) + '%"></i></div></div>';
+}
+function precoHTML(x) {
+  if (x.preco_venda == null) return '<div class="def">Valor a definir</div>';
+  var p = partes(x.preco_venda).split(",");
+  return '<div class="preco"><span class="rs">R$</span><b>' + p[0] + '<small style="font-size:.5em">,' + p[1] + '</small></b><span class="por">' + porUn(x.unidade) + "</span></div>";
+}
+function cardSvc(x, i) {
+  var e = estilo(x), inc = inclusos(x.obs);
+  return '<button type="button" class="card" style="--cor:' + e.cor + ";--corbg:" + e.bg + ";--cor2:" + e.c2 + ";animation-delay:" + Math.min(i * 40, 400) + 'ms" data-copiar="svc:' + x.id + '"><div class="ctop"><span class="cic">' + svg(e.ic) + '</span><div><div class="ccod">' + esc(x.codigo) + (x.categoria ? " · " + marca(x.categoria) : "") + '</div><div class="cnome">' + marca(x.descricao) + "</div></div></div>" + precoHTML(x) + (inc.length ? '<ul class="inc">' + inc.map(function (s) { return "<li>" + marca(s) + "</li>"; }).join("") + "</ul>" : "") + bloqCusto(x) + '<div class="cfoot"><span class="ub">Mensal</span><span class="cp">' + svg("moeda", 14) + "Clique para copiar</span></div></button>";
+}
+function cardMO(x, i) {
+  var e = estiloMO(x);
+  return '<button type="button" class="card" style="--cor:' + e.cor + ";animation-delay:" + Math.min(i * 40, 400) + 'ms" data-copiar="mo:' + x.id + '"><div class="ctop"><span class="cic" style="background:#141414;color:#FFD200">' + svg(e.ic) + '</span><div><div class="ccod">' + esc(x.codigo) + (x.categoria ? " · " + marca(x.categoria) : "") + '</div><div class="cnome">' + marca(x.descricao) + "</div></div></div>" + precoHTML(x) + (x.obs ? '<div style="font-size:12.5px;color:#5a5a5a">' + marca(x.obs) + "</div>" : "") + bloqCusto(x) + '<div class="cfoot"><span class="ub">' + esc(x.unidade) + '</span><span class="cp">' + svg("moeda", 14) + "Clique para copiar</span></div></button>";
+}
+function filtra(l) { if (!S.q) return l; var q = norm(S.q); return l.filter(function (x) { return norm([x.codigo, x.descricao, x.categoria, x.obs, x.unidade].join(" ")).indexOf(q) >= 0; }); }
+function desenhar() {
+  var d = S.d, sv = filtra(d.servicos), mo = filtra(d.maoobra), h = "";
+  var comPreco = d.servicos.filter(function (x) { return x.preco_venda != null; });
+  var min = comPreco.length ? Math.min.apply(null, comPreco.map(function (x) { return x.preco_venda; })) : null;
+  $("#nums").innerHTML = '<div class="n"><b>' + d.servicos.length + '</b><span>serviços mensais</span></div><div class="n"><b>' + d.maoobra.length + '</b><span>itens de mão de obra</span></div>' + (min != null ? '<div class="n"><b>' + brl(min).replace(",00", "") + '</b><span>a partir de, por mês</span></div>' : "");
+  if (S.v !== "maoobra") {
+    h += '<section class="sec" aria-labelledby="h-svc"><div class="sech"><span class="ic">' + svg("escudo") + '</span><div><h2 id="h-svc">Serviços mensais</h2><div class="s">Valor cobrado por mês, por unidade contratada</div></div><span class="ln"></span></div>';
+    if (!sv.length) h += '<div class="vazio">' + (S.q ? "Nenhum serviço mensal com “" + esc(S.q) + "”." : 'Nenhum serviço mensal ativo. ' + (d.podeEditar.servicos ? 'Cadastre em <a href="#" data-ir="/cadastros/servicos">Cadastros › Serviços mensais</a>.' : "")) + "</div>";
+    else {
+      var cats = []; sv.forEach(function (x) { var c = x.categoria || "Outros serviços"; if (cats.indexOf(c) < 0) cats.push(c); });
+      var i = 0;
+      cats.forEach(function (c) {
+        var it = sv.filter(function (x) { return (x.categoria || "Outros serviços") === c; });
+        h += (cats.length > 1 ? '<div class="cat"><i style="background:' + estilo(it[0]).cor + '"></i>' + esc(c) + " · " + it.length + "</div>" : "") + '<div class="grade">' + it.map(function (x) { return cardSvc(x, i++); }).join("") + "</div>";
+      });
+    }
+    h += "</section>";
+  }
+  if (S.v !== "servicos") {
+    h += '<section class="sec mo" aria-labelledby="h-mo"><div class="sech"><span class="ic">' + svg("ferramenta") + '</span><div><h2 id="h-mo">Mão de obra</h2><div class="s">Valor de venda por hora, meio dia ou dia de serviço</div></div><span class="ln"></span></div>';
+    if (!mo.length) h += '<div class="vazio">' + (S.q ? "Nenhuma mão de obra com “" + esc(S.q) + "”." : 'Nenhuma mão de obra ativa. ' + (d.podeEditar.maoobra ? 'Cadastre em <a href="#" data-ir="/cadastros/maoobra">Cadastros › Mão de obra</a>.' : "")) + "</div>";
+    else {
+      h += '<div class="grade">' + mo.map(cardMO).join("") + "</div>";
+      var cal = d.maoobra.filter(function (x) { return x.preco_venda != null; });
+      if (cal.length) h += '<div class="calc"><div><h3>Calculadora de mão de obra</h3><div class="s" style="font-size:12.5px;color:#5a5a5a;margin-bottom:6px">Monte a quantidade para ter o valor na hora.</div>' + cal.map(function (x) { var q = S.qtd[x.id] || 0; return '<div class="cl"><div class="nm">' + esc(x.descricao) + "<small>" + brl(x.preco_venda) + " " + porUn(x.unidade) + '</small></div><span class="qt"><button type="button" data-m="' + x.id + '" aria-label="Menos">−</button><input inputmode="numeric" data-q="' + x.id + '" value="' + q + '" aria-label="Quantidade de ' + esc(x.descricao) + '"><button type="button" data-p="' + x.id + '" aria-label="Mais">+</button></span><span class="sub" id="st-' + x.id + '">' + brl(q * x.preco_venda) + "</span></div>"; }).join("") + '</div><div class="tot"><div><div class="k">Total da mão de obra</div><b id="c-tot">' + brl(totalCalc()) + '</b></div><div id="c-res" style="font-size:12.5px;color:#ddd"></div><button class="btn" type="button" id="c-cp">Copiar resumo</button></div></div>';
+    }
+    h += "</section>";
+  }
+  $("#conteudo").innerHTML = h;
+  resumoCalc();
+  ligar();
+}
+function totalCalc() { return S.d.maoobra.reduce(function (s, x) { return s + (S.qtd[x.id] || 0) * (x.preco_venda || 0); }, 0); }
+function linhasCalc() { return S.d.maoobra.filter(function (x) { return S.qtd[x.id] > 0 && x.preco_venda != null; }).map(function (x) { return S.qtd[x.id] + " × " + x.descricao + " (" + brl(x.preco_venda) + porUn(x.unidade) + ") = " + brl(S.qtd[x.id] * x.preco_venda); }); }
+function resumoCalc() { var e = $("#c-tot"); if (!e) return; e.textContent = brl(totalCalc()); var l = linhasCalc(); $("#c-res").textContent = l.length ? l.length + (l.length === 1 ? " item na conta" : " itens na conta") : "Use os botões + e − ao lado."; S.d.maoobra.forEach(function (x) { var s = $("#st-" + x.id); if (s) s.textContent = brl((S.qtd[x.id] || 0) * (x.preco_venda || 0)); }); }
+function copiar(t, ok) { (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast(ok); }).catch(function () { window.prompt("Copie o texto:", t); }); }
+function ligar() {
+  $$("[data-copiar]").forEach(function (b) { b.onclick = function () { var p = b.dataset.copiar.split(":"), l = p[0] === "svc" ? S.d.servicos : S.d.maoobra, x = l.filter(function (z) { return String(z.id) === p[1]; })[0]; if (!x) return; if (x.preco_venda == null) { toast("Este item ainda está sem valor de venda."); return; } copiar(x.descricao + ": " + brl(x.preco_venda) + porUn(x.unidade) + (p[0] === "svc" && x.obs ? " (" + x.obs + ")" : ""), "Preço copiado: " + x.descricao + " · " + brl(x.preco_venda) + porUn(x.unidade)); }; });
+  $$("[data-ir]").forEach(function (a) { a.onclick = function (e) { e.preventDefault(); try { parent.postMessage({ sgo: "ir", url: a.dataset.ir }, "*"); } catch (err) { location.href = a.dataset.ir; } }; });
+  function setQ(id, v) { S.qtd[id] = Math.max(0, Math.min(999, Math.round(v) || 0)); var i = $('[data-q="' + id + '"]'); if (i && document.activeElement !== i) i.value = S.qtd[id]; resumoCalc(); }
+  $$("[data-m]").forEach(function (b) { b.onclick = function () { setQ(b.dataset.m, (S.qtd[b.dataset.m] || 0) - 1); }; });
+  $$("[data-p]").forEach(function (b) { b.onclick = function () { setQ(b.dataset.p, (S.qtd[b.dataset.p] || 0) + 1); }; });
+  $$("[data-q]").forEach(function (i) { i.oninput = function () { setQ(i.dataset.q, parseInt(i.value, 10)); }; });
+  var cp = $("#c-cp"); if (cp) cp.onclick = function () { var l = linhasCalc(); if (!l.length) { toast("Escolha as quantidades primeiro."); return; } copiar("Mão de obra:\n" + l.join("\n") + "\nTotal: " + brl(totalCalc()), "Resumo da mão de obra copiado."); };
+}
+$$(".seg button").forEach(function (b) { b.onclick = function () { S.v = b.dataset.v; $$(".seg button").forEach(function (z) { z.classList.toggle("on", z === b); z.setAttribute("aria-pressed", z === b); }); desenhar(); }; });
+var tq; $("#q").oninput = function () { clearTimeout(tq); tq = setTimeout(function () { S.q = $("#q").value.trim(); desenhar(); }, 150); };
+$("#b-imp").onclick = function () { window.print(); };
+$("#b-custo").onclick = function () { S.custo = !S.custo; this.classList.toggle("on", S.custo); this.textContent = S.custo ? "Esconder custo e margem" : "Mostrar custo e margem"; desenhar(); };
+api("/api/precos").then(function (d) {
+  S.d = d; $("#b-custo").hidden = !d.verCusto;
+  $("#atual").textContent = d.atualizado ? "Valores atualizados em " + new Date(d.atualizado).toLocaleDateString("pt-BR") : "";
+  desenhar();
+}).catch(function (e) { $("#conteudo").innerHTML = '<div class="erro">' + esc(e.message) + "</div>"; });
+

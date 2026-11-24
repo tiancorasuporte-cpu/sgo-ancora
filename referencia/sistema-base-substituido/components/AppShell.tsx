@@ -1,0 +1,1016 @@
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+
+import { BrandLogo } from "@/components/BrandLogo";
+import { HelpChat } from "@/components/HelpChat";
+import { Icon } from "@/components/Icon";
+import { logoutFn } from "@/lib/auth";
+import { APP_NAME, APP_VERSION } from "@/lib/brand";
+import { getComprasUnreadFn } from "@/lib/compras";
+import { consumeLoginEnter } from "@/lib/login-enter";
+import { hasPermission, type AppPermissionId } from "@/lib/modules";
+import { isAdmin, isSuperadmin, canAccessModule, roleLabel } from "@/lib/require-auth";
+import { cn } from "@/lib/utils";
+import { Route as RootRoute } from "@/routes/__root";
+import type { AppUser } from "@/db/schema";
+import type { AppModuleId } from "@/lib/modules";
+
+type ComprasUnread = {
+  cotacoes: number;
+  kanban: number;
+  total: number;
+};
+
+const ShellSearchContext = createContext<{
+  query: string;
+  setQuery: (value: string) => void;
+}>({ query: "", setQuery: () => undefined });
+
+export function useShellSearch() {
+  return useContext(ShellSearchContext);
+}
+
+type NavPath =
+  | "/dashboard"
+  | "/vencimentos"
+  | "/orcamentos"
+  | "/orcamentos-postos"
+  | "/tabela-precos"
+  | "/produtos"
+  | "/contratos"
+  | "/facilities"
+  | "/terceiros"
+  | "/uniformes"
+  | "/estoque"
+  | "/compras"
+  | "/frota"
+  | "/assistencia"
+  | "/crm"
+  | "/equipes"
+  | "/tickets"
+  | "/notificacoes"
+  | "/settings"
+  | "/users";
+
+type NavLeaf = {
+  to: NavPath;
+  label: string;
+  icon: string;
+  adminOnly?: boolean;
+  module?: AppModuleId;
+  /** Permissão fina extra (além do módulo). */
+  permission?: AppPermissionId;
+  /** Query string simples, ex.: "view=agenda" */
+  search?: string;
+  badge?: string | number;
+  comingSoon?: boolean;
+};
+
+type NavEntry =
+  | ({ kind: "link" } & NavLeaf)
+  | {
+      kind: "group";
+      id: string;
+      label: string;
+      icon: string;
+      badge?: string | number;
+      children: NavLeaf[];
+    };
+
+const NAV: NavEntry[] = [
+  { kind: "link", to: "/dashboard", label: "Painel", icon: "dashboard", module: "dashboard" },
+  {
+    kind: "link",
+    to: "/tickets",
+    label: "Tickets",
+    icon: "confirmation_number",
+    module: "tickets",
+  },
+  {
+    kind: "group",
+    id: "cobranca",
+    label: "Cobrança",
+    icon: "payments",
+    children: [
+      { to: "/vencimentos", label: "Vencimentos", icon: "event", module: "vencimentos" },
+      { to: "/notificacoes", label: "Notificações", icon: "schedule", module: "notificacoes" },
+    ],
+  },
+  {
+    kind: "group",
+    id: "comercial",
+    label: "Comercial",
+    icon: "storefront",
+    children: [
+      { to: "/orcamentos", label: "Orçamentos", icon: "request_quote", module: "orcamentos" },
+      {
+        to: "/orcamentos-postos",
+        label: "Orçamento Postos",
+        icon: "apartment",
+        module: "orcamentos",
+      },
+      {
+        to: "/tabela-precos",
+        label: "Tabela de preços",
+        icon: "table_chart",
+        module: "orcamentos",
+      },
+      { to: "/produtos", label: "Produtos", icon: "inventory_2", module: "produtos" },
+      { to: "/contratos", label: "Contratos", icon: "handshake", module: "contratos" },
+      { to: "/crm", label: "CRM", icon: "view_kanban", module: "crm", search: "view=quadro" },
+      {
+        to: "/crm",
+        label: "Relatórios",
+        icon: "bar_chart",
+        module: "crm",
+        search: "view=relatorios",
+      },
+      {
+        to: "/crm",
+        label: "Comissões",
+        icon: "payments",
+        module: "crm",
+        permission: "crm_comissoes",
+        search: "view=comissoes",
+      },
+    ],
+  },
+  {
+    kind: "group",
+    id: "assistencia",
+    label: "Assistência Técnica",
+    icon: "handyman",
+    children: [
+      {
+        to: "/assistencia",
+        label: "Quadro de O.S",
+        icon: "view_kanban",
+        module: "assistencia",
+        search: "view=kanban",
+      },
+      {
+        to: "/assistencia",
+        label: "Agenda",
+        icon: "calendar_month",
+        module: "assistencia",
+        search: "view=agenda",
+      },
+      { to: "/equipes", label: "Equipes técnicas", icon: "groups", module: "equipes" },
+      {
+        to: "/assistencia",
+        label: "Relatórios de OS",
+        icon: "description",
+        module: "assistencia",
+        search: "view=rel",
+      },
+    ],
+  },
+  {
+    kind: "group",
+    id: "monitoramento",
+    label: "Monitoramento",
+    icon: "desktop_windows",
+    children: [
+      {
+        to: "/dashboard",
+        label: "Central",
+        icon: "monitoring",
+        module: "dashboard",
+        comingSoon: true,
+        badge: "EM BREVE",
+      },
+    ],
+  },
+  {
+    kind: "group",
+    id: "compras",
+    label: "Compras",
+    icon: "shopping_cart",
+    children: [
+      {
+        to: "/compras",
+        label: "Quadro",
+        icon: "view_kanban",
+        module: "compras",
+        search: "tab=kanban",
+      },
+      {
+        to: "/compras",
+        label: "Solicitar",
+        icon: "add_shopping_cart",
+        module: "compras",
+        search: "tab=solicitar",
+      },
+      {
+        to: "/compras",
+        label: "Histórico",
+        icon: "history",
+        module: "compras",
+        search: "tab=historico",
+      },
+    ],
+  },
+  {
+    kind: "group",
+    id: "operacoes",
+    label: "Operações",
+    icon: "home_work",
+    children: [
+      { to: "/facilities", label: "Facilities", icon: "apartment", module: "facilities" },
+      { to: "/terceiros", label: "Terceiros", icon: "handshake", module: "terceiros" },
+      { to: "/uniformes", label: "Uniformes", icon: "checkroom", module: "uniformes" },
+      { to: "/estoque", label: "Estoque", icon: "warehouse", module: "estoque" },
+      { to: "/frota", label: "Frota", icon: "directions_car", module: "frota" },
+    ],
+  },
+  { kind: "link", to: "/settings", label: "Configurações", icon: "settings", adminOnly: true },
+  { kind: "link", to: "/users", label: "Usuários", icon: "person", adminOnly: true },
+];
+
+function canSeeLeaf(user: AppUser | null, item: NavLeaf) {
+  if (!user) return false;
+  if (item.adminOnly) return isAdmin(user);
+  if (item.module && !canAccessModule(user, item.module)) return false;
+  if (item.permission === "crm_comissoes") {
+    return (
+      isAdmin(user) ||
+      hasPermission(user.modules, "crm_comissoes") ||
+      Boolean(user.isVendedor)
+    );
+  }
+  if (item.permission) {
+    return isAdmin(user) || hasPermission(user.modules, item.permission);
+  }
+  return true;
+}
+
+type SearchBag = Record<string, unknown>;
+
+function readSearchParam(params: SearchBag | undefined, key: string) {
+  if (!params) return null;
+  const value = params[key];
+  if (value == null) return null;
+  return String(value);
+}
+
+/** Usa search do router (SSR + client iguais) — nunca `window.location` (causava hydration mismatch / aba travada). */
+function isPathActive(
+  pathname: string,
+  to: string,
+  search: string | undefined,
+  params?: SearchBag,
+) {
+  const pathOk = pathname === to || pathname.startsWith(`${to}/`);
+  if (!pathOk) return false;
+  if (!search) {
+    if (to === "/assistencia") {
+      const view = readSearchParam(params, "view");
+      return !view || view === "kanban";
+    }
+    if (to === "/compras") {
+      const tab = readSearchParam(params, "tab");
+      return !tab || tab === "kanban";
+    }
+    return true;
+  }
+  const wanted = new URLSearchParams(search);
+  for (const [key, value] of wanted.entries()) {
+    const current = readSearchParam(params, key);
+    if (key === "view" && value === "kanban") {
+      if (current && current !== "kanban") return false;
+      continue;
+    }
+    if (key === "tab" && value === "kanban" && to === "/compras") {
+      if (current && current !== "kanban") return false;
+      continue;
+    }
+    if (current !== value) return false;
+  }
+  return true;
+}
+
+function applyComprasUnreadBadges(
+  entries: NavEntry[],
+  unread: ComprasUnread | null,
+): NavEntry[] {
+  if (!unread || unread.total <= 0) return entries;
+  return entries.map((entry) => {
+    if (entry.kind !== "group" || entry.id !== "compras") return entry;
+    return {
+      ...entry,
+      badge: unread.total > 99 ? "99+" : unread.total,
+      children: entry.children.map((child) => {
+        if (child.search === "tab=kanban" && unread.total > 0) {
+          return { ...child, badge: unread.total > 99 ? "99+" : unread.total };
+        }
+        return child;
+      }),
+    };
+  });
+}
+
+function visibleNav(user: AppUser | null, unread?: ComprasUnread | null): NavEntry[] {
+  const out: NavEntry[] = [];
+  for (const entry of NAV) {
+    if (entry.kind === "link") {
+      if (canSeeLeaf(user, entry)) out.push(entry);
+      continue;
+    }
+    const children = entry.children.filter((child) => canSeeLeaf(user, child));
+    if (children.length) out.push({ ...entry, children });
+  }
+  return applyComprasUnreadBadges(out, unread ?? null);
+}
+
+function leafItems(
+  user: AppUser | null,
+  opts?: { includeAdmin?: boolean; comprasUnread?: ComprasUnread | null },
+) {
+  const includeAdmin = opts?.includeAdmin ?? false;
+  const leaves: NavLeaf[] = [];
+  for (const entry of visibleNav(user, opts?.comprasUnread ?? null)) {
+    if (entry.kind === "link") {
+      if (!includeAdmin && entry.adminOnly) continue;
+      if (entry.comingSoon) continue;
+      leaves.push(entry);
+      continue;
+    }
+    for (const child of entry.children) {
+      if (child.comingSoon) continue;
+      // No mobile: um atalho por path (ex.: Quadro de OS cobre Assistência).
+      if (leaves.some((l) => l.to === child.to && !child.search)) continue;
+      if (child.search && leaves.some((l) => l.to === child.to)) continue;
+      if (entry.kind === "group" && entry.id === "compras") {
+        leaves.push({
+          ...child,
+          label: "Compras",
+          icon: entry.icon,
+          search: undefined,
+          ...(entry.badge != null ? { badge: entry.badge } : {}),
+        });
+        continue;
+      }
+      leaves.push(child);
+    }
+  }
+  return leaves;
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "U";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]!.slice(0, 1)}${parts[parts.length - 1]!.slice(0, 1)}`.toUpperCase();
+}
+
+const SIDEBAR_COLLAPSED_KEY = "ancora.sidebar.collapsed";
+/** Largura do menu lateral no visual CRM (.side = 220px). */
+const SIDEBAR_WIDTH = 220;
+const SIDEBAR_COLLAPSED_WIDTH = 64;
+
+function NavBadge({ value }: { value: string | number }) {
+  const soon = String(value).toUpperCase() === "EM BREVE";
+  const numeric = typeof value === "number" || /^\d+\+?$/.test(String(value));
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide",
+        soon
+          ? "bg-white/15 uppercase text-white/65"
+          : numeric
+            ? "bg-secondary-container text-on-secondary-container"
+            : "bg-secondary-container uppercase text-on-secondary-container",
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+function NavLinkItem({
+  item,
+  pathname,
+  searchParams,
+  onNavigate,
+  nested = false,
+  collapsed = false,
+}: {
+  item: NavLeaf;
+  pathname: string;
+  searchParams?: SearchBag;
+  onNavigate?: (() => void) | undefined;
+  nested?: boolean;
+  collapsed?: boolean;
+}) {
+  const navigate = useNavigate();
+  const active = !item.comingSoon && isPathActive(pathname, item.to, item.search, searchParams);
+  const className = cn(
+    "flex items-center gap-2 rounded-[7px] py-[7px] text-[13px] transition-colors",
+    collapsed ? "justify-center px-2" : nested ? "px-2.5 pl-5" : "px-2.5",
+    item.comingSoon
+      ? "cursor-default text-[#777]"
+      : active
+        ? "bg-secondary-container font-semibold text-on-secondary-container"
+        : "text-[#ccc] hover:bg-white/10 hover:text-white",
+  );
+
+  const body = (
+    <>
+      <span className="relative shrink-0">
+        <Icon name={item.icon} filled={active} className="text-[20px]" />
+        {collapsed && item.badge != null ? (
+          <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-secondary-container" />
+        ) : null}
+      </span>
+      {!collapsed ? (
+        <>
+          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+          {item.badge != null ? <NavBadge value={item.badge} /> : null}
+        </>
+      ) : null}
+    </>
+  );
+
+  if (item.comingSoon) {
+    return (
+      <div
+        title={collapsed ? `${item.label} (em breve)` : "Em breve"}
+        className={className}
+        aria-disabled
+      >
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      to={item.to}
+      onClick={(e) => {
+        if (item.search) {
+          e.preventDefault();
+          const params = Object.fromEntries(new URLSearchParams(item.search).entries());
+          void navigate({
+            to: item.to,
+            search: (prev) => ({ ...prev, ...params }),
+          });
+        }
+        onNavigate?.();
+      }}
+      title={collapsed ? item.label : undefined}
+      className={className}
+    >
+      {body}
+    </Link>
+  );
+}
+
+function NavGroupItem({
+  entry,
+  pathname,
+  searchParams,
+  onNavigate,
+  collapsed = false,
+}: {
+  entry: Extract<NavEntry, { kind: "group" }>;
+  pathname: string;
+  searchParams?: SearchBag;
+  onNavigate?: (() => void) | undefined;
+  collapsed?: boolean;
+}) {
+  const childActive = entry.children.some((child) =>
+    isPathActive(pathname, child.to, child.search, searchParams),
+  );
+  const [open, setOpen] = useState(childActive);
+
+  useEffect(() => {
+    if (childActive) setOpen(true);
+  }, [childActive, pathname]);
+
+  if (collapsed) {
+    return (
+      <div className="space-y-0.5">
+        {entry.children.map((child) => (
+          <NavLinkItem
+            key={`${child.to}?${child.search ?? ""}:${child.label}`}
+            item={child}
+            pathname={pathname}
+            searchParams={searchParams}
+            onNavigate={onNavigate}
+            collapsed
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-[7px] px-2.5 py-[7px] text-left text-[13px] transition-colors",
+          childActive
+            ? "bg-white/10 font-semibold text-secondary-container"
+            : "text-[#ccc] hover:bg-white/10 hover:text-white",
+        )}
+      >
+        <Icon name={entry.icon} filled={childActive} className="text-[20px]" />
+        <span className="flex-1">{entry.label}</span>
+        {entry.badge != null ? <NavBadge value={entry.badge} /> : null}
+        <Icon
+          name={open ? "expand_less" : "expand_more"}
+          className="text-lg text-[#888]"
+        />
+      </button>
+      {open ? (
+        <div className="space-y-0.5">
+          {entry.children.map((child) => (
+            <NavLinkItem
+              key={`${child.to}?${child.search ?? ""}:${child.label}`}
+              item={child}
+              pathname={pathname}
+              searchParams={searchParams}
+              onNavigate={onNavigate}
+              nested
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function NavList({
+  pathname,
+  searchParams,
+  user,
+  onNavigate,
+  collapsed = false,
+  comprasUnread = null,
+}: {
+  pathname: string;
+  searchParams?: SearchBag;
+  user: AppUser | null;
+  onNavigate?: (() => void) | undefined;
+  collapsed?: boolean;
+  comprasUnread?: ComprasUnread | null;
+}) {
+  const items = visibleNav(user, comprasUnread);
+  return (
+    <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
+      {items.map((entry) =>
+        entry.kind === "link" ? (
+          <NavLinkItem
+            key={`${entry.to}-${entry.search ?? ""}`}
+            item={entry}
+            pathname={pathname}
+            searchParams={searchParams}
+            onNavigate={onNavigate}
+            collapsed={collapsed}
+          />
+        ) : (
+          <NavGroupItem
+            key={entry.id}
+            entry={entry}
+            pathname={pathname}
+            searchParams={searchParams}
+            onNavigate={onNavigate}
+            collapsed={collapsed}
+          />
+        ),
+      )}
+    </nav>
+  );
+}
+
+function MobileBottomNav({
+  pathname,
+  searchParams,
+  user,
+  comprasUnread = null,
+}: {
+  pathname: string;
+  searchParams?: SearchBag;
+  user: AppUser | null;
+  comprasUnread?: ComprasUnread | null;
+}) {
+  const items = leafItems(user, { includeAdmin: false, comprasUnread });
+  if (items.length === 0) return null;
+
+  return (
+    <nav
+      aria-label="Módulos"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-outline-variant bg-white md:hidden"
+      style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+    >
+      <div className="flex items-stretch overflow-x-auto px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {items.map((item) => {
+          const active = isPathActive(pathname, item.to, item.search, searchParams);
+          return (
+            <Link
+              key={`${item.to}?${item.search ?? ""}`}
+              to={item.to}
+              className={cn(
+                "flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-0.5 px-2 py-2 text-center transition-colors",
+                active
+                  ? "text-on-secondary-container"
+                  : "text-on-surface-variant active:bg-surface-container-high",
+              )}
+            >
+              <span
+                className={cn(
+                  "relative flex h-8 w-8 items-center justify-center rounded-[7px] transition-colors",
+                  active && "bg-secondary-container text-on-secondary-container",
+                )}
+              >
+                <Icon name={item.icon} filled={active} className="text-[22px]" />
+                {item.badge != null ? (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-secondary-container px-1 text-[0.6rem] font-bold text-on-secondary-container">
+                    {item.badge}
+                  </span>
+                ) : null}
+              </span>
+              <span
+                className={cn(
+                  "max-w-[4.75rem] truncate text-[0.65rem] leading-tight",
+                  active ? "font-semibold" : "font-medium",
+                )}
+              >
+                {item.label}
+              </span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function SidebarInner({
+  onNavigate,
+  pathname,
+  searchParams,
+  user,
+  collapsed = false,
+  onToggleCollapsed,
+  comprasUnread = null,
+}: {
+  onNavigate?: (() => void) | undefined;
+  pathname: string;
+  searchParams?: SearchBag;
+  user: AppUser | null;
+  collapsed?: boolean;
+  onToggleCollapsed?: (() => void) | undefined;
+  comprasUnread?: ComprasUnread | null;
+}) {
+  const navigate = useNavigate();
+
+  return (
+    <div className={cn("flex h-full flex-col gap-0.5 py-3.5", collapsed ? "px-1.5" : "px-2.5")}>
+      <div
+        className={cn(
+          "mb-4 flex items-center gap-2",
+          collapsed ? "justify-center px-0" : "px-2",
+        )}
+      >
+        <BrandLogo
+          className={cn("w-auto shrink-0", collapsed ? "h-9" : "h-10")}
+        />
+        {!collapsed ? (
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[14px] font-bold tracking-wide text-white">{APP_NAME}</p>
+            <p className="text-[11px] uppercase tracking-[0.08em] text-[#888]">
+              Gestão operacional
+            </p>
+          </div>
+        ) : null}
+        {collapsed ? <span className="sr-only">{APP_NAME}</span> : null}
+      </div>
+
+      {onToggleCollapsed ? (
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Expandir menu" : "Encolher menu"}
+          title={collapsed ? "Expandir menu" : "Encolher menu"}
+          className={cn(
+            "mb-2 flex items-center gap-2 rounded-[7px] py-[7px] text-[13px] text-[#ccc] transition-colors hover:bg-white/10 hover:text-white",
+            collapsed ? "justify-center px-2" : "px-2.5",
+          )}
+        >
+          <Icon
+            name={collapsed ? "keyboard_double_arrow_right" : "keyboard_double_arrow_left"}
+            className="text-[20px]"
+          />
+          {!collapsed ? <span>Encolher</span> : null}
+        </button>
+      ) : null}
+
+      <NavList
+        pathname={pathname}
+        searchParams={searchParams}
+        user={user}
+        onNavigate={onNavigate}
+        collapsed={collapsed}
+        comprasUnread={comprasUnread}
+      />
+
+      <div className="mt-auto space-y-1 border-t border-white/10 pt-3">
+        <button
+          type="button"
+          title={collapsed ? "Sair" : undefined}
+          onClick={async () => {
+            onNavigate?.();
+            await logoutFn();
+            await navigate({ to: "/" });
+          }}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-[7px] py-[7px] text-left text-[13px] text-[#ccc] transition-colors hover:bg-white/10 hover:text-white",
+            collapsed ? "justify-center px-2" : "px-2.5",
+          )}
+        >
+          <Icon name="logout" className="text-[20px]" />
+          {!collapsed ? <span>Sair</span> : null}
+        </button>
+        {isSuperadmin(user) && !collapsed ? (
+          <p className="px-2.5 pt-2 text-[10px] uppercase tracking-[0.08em] text-[#888]">
+            Superadmin
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ProfileMenu({ user }: { user: AppUser | null }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onClick(event: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+
+  if (!user) return null;
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button
+        type="button"
+        aria-label="Perfil"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1 rounded-[8px] p-1 transition-colors hover:bg-surface-container-high focus:outline-none focus:ring-2 focus:ring-secondary-container"
+      >
+        <span className="flex h-8 w-8 items-center justify-center rounded-[8px] bg-secondary-container text-[12px] font-bold text-on-secondary-container">
+          {initials(user.name)}
+        </span>
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-[14px] border border-outline-variant bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]">
+          <div className="border-b border-outline-variant px-3.5 py-2.5">
+            <p className="truncate text-[16px] font-semibold text-primary">{user.name}</p>
+            <p className="text-[12px] text-on-surface-variant">{roleLabel(user.role)}</p>
+            <p className="mt-1 text-[11px] tabular-nums text-on-surface-variant">
+              Versão {APP_VERSION}
+            </p>
+          </div>
+          <Link
+            to="/profile"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] text-on-surface hover:bg-surface-container-low"
+          >
+            <Icon name="person" className="text-sm" />
+            Meu perfil
+          </Link>
+          {isAdmin(user) ? (
+            <Link
+              to="/users"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] text-on-surface hover:bg-surface-container-low"
+            >
+              <Icon name="manage_accounts" className="text-sm" />
+              Usuários
+            </Link>
+          ) : null}
+          <button
+            type="button"
+            onClick={async () => {
+              setOpen(false);
+              await logoutFn();
+              await navigate({ to: "/" });
+            }}
+            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] text-on-surface hover:bg-surface-container-low"
+          >
+            <Icon name="logout" className="text-sm" />
+            Sair
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function AppShell({
+  children,
+  mobileTitle,
+  searchPlaceholder = "Buscar...",
+  fullHeight = false,
+}: {
+  children: ReactNode;
+  mobileTitle: string;
+  searchPlaceholder?: string;
+  /** Preenche a viewport e evita scroll da página (ex.: inbox de conversas). */
+  fullHeight?: boolean;
+}) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const searchParams = useRouterState({
+    select: (s) => s.location.search as SearchBag,
+  });
+  const { user } = RootRoute.useRouteContext();
+  const [open, setOpen] = useState(false);
+  // Sempre false no 1º paint (SSR=client) — localStorage só depois do mount (evita hydration freeze).
+  const [collapsed, setCollapsed] = useState(false);
+  const [query, setQuery] = useState("");
+  const [enterAnim, setEnterAnim] = useState(false);
+  const [comprasUnread, setComprasUnread] = useState<ComprasUnread | null>(null);
+  const search = useMemo(() => ({ query, setQuery }), [query]);
+  const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
+  const canSeeCompras = canAccessModule(user, "compras");
+
+  useEffect(() => {
+    setQuery("");
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!consumeLoginEnter()) return;
+    setEnterAnim(true);
+    const timer = window.setTimeout(() => setEnterAnim(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const collapsedReady = useRef(false);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1") setCollapsed(true);
+    } catch {
+      // ignore
+    }
+    collapsedReady.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!collapsedReady.current) return;
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [collapsed]);
+
+  useEffect(() => {
+    if (!canSeeCompras) {
+      setComprasUnread(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadUnread() {
+      try {
+        const next = await getComprasUnreadFn();
+        if (!cancelled) setComprasUnread(next);
+      } catch {
+        if (!cancelled) setComprasUnread(null);
+      }
+    }
+    void loadUnread();
+    const timer = window.setInterval(() => void loadUnread(), 45_000);
+    function onChanged() {
+      void loadUnread();
+    }
+    window.addEventListener("compras-unread-changed", onChanged);
+    window.addEventListener("focus", onChanged);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("compras-unread-changed", onChanged);
+      window.removeEventListener("focus", onChanged);
+    };
+  }, [canSeeCompras, pathname]);
+
+  return (
+    <ShellSearchContext.Provider value={search}>
+      <div
+        className={cn(
+          "relative flex bg-background text-on-background",
+          fullHeight ? "h-dvh overflow-hidden" : "min-h-screen",
+          /* sem fill-mode both: transform residual cria containing block e corta position:fixed (drawer CRM) */
+          enterAnim && "animate-[shell-enter_0.85s_cubic-bezier(0.22,1,0.36,1)]",
+        )}
+      >
+        {/* Desktop: sidebar CRM (.side) — ink #141414, item ativo brand. */}
+        <aside
+          className="sticky top-0 z-40 hidden h-dvh shrink-0 bg-primary transition-[width] duration-200 ease-out md:block"
+          style={{ width: sidebarWidth }}
+        >
+          <SidebarInner
+            pathname={pathname}
+            searchParams={searchParams}
+            user={user}
+            collapsed={collapsed}
+            onToggleCollapsed={() => setCollapsed((value) => !value)}
+            comprasUnread={comprasUnread}
+          />
+        </aside>
+
+        {open ? (
+          <div className="fixed inset-0 z-50 md:hidden">
+            <button
+              aria-label="Fechar menu"
+              className="absolute inset-0 bg-black/35"
+              onClick={() => setOpen(false)}
+            />
+            <div className="absolute left-0 top-0 h-full w-[220px] bg-primary">
+              <SidebarInner
+                pathname={pathname}
+                searchParams={searchParams}
+                user={user}
+                onNavigate={() => setOpen(false)}
+                comprasUnread={comprasUnread}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col bg-background",
+            fullHeight ? "h-dvh min-h-0 overflow-hidden" : "min-h-screen",
+          )}
+        >
+          <header className="z-30 flex w-full shrink-0 items-center justify-between gap-3 border-b border-outline-variant bg-white px-4 py-3.5 md:sticky md:top-0 md:px-5">
+            <button
+              type="button"
+              aria-label="Abrir menu"
+              onClick={() => setOpen(true)}
+              className="rounded-[8px] p-2 text-on-surface transition-colors hover:bg-surface-container md:hidden"
+            >
+              <Icon name="menu" />
+            </button>
+
+            <div className="hidden min-w-0 max-w-[28rem] flex-1 items-center md:flex">
+              <div className="relative w-full">
+                <Icon
+                  name="search"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-variant"
+                />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={searchPlaceholder}
+                  className="input-glow w-full rounded-[8px] border border-outline-variant bg-white py-[7px] pl-9 pr-2.5 text-[14px] text-on-surface outline-none transition-all placeholder:text-on-surface-variant focus:border-primary focus:bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="text-[18px] font-bold tracking-tight text-primary md:hidden">
+              {mobileTitle}
+            </div>
+            <ProfileMenu user={user} />
+          </header>
+          {fullHeight ? (
+            <div className="@container flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(4.75rem+env(safe-area-inset-bottom,0px))] md:pb-0">
+              {children}
+            </div>
+          ) : (
+            <div className="@container pb-[calc(4.75rem+env(safe-area-inset-bottom,0px))] md:pb-0">
+              {children}
+            </div>
+          )}
+        </div>
+        <MobileBottomNav
+          pathname={pathname}
+          searchParams={searchParams}
+          user={user}
+          comprasUnread={comprasUnread}
+        />
+        {!fullHeight ? <HelpChat /> : null}
+      </div>
+    </ShellSearchContext.Provider>
+  );
+}

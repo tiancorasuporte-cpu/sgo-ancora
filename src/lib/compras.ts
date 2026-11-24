@@ -1,0 +1,627 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+
+import { hasPermission } from "@/lib/modules";
+
+const origemSchema = z.enum(["manual", "orcamento", "os", "uniforme"]);
+
+const solicitacaoItemSchema = z.object({
+  descricao: z.string().trim().min(1).max(400).optional(),
+  unidade: z.string().trim().max(40).optional().nullable(),
+  qtd: z.number().positive(),
+  productId: z.number().int().positive().optional().nullable(),
+  omieAppId: z.string().trim().min(1).optional().nullable(),
+  codigoProduto: z.number().int().positive().optional().nullable(),
+  observacao: z.string().trim().max(2000).optional().nullable(),
+});
+const statusSchema = z.enum([
+  "aberta",
+  "em_cotacao",
+  "comprada",
+  "finalizado",
+  "cancelada",
+]);
+
+function canActAsComprador(user: {
+  role: string;
+  isComprador?: boolean;
+  modules?: string[] | null;
+}) {
+  if (user.role === "admin" || user.role === "superadmin") return true;
+  if (user.isComprador) return true;
+  return hasPermission(user.modules as never, "os_compras");
+}
+
+export const getComprasBootstrapFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { requireModule } = await import("@/lib/require-auth");
+  const { user } = await requireModule("compras");
+  const { ensureSchema } = await import("@/db/schema");
+  await ensureSchema();
+  const {
+    listCompraSolicitacoes,
+    getComprasUnreadSummary,
+    backfillOsCompraSolicitacoes,
+    listCotacaoPropostasForSolicitacoes,
+  } = await import("@/db/compras");
+  const { listOmieSuppliers } = await import("@/db/suppliers");
+
+  await backfillOsCompraSolicitacoes({
+    solicitadoPor: user.id,
+    solicitadoPorNome: user.name,
+  });
+
+  const [abertas, historico, suppliers, unread] = await Promise.all([
+    listCompraSolicitacoes({
+      status: ["aberta", "em_cotacao", "comprada"],
+      limit: 400,
+    }),
+    listCompraSolicitacoes({ status: ["finalizado", "cancelada"], limit: 500 }),
+    listOmieSuppliers({ activeOnly: true, limit: 400 }),
+    getComprasUnreadSummary(),
+  ]);
+  const propostas = await listCotacaoPropostasForSolicitacoes([
+    ...abertas.map((r) => r.id),
+    ...historico.filter((r) => r.status === "finalizado").slice(0, 80).map((r) => r.id),
+  ]);
+
+  return {
+    user: {
+      id: user.id,
+      name: user.name,
+      isComprador: Boolean(user.isComprador),
+      canComprar: canActAsComprador(user),
+    },
+    abertas,
+    historico,
+    osQueue: [],
+    propostas,
+    unread,
+    suppliers: suppliers.map((s) => ({
+      id: s.id,
+      name: s.nomeFantasia || s.razaoSocial || `Fornecedor ${s.codigoOmie}`,
+      codigoOmie: s.codigoOmie,
+    })),
+  };
+});
+
+export const getComprasUnreadFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { requireModule } = await import("@/lib/require-auth");
+  try {
+    await requireModule("compras");
+  } catch {
+    return { cotacoes: 0, kanban: 0, total: 0 };
+  }
+  const { ensureSchema } = await import("@/db/schema");
+  await ensureSchema();
+  const { getComprasUnreadSummary } = await import("@/db/compras");
+  return getComprasUnreadSummary();
+});
+
+export const markComprasSeenFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        cotacoes: z.boolean().optional(),
+        kanban: z.boolean().optional(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    await requireModule("compras");
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { markComprasAsSeen } = await import("@/db/compras");
+    return markComprasAsSeen({
+      cotacoes: data.cotacoes,
+      kanban: data.kanban,
+    });
+  });
+
+export const listCotacoesOrcamentoFn = createServerFn({ method: "GET" })
+  .validator((input) =>
+    z
+      .object({
+        quoteId: z.number().int().positive().optional().nullable(),
+        quoteNumero: z.string().trim().max(40).optional().nullable(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    try {
+      await requireModule("orcamentos");
+    } catch {
+      await requireModule("compras");
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { listCompraSolicitacoesForQuote } = await import("@/db/compras");
+    return listCompraSolicitacoesForQuote({
+      quoteId: data.quoteId ?? null,
+      quoteNumero: data.quoteNumero ?? null,
+    });
+  });
+
+export const searchComprasProductsFn = createServerFn({ method: "GET" })
+  .validator((input) =>
+    z
+      .object({
+        query: z.string().trim().min(2),
+        limit: z.coerce.number().int().min(1).max(80).optional(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    try {
+      await requireModule("compras");
+    } catch {
+      await requireModule("orcamentos");
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { listOmieApps, requireOrcamentosOmieApp } = await import("@/server/omie/client");
+    const { listOmieProducts } = await import("@/db/products");
+    let omieAppId = "";
+    try {
+      omieAppId = requireOrcamentosOmieApp().id;
+    } catch {
+      omieAppId = listOmieApps()[0]?.id ?? "";
+    }
+    if (!omieAppId) return [];
+    return listOmieProducts({
+      omieAppId,
+      query: data.query,
+      limit: data.limit ?? 40,
+      activeOnly: true,
+    });
+  });
+
+export const searchComprasSuppliersFn = createServerFn({ method: "GET" })
+  .validator((input) =>
+    z
+      .object({
+        query: z.string().trim().min(2),
+        limit: z.coerce.number().int().min(1).max(80).optional(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    await requireModule("compras");
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { listOmieSuppliers } = await import("@/db/suppliers");
+    const rows = await listOmieSuppliers({
+      query: data.query,
+      activeOnly: true,
+      limit: data.limit ?? 40,
+    });
+    return rows.map((s) => ({
+      id: s.id,
+      name: s.nomeFantasia || s.razaoSocial || `Fornecedor ${s.codigoOmie}`,
+      razaoSocial: s.razaoSocial,
+      cnpjCpf: s.cnpjCpf,
+      codigoOmie: s.codigoOmie,
+    }));
+  });
+
+export const createCompraSolicitacaoFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        origem: origemSchema.default("manual"),
+        descricao: z.string().trim().min(1).max(400).optional(),
+        unidade: z.string().trim().max(40).optional().nullable(),
+        qtd: z.number().positive(),
+        productId: z.number().int().positive().optional().nullable(),
+        omieAppId: z.string().trim().min(1).optional().nullable(),
+        codigoProduto: z.number().int().positive().optional().nullable(),
+        quoteId: z.number().int().positive().optional().nullable(),
+        quoteNumero: z.string().trim().max(40).optional().nullable(),
+        motivo: z.string().trim().max(2000).optional().nullable(),
+        links: z.array(z.string().trim().max(500)).max(10).optional().nullable(),
+        observacao: z.string().trim().max(2000).optional().nullable(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    // Compras, Orçamentos e Uniformes podem abrir solicitação/cotação
+    let user;
+    try {
+      ({ user } = await requireModule("compras"));
+    } catch {
+      try {
+        ({ user } = await requireModule("orcamentos"));
+      } catch {
+        ({ user } = await requireModule("uniformes"));
+      }
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { createCompraSolicitacao } = await import("@/db/compras");
+    try {
+      const row = await createCompraSolicitacao({
+        origem: data.origem,
+        ...(data.descricao != null ? { descricao: data.descricao } : {}),
+        unidade: data.unidade ?? null,
+        qtd: data.qtd,
+        productId: data.productId ?? null,
+        omieAppId: data.omieAppId ?? null,
+        codigoProduto: data.codigoProduto ?? null,
+        quoteId: data.quoteId ?? null,
+        quoteNumero: data.quoteNumero ?? null,
+        motivo: data.motivo ?? null,
+        links: data.links ?? null,
+        observacao: data.observacao ?? null,
+        solicitadoPor: user.id,
+        solicitadoPorNome: user.name,
+      });
+      return { ok: true as const, solicitacao: row };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao criar solicitação.",
+      };
+    }
+  });
+
+async function resolveComprasCreator() {
+  const { requireModule } = await import("@/lib/require-auth");
+  try {
+    return await requireModule("compras");
+  } catch {
+    try {
+      return await requireModule("orcamentos");
+    } catch {
+      return await requireModule("uniformes");
+    }
+  }
+}
+
+export const createCompraSolicitacoesLoteFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        origem: origemSchema.default("manual"),
+        items: z.array(solicitacaoItemSchema).min(1).max(80),
+        quoteId: z.number().int().positive().optional().nullable(),
+        quoteNumero: z.string().trim().max(40).optional().nullable(),
+        motivo: z.string().trim().max(2000).optional().nullable(),
+        links: z.array(z.string().trim().max(500)).max(10).optional().nullable(),
+        observacao: z.string().trim().max(2000).optional().nullable(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { user } = await resolveComprasCreator();
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { createCompraSolicitacoesLote } = await import("@/db/compras");
+    try {
+      const solicitacao = await createCompraSolicitacoesLote({
+        origem: data.origem,
+        items: data.items.map((item) => ({
+          ...(item.descricao != null ? { descricao: item.descricao } : {}),
+          unidade: item.unidade ?? null,
+          qtd: item.qtd,
+          productId: item.productId ?? null,
+          omieAppId: item.omieAppId ?? null,
+          codigoProduto: item.codigoProduto ?? null,
+          observacao: item.observacao ?? null,
+        })),
+        quoteId: data.quoteId ?? null,
+        quoteNumero: data.quoteNumero ?? null,
+        motivo: data.motivo ?? null,
+        links: data.links ?? null,
+        observacao: data.observacao ?? null,
+        solicitadoPor: user.id,
+        solicitadoPorNome: user.name,
+      });
+      return {
+        ok: true as const,
+        solicitacao,
+        /** @deprecated use solicitacao — mantido para callers que esperavam array */
+        solicitacoes: [solicitacao],
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao criar solicitações em lote.",
+      };
+    }
+  });
+
+export const setCompraStatusFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        id: z.number().int().positive(),
+        status: statusSchema,
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user) && data.status !== "cancelada") {
+      return { ok: false as const, error: "Somente compradores podem alterar esta cotação." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { setCompraSolicitacaoStatus } = await import("@/db/compras");
+    const row = await setCompraSolicitacaoStatus(data);
+    if (!row) return { ok: false as const, error: "Solicitação não encontrada." };
+    return { ok: true as const, solicitacao: row };
+  });
+
+export const listCotacaoPropostasFn = createServerFn({ method: "GET" })
+  .validator((input) =>
+    z.object({ solicitacaoId: z.coerce.number().int().positive() }).parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    await requireModule("compras");
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { listCotacaoPropostas } = await import("@/db/compras");
+    return listCotacaoPropostas(data.solicitacaoId);
+  });
+
+export const saveCotacaoPropostaFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        id: z.number().int().positive().optional().nullable(),
+        solicitacaoId: z.number().int().positive(),
+        itemId: z.number().int().positive().optional().nullable(),
+        supplierId: z.number().int().positive().optional().nullable(),
+        supplierName: z.string().trim().min(1).max(200),
+        valorUnitario: z.number().nonnegative(),
+        previsao: z.string().trim().max(10).optional().nullable(),
+        observacao: z.string().trim().max(2000).optional().nullable(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user)) {
+      return { ok: false as const, error: "Somente compradores podem registrar cotações." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { saveCotacaoProposta, listCotacaoPropostas, getCompraSolicitacao } = await import(
+      "@/db/compras"
+    );
+    try {
+      await saveCotacaoProposta({
+        ...(data.id != null ? { id: data.id } : {}),
+        solicitacaoId: data.solicitacaoId,
+        itemId: data.itemId ?? null,
+        supplierId: data.supplierId ?? null,
+        supplierName: data.supplierName,
+        valorUnitario: data.valorUnitario,
+        previsao: data.previsao ?? null,
+        observacao: data.observacao ?? null,
+        createdBy: user.id,
+        createdByName: user.name,
+      });
+      const [propostas, solicitacao] = await Promise.all([
+        listCotacaoPropostas(data.solicitacaoId),
+        getCompraSolicitacao(data.solicitacaoId),
+      ]);
+      return { ok: true as const, propostas, solicitacao };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao salvar cotação.",
+      };
+    }
+  });
+
+export const saveCotacaoPropostasLoteFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        solicitacaoId: z.number().int().positive(),
+        supplierId: z.number().int().positive().optional().nullable(),
+        supplierName: z.string().trim().min(1).max(200),
+        previsao: z.string().trim().max(10).optional().nullable(),
+        items: z
+          .array(
+            z.object({
+              itemId: z.number().int().positive(),
+              valorUnitario: z.number().nonnegative(),
+              observacao: z.string().trim().max(2000).optional().nullable(),
+            }),
+          )
+          .min(1)
+          .max(80),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user)) {
+      return { ok: false as const, error: "Somente compradores podem registrar cotações." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { saveCotacaoPropostasLote } = await import("@/db/compras");
+    try {
+      const result = await saveCotacaoPropostasLote({
+        solicitacaoId: data.solicitacaoId,
+        supplierId: data.supplierId ?? null,
+        supplierName: data.supplierName,
+        previsao: data.previsao ?? null,
+        items: data.items.map((item) => ({
+          itemId: item.itemId,
+          valorUnitario: item.valorUnitario,
+          observacao: item.observacao ?? null,
+        })),
+        createdBy: user.id,
+        createdByName: user.name,
+      });
+      return { ok: true as const, ...result };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao salvar cotações em lote.",
+      };
+    }
+  });
+
+export const deleteCotacaoPropostaFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        id: z.number().int().positive(),
+        solicitacaoId: z.number().int().positive().optional(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user)) {
+      return { ok: false as const, error: "Somente compradores podem excluir cotações." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { deleteCotacaoProposta, listCotacaoPropostas } = await import("@/db/compras");
+    try {
+      await deleteCotacaoProposta({ id: data.id, solicitacaoId: data.solicitacaoId });
+      const propostas = data.solicitacaoId
+        ? await listCotacaoPropostas(data.solicitacaoId)
+        : [];
+      return { ok: true as const, propostas };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao excluir cotação.",
+      };
+    }
+  });
+
+export const concluirCompraFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        id: z.number().int().positive(),
+        propostaId: z.number().int().positive().optional().nullable(),
+        fornecedorNome: z.string().trim().max(200).optional().nullable(),
+        fornecedorId: z.number().int().positive().optional().nullable(),
+        valorCompra: z.number().nonnegative().optional().nullable(),
+        cmcNovo: z.number().nonnegative().optional().nullable(),
+        previsao: z.string().trim().max(10).optional().nullable(),
+        notasCompra: z.string().trim().max(2000).optional().nullable(),
+        updateCmcInterno: z.boolean().optional(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user)) {
+      return { ok: false as const, error: "Somente compradores podem concluir a compra." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { concluirCompraSolicitacao } = await import("@/db/compras");
+    try {
+      const row = await concluirCompraSolicitacao({
+        id: data.id,
+        propostaId: data.propostaId ?? null,
+        fornecedorNome: data.fornecedorNome ?? null,
+        fornecedorId: data.fornecedorId ?? null,
+        valorCompra: data.valorCompra ?? null,
+        cmcNovo: data.cmcNovo ?? null,
+        previsao: data.previsao ?? null,
+        notasCompra: data.notasCompra ?? null,
+        updateCmcInterno: data.updateCmcInterno ?? true,
+        compradoPor: user.id,
+        compradoPorNome: user.name,
+      });
+      if (!row) return { ok: false as const, error: "Solicitação não encontrada." };
+      return { ok: true as const, solicitacao: row };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao concluir compra.",
+      };
+    }
+  });
+
+export const markOsItemCompradoFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        itemId: z.number().int().positive(),
+        previsao: z.string().trim().max(10).optional().nullable(),
+      })
+      .parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    const { user } = await requireModule("compras");
+    if (!canActAsComprador(user)) {
+      return { ok: false as const, error: "Somente compradores podem marcar item comprado." };
+    }
+    const { ensureSchema } = await import("@/db/schema");
+    await ensureSchema();
+    const { markOsItemComprado, listOsCompraQueue } = await import("@/db/compras");
+    try {
+      await markOsItemComprado({
+        itemId: data.itemId,
+        previsao: data.previsao ?? null,
+        quem: user.name,
+        userId: user.id,
+      });
+      const osQueue = await listOsCompraQueue();
+      return { ok: true as const, osQueue };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : "Falha ao marcar comprado.",
+      };
+    }
+  });
+
+export const refreshComprasFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { requireModule } = await import("@/lib/require-auth");
+  const { user } = await requireModule("compras");
+  const { ensureSchema } = await import("@/db/schema");
+  await ensureSchema();
+  const {
+    listCompraSolicitacoes,
+    getComprasUnreadSummary,
+    listCotacaoPropostasForSolicitacoes,
+    backfillOsCompraSolicitacoes,
+  } = await import("@/db/compras");
+  await backfillOsCompraSolicitacoes({
+    solicitadoPor: user.id,
+    solicitadoPorNome: user.name,
+  });
+  const [abertas, historico, unread] = await Promise.all([
+    listCompraSolicitacoes({
+      status: ["aberta", "em_cotacao", "comprada"],
+      limit: 400,
+    }),
+    listCompraSolicitacoes({ status: ["finalizado", "cancelada"], limit: 500 }),
+    getComprasUnreadSummary(),
+  ]);
+  const propostas = await listCotacaoPropostasForSolicitacoes([
+    ...abertas.map((r) => r.id),
+    ...historico.filter((r) => r.status === "finalizado").slice(0, 80).map((r) => r.id),
+  ]);
+  return { abertas, historico, osQueue: [], propostas, unread };
+});
+
+export function notifyComprasUnreadChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("compras-unread-changed"));
+}

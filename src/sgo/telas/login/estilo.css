@@ -1,0 +1,30 @@
+
+.tela-login *{box-sizing:border-box}
+.tela-login,.tela-login{height:100%}
+.tela-login{margin:0;font-family:Inter,system-ui,sans-serif;color:#141414;background:#141414;display:flex;flex-direction:column}
+.tela-login .topo{height:6px;background:#FFD200;flex:none}
+.tela-login .centro{flex:1;display:flex;align-items:center;justify-content:center;padding:32px 16px;
+  background:radial-gradient(1200px 600px at 50% -10%,#2A2A2A 0%,#141414 60%)}
+.tela-login .cartao{width:100%;max-width:420px;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.45);overflow:hidden}
+.tela-login .marca{background:#141414;padding:28px 28px 22px;display:flex;flex-direction:column;align-items:center;gap:12px;border-bottom:4px solid #FFD200}
+.tela-login .logo{width:96px;height:96px;border-radius:18px;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px}
+.tela-login .logo img{width:100%;height:100%;object-fit:contain}
+.tela-login .marca h1{margin:0;font:800 30px 'Barlow Semi Condensed',sans-serif;text-transform:uppercase;color:#fff;letter-spacing:.4px;line-height:1}
+.tela-login .marca p{margin:0;font:600 11px Inter,sans-serif;letter-spacing:1.2px;text-transform:uppercase;color:#BDBDBD}
+.tela-login form{padding:26px 28px 28px;display:flex;flex-direction:column;gap:16px}
+.tela-login label{display:block;font:700 12px Inter,sans-serif;letter-spacing:.4px;text-transform:uppercase;color:#3D3D3D;margin-bottom:6px}
+.tela-login .campo{position:relative}
+.tela-login input{width:100%;font:500 16px Inter,sans-serif;color:#141414;min-height:48px;padding:0 14px;border:1.5px solid #D6D6CF;border-radius:10px;background:#FAFAF7;outline:none}
+.tela-login input:focus{border-color:#141414;background:#fff;box-shadow:0 0 0 3px rgba(255,210,0,.55)}
+.tela-login .ver{position:absolute;right:6px;top:6px;height:36px;padding:0 10px;border:0;border-radius:8px;background:transparent;font:600 13px Inter,sans-serif;color:#3D3D3D;cursor:pointer}
+.tela-login .ver:hover{background:#F1F1EC}
+.tela-login .ver:focus-visible{outline:2px solid #141414}
+.tela-login button.entrar{min-height:50px;border:0;border-radius:10px;background:#FFD200;color:#141414;font:800 17px 'Barlow Semi Condensed',sans-serif;letter-spacing:.6px;text-transform:uppercase;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px}
+.tela-login button.entrar:hover{background:#F2C500}
+.tela-login button.entrar:focus-visible{outline:3px solid #141414;outline-offset:2px}
+.tela-login button.entrar[disabled]{opacity:.6;cursor:wait}
+.tela-login .erro{display:none;background:#FDECEA;color:#8C1D18;border:1px solid #F5C2BE;border-radius:10px;padding:10px 12px;font:500 14px Inter,sans-serif}
+.tela-login .erro.on{display:block}
+.tela-login .rodape{text-align:center;padding:14px;font:500 12px Inter,sans-serif;color:#8A8A85}
+.tela-login .ajuda{font:500 13px Inter,sans-serif;color:#5A5A5A;text-align:center;margin:0}
+.tela-login{min-height:100vh}

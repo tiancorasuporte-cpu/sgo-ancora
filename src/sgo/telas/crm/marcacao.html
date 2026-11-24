@@ -1,0 +1,36 @@
+<div class="app">
+<div class="main">
+<div class="top">
+<div>
+<div class="crumb">Comercial › CRM</div>
+<h1 id="tituloTela">Oportunidades</h1>
+</div>
+<div class="sp"></div>
+<div class="seg" id="viewSeg">
+<button data-v="board" class="on">Quadro</button>
+<button data-v="report">Relatórios</button>
+<button data-v="com" id="segCom">🔒 Comissões</button>
+</div>
+<span class="logado" id="euNome" title="Usuário logado"></span>
+<button class="btn pri" id="btnNew">+ Nova oportunidade</button>
+</div>
+<div class="filters">
+<input type="search" id="fBusca" placeholder="Buscar cliente, cidade, nº OP ou OS…">
+<select id="fVend"><option value="">Todos os vendedores</option></select>
+<select id="fTipo"><option value="">Execução e recorrente</option><option value="execucao">🔧 Venda de execução</option><option value="recorrente">🔁 Venda recorrente (contratos)</option><option value="misto">🔧🔁 Execução + recorrente</option></select>
+<select id="fServ"><option value="">Todos os serviços</option></select>
+<label class="chk"><input type="checkbox" id="fLate"> Só atrasados / vencendo hoje</label>
+<div class="sp"></div>
+<span style="font-size:12px;color:var(--mut)">Arraste os cards entre as colunas (ou abra o card → “Mover para”)</span>
+</div>
+<div class="kpis" id="kpis"></div>
+<div class="board" id="board"></div>
+<div class="report" id="report"></div>
+<div class="report" id="comis"></div>
+</div>
+</div>
+<div class="shade" id="shade"></div>
+<aside class="drawer" id="drawer"></aside>
+<div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
+<div class="toast" id="toast"></div>
+<div class="carregando" id="carregando">Carregando oportunidades…</div>

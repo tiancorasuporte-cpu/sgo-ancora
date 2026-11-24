@@ -1,0 +1,431 @@
+/* Estoque React · visual SGO antigo (escopo .sgo-estoque) */
+.sgo-estoque {
+  --ink: #141414;
+  --y: #ffd200;
+  --bg: #f3f3ef;
+  --line: #e6e6e0;
+  --mut: #5a5a5a;
+  --grn: #1e6b34;
+  --grnbg: #e3f1e6;
+  --red: #b3261e;
+  --redbg: #fde2e1;
+  --amb: #7a5600;
+  --ambbg: #fff6cc;
+  --blu: #1d3f6e;
+  --blubg: #e7efff;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100%;
+}
+
+.sgo-estoque *,
+.sgo-estoque *::before,
+.sgo-estoque *::after {
+  box-sizing: border-box;
+}
+
+.sgo-estoque [hidden] {
+  display: none !important;
+}
+
+.sgo-estoque button,
+.sgo-estoque input,
+.sgo-estoque select,
+.sgo-estoque textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.sgo-estoque button {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.sgo-estoque .pag {
+  padding: 18px 24px 40px;
+  max-width: 1500px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sgo-estoque .barra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.sgo-estoque .field {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #bdbdb5;
+  background: #fff;
+  padding: 8px 12px;
+}
+
+.sgo-estoque .field:focus,
+.sgo-estoque .qin:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.sgo-estoque .seg {
+  display: inline-flex;
+  background: #e9e9e4;
+  border-radius: 10px;
+  padding: 4px;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.sgo-estoque .seg button {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 14px !important;
+  border-radius: 7px !important;
+  font-weight: 600 !important;
+  color: #3d3d3d !important;
+  min-height: auto !important;
+  box-shadow: none !important;
+}
+
+.sgo-estoque .seg button.on {
+  background: var(--ink) !important;
+  color: var(--y) !important;
+}
+
+.sgo-estoque .sp {
+  flex: 1;
+}
+
+.sgo-estoque .btn {
+  border: 1.5px solid var(--ink) !important;
+  background: #fff !important;
+  border-radius: 8px !important;
+  padding: 0 14px !important;
+  min-height: 40px !important;
+  font-weight: 600 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+}
+
+.sgo-estoque .btn:hover {
+  background: #f1f1ec !important;
+}
+
+.sgo-estoque .btn.btn-y,
+.sgo-estoque .btn-y {
+  background: var(--y) !important;
+  border-color: var(--y) !important;
+  color: var(--ink) !important;
+}
+
+.sgo-estoque .btn.btn-y:hover,
+.sgo-estoque .btn-y:hover {
+  background: #f2c500 !important;
+}
+
+.sgo-estoque .btn.btn-d,
+.sgo-estoque .btn-d {
+  background: var(--ink) !important;
+  color: #fff !important;
+  border-color: var(--ink) !important;
+}
+
+.sgo-estoque .btn.sm {
+  min-height: 32px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+}
+
+.sgo-estoque .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sgo-estoque .lnk {
+  border: 0;
+  background: none;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: underline;
+  font-size: 13px;
+}
+
+.sgo-estoque .kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.sgo-estoque .kpi {
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 0 0 1px #0000000f;
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sgo-estoque .kpi b {
+  font: 800 30px system-ui, sans-serif;
+  line-height: 1;
+}
+
+.sgo-estoque .kpi span {
+  font-size: 12.5px;
+  color: #3d3d3d;
+}
+
+.sgo-estoque .kpi.alerta {
+  box-shadow: 0 0 0 2px var(--red);
+}
+
+.sgo-estoque .kpi.alerta b {
+  color: var(--red);
+}
+
+.sgo-estoque .info {
+  background: #141414;
+  color: #fff;
+  border-radius: 12px;
+  padding: 12px 16px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 13.5px;
+  line-height: 1.5;
+  border-left: 5px solid var(--y);
+}
+
+.sgo-estoque .card {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px #0000000f;
+  overflow: hidden;
+}
+
+.sgo-estoque .card-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sgo-estoque .card-t {
+  font: 800 16px system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+}
+
+.sgo-estoque .card-b {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sgo-estoque .tw {
+  overflow: auto;
+}
+
+.sgo-estoque table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sgo-estoque th {
+  text-align: left;
+  font: 700 11px system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--y);
+  background: var(--ink);
+  padding: 10px 12px;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+
+.sgo-estoque td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #efefea;
+  vertical-align: middle;
+}
+
+.sgo-estoque tr:hover td {
+  background: #fffbea;
+}
+
+.sgo-estoque .n {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sgo-estoque .cod {
+  font-size: 12px;
+  color: var(--mut);
+  white-space: nowrap;
+}
+
+.sgo-estoque .vazio {
+  padding: 28px;
+  text-align: center;
+  color: var(--mut);
+}
+
+.sgo-estoque .qin {
+  width: 96px;
+  min-height: 34px;
+  border-radius: 7px;
+  border: 1px solid #bdbdb5;
+  padding: 4px 8px;
+  text-align: right;
+  background: #fff;
+}
+
+.sgo-estoque .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.sgo-estoque .c-ok {
+  background: var(--grnbg);
+  color: var(--grn);
+}
+
+.sgo-estoque .c-agu {
+  background: var(--ambbg);
+  color: var(--amb);
+}
+
+.sgo-estoque .c-div {
+  background: var(--redbg);
+  color: #8e1b1b;
+}
+
+.sgo-estoque .grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.sgo-estoque .pdv-grade {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 22rem);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .sgo-estoque .pdv-grade {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sgo-estoque .eqc {
+  border: 0;
+  text-align: left;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px #0000000f;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 5px solid #d6d6cf;
+}
+
+.sgo-estoque .eqc.on {
+  border-top-color: var(--y);
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.sgo-estoque .eqc b {
+  font: 800 16px system-ui, sans-serif;
+  text-transform: uppercase;
+}
+
+.sgo-estoque .eqc small {
+  color: var(--mut);
+}
+
+.sgo-estoque .dica {
+  font-size: 12.5px;
+  color: var(--mut);
+}
+
+.sgo-estoque .lbl {
+  font: 600 12px system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #3d3d3d;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sgo-estoque .res {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-height: 230px;
+  overflow: auto;
+}
+
+.sgo-estoque .res button {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  align-items: center;
+  border: 0 !important;
+  background: #fff !important;
+  padding: 9px 12px !important;
+  text-align: left;
+  border-bottom: 1px solid #f1f1ec !important;
+  border-radius: 0 !important;
+  min-height: auto !important;
+}
+
+.sgo-estoque .res button:hover {
+  background: #fffbea !important;
+}
+
+.sgo-estoque .lin {
+  display: grid;
+  grid-template-columns: 1fr 110px 40px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #f1f1ec;
+}
+
+@media (max-width: 700px) {
+  .sgo-estoque .pag {
+    padding: 14px 12px 30px;
+  }
+}

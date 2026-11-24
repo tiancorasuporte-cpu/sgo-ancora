@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relatórios de OS · SGO Âncora</title>
+<style>
+:root{--ink:#141414;--y:#FFD200;--bg:#F3F3EF;--line:#E6E6E0;--mut:#5a5a5a;--grn:#1E6B34;
+  --t-pedido:#1D4ED8;--t-manut:#B7791F;--t-monit:#11694F;--t-visita:#6B2BB8}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.pag{padding:18px 24px 40px;max-width:1500px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.barra{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.mes{display:inline-flex;align-items:center;background:var(--ink);border-radius:12px;padding:4px}
+.mes button{border:0;background:none;color:var(--y);width:38px;height:38px;border-radius:8px;font-size:20px;font-weight:700}
+.mes button:hover{background:#ffffff1a}
+.mes b{color:#fff;font:800 17px system-ui,sans-serif;text-transform:uppercase;min-width:190px;text-align:center;letter-spacing:.3px}
+.sel{min-height:42px;border-radius:8px;border:1px solid #BDBDB5;background:#fff;padding:0 10px;max-width:220px}
+.sel:focus{outline:2px solid var(--ink);outline-offset:1px}
+.sp{flex:1}
+.btn{border:1.5px solid var(--ink);background:#fff;border-radius:8px;padding:0 14px;min-height:40px;font-weight:600;display:inline-flex;align-items:center;gap:8px}
+.btn:hover{background:#F1F1EC}
+.alerta{background:#FFF1D6;color:#7A4A00;border-radius:10px;padding:10px 14px;font-weight:600;display:flex;gap:10px;align-items:center}
+.alerta a{color:#7A4A00}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.kpi{background:#fff;border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px #0000000f;display:flex;flex-direction:column;gap:4px}
+.kpi b{font:800 30px system-ui,sans-serif;line-height:1.05;font-variant-numeric:tabular-nums}
+.kpi span{font-size:12.5px;color:#3d3d3d}
+.kpi small{font-size:12px;color:var(--mut)}
+.kpi.dark{background:var(--ink);color:#fff;border-left:5px solid var(--y)}
+.kpi.dark b{color:var(--y)}.kpi.dark span{color:#ddd}.kpi.dark small{color:#bbb}
+.tipos{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.tp{background:#fff;border-radius:14px;box-shadow:0 0 0 1px #0000000f;padding:14px 16px;border-top:5px solid var(--c);display:flex;flex-direction:column;gap:8px;cursor:pointer;text-align:left}
+.tp:hover{box-shadow:0 8px 22px #0000001a,0 0 0 1px #0000000f}
+.tp.on{box-shadow:0 0 0 2.5px var(--ink)}
+.tp .n{display:flex;align-items:baseline;gap:8px}
+.tp .n b{font:800 34px system-ui,sans-serif;line-height:1}
+.tp .n span{font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.4px;color:var(--c)}
+.tp .l{display:flex;justify-content:space-between;font-size:12.5px;color:#3d3d3d}
+.bar{height:8px;border-radius:4px;background:#EEEEEA;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--c,var(--ink));border-radius:4px}
+.abas{display:flex;gap:4px;border-bottom:2px solid var(--line);flex-wrap:wrap}
+.abas button{border:0;background:none;padding:10px 14px;font-weight:700;color:#5a5a5a;border-bottom:3px solid transparent;margin-bottom:-2px}
+.abas button.on{color:var(--ink);border-bottom-color:var(--y)}
+.box{background:#fff;border-radius:14px;box-shadow:0 0 0 1px #0000000f;overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:760px}
+th{text-align:left;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--y);background:var(--ink);padding:10px 12px;white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid #EFEFEA;vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tfoot td{font-weight:800;background:#FAFAF7;border-top:2px solid var(--line)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.r .mut,td.r .aj{white-space:normal}
+td.mo{white-space:normal;max-width:240px}
+td.cli{min-width:170px}
+.pess{display:flex;align-items:center;gap:10px;font-weight:600}
+.av{width:32px;height:32px;border-radius:50%;background:var(--y);color:var(--ink);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 2px var(--ink);flex:none}
+.av.aux{background:#F1F1EC;box-shadow:inset 0 0 0 1.5px #BDBDB5}
+.mini{display:flex;gap:4px;flex-wrap:wrap}
+.mini span{font-size:11px;font-weight:700;padding:2px 6px;border-radius:5px;color:#fff;background:var(--c)}
+.hbar{display:flex;align-items:center;gap:8px;min-width:150px}
+.hbar .bar{flex:1}
+.tag{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:3px 7px;border-radius:5px;color:#fff;background:var(--c);white-space:nowrap}
+.aj{display:inline-block;margin-left:4px;font-size:11px;font-weight:700;padding:2px 6px;border-radius:5px;background:#FFF1D6;color:#7A4A00;cursor:help}
+.sf{font-size:12px;color:#8E1B1B;font-weight:600}
+.mut{color:var(--mut);font-size:12.5px}
+.nota{font-size:12.5px;color:var(--mut);padding:10px 14px}
+.vazio{background:#fff;border-radius:14px;padding:30px;text-align:center;color:var(--mut);box-shadow:0 0 0 1px #0000000f}
+.erro{background:#FDE2E1;color:#8E1B1B;font-weight:600;border-radius:10px;padding:12px}
+@media (max-width:700px){.pag{padding:12px}.mes b{min-width:140px;font-size:15px}}
+@media print{body{background:#fff}.barra,.abas,.btn{display:none!important}.box,.kpi,.tp{box-shadow:0 0 0 1px #ccc}.kpi.dark{background:#fff;color:#141414}.kpi.dark b{color:#141414}.kpi.dark span,.kpi.dark small{color:#3d3d3d}section[data-sec]{display:block!important;break-inside:avoid;margin-bottom:16px}}
+</style>
+</head>
+<body>
+<main class="pag">
+  <div class="barra">
+    <div class="mes" role="group" aria-label="Mês do relatório"><button type="button" id="m-ant" aria-label="Mês anterior">‹</button><b id="m-txt">—</b><button type="button" id="m-prox" aria-label="Próximo mês">›</button></div>
+    <select class="sel" id="f-tipo" aria-label="Tipo de OS"><option value="">Todos os tipos</option></select>
+    <select class="sel" id="f-equipe" aria-label="Equipe"><option value="">Todas as equipes</option></select>
+    <select class="sel" id="f-tec" aria-label="Técnico"><option value="">Todos os técnicos</option></select>
+    <select class="sel" id="f-aux" aria-label="Auxiliar técnico"><option value="">Todos os auxiliares</option></select>
+    <span class="sp"></span>
+    <button type="button" class="btn" id="b-csv">Exportar CSV</button>
+    <button type="button" class="btn" id="b-imp">Imprimir / PDF</button>
+  </div>
+  <div id="alerta"></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="tipos" id="tipos"></div>
+  <div class="abas" role="tablist">
+    <button type="button" role="tab" data-a="tec" class="on" aria-selected="true">Por técnico</button>
+    <button type="button" role="tab" data-a="aux" aria-selected="false">Por auxiliar</button>
+    <button type="button" role="tab" data-a="eq" aria-selected="false">Por equipe</button>
+    <button type="button" role="tab" data-a="os" aria-selected="false">OS do mês</button>
+  </div>
+  <div id="corpo"></div>
+</main>
+<script>
+"use strict";
+var TIPOS = { pedido: { nome: "Pedido · instalação", curto: "Pedido", c: "var(--t-pedido)" }, manut: { nome: "Manutenção", curto: "Manut.", c: "var(--t-manut)" }, monit: { nome: "Monitoramento", curto: "Monit.", c: "var(--t-monit)" }, visita: { nome: "Orçamento · visita", curto: "Orç.", c: "var(--t-visita)" } };
+var ORDEM = ["pedido", "manut", "monit", "visita"];
+var MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+var hoje = new Date(), S = { ano: hoje.getFullYear(), mes: hoje.getMonth(), d: null, aba: "tec", f: { tipo: "", equipe: "", tec: "", aux: "" } };
+try { var u = new URLSearchParams(location.search).get("mes"); if (/^\d{4}-\d{2}$/.test(u)) { S.ano = +u.slice(0, 4); S.mes = +u.slice(5) - 1; } } catch (e) {}
+function $(s, r) { return (r || document).querySelector(s); }
+function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+function horas(min) { min = Math.round(min || 0); return Math.floor(min / 60) + "h" + pad(min % 60); }
+function ini(n) { var p = String(n || "?").trim().split(/\s+/); return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase(); }
+function dbr(iso) { return iso ? iso.slice(8, 10) + "/" + iso.slice(5, 7) : ""; }
+function api(u) { return fetch(u, { credentials: "same-origin", headers: { "x-sgo": "1" } }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.erro || "Erro " + r.status); return j; }); }); }
+function periodo() { var de = S.ano + "-" + pad(S.mes + 1) + "-01", ult = new Date(S.ano, S.mes + 1, 0).getDate(); return { de: de, ate: S.ano + "-" + pad(S.mes + 1) + "-" + pad(ult) }; }
+function carregar() {
+  $("#m-txt").textContent = MESES[S.mes] + " " + S.ano;
+  $("#corpo").innerHTML = '<div class="vazio">Carregando…</div>';
+  var p = periodo();
+  api("/api/relatorios/os?de=" + p.de + "&ate=" + p.ate).then(function (d) { S.d = d; opcoes(); desenhar(); }).catch(function (e) { $("#corpo").innerHTML = '<div class="erro">' + esc(e.message) + "</div>"; });
+}
+function uniq(l) { var o = []; l.forEach(function (x) { if (x && o.indexOf(x) < 0) o.push(x); }); return o.sort(function (a, b) { return a.localeCompare(b, "pt-BR"); }); }
+function opcoes() {
+  var os = S.d.os;
+  function fill(id, vals, rot, cur) { var s = $(id); s.innerHTML = '<option value="">' + rot + "</option>" + vals.map(function (v) { return '<option value="' + esc(v[0]) + '"' + (v[0] === cur ? " selected" : "") + ">" + esc(v[1]) + "</option>"; }).join(""); }
+  fill("#f-tipo", ORDEM.map(function (t) { return [t, TIPOS[t].nome]; }), "Todos os tipos", S.f.tipo);
+  fill("#f-equipe", uniq(os.map(function (o) { return o.equipe; })).map(function (x) { return [x, x]; }), "Todas as equipes", S.f.equipe);
+  fill("#f-tec", uniq([].concat.apply([], os.map(function (o) { return o.pessoas; }))).map(function (x) { return [x, x]; }), "Todos os técnicos", S.f.tec);
+  fill("#f-aux", uniq(os.map(function (o) { return o.auxiliar; })).map(function (x) { return [x, x]; }), "Todos os auxiliares", S.f.aux);
+}
+function filtradas() { var f = S.f; return S.d.os.filter(function (o) { return (!f.tipo || o.tipo === f.tipo) && (!f.equipe || o.equipe === f.equipe) && (!f.tec || o.pessoas.indexOf(f.tec) >= 0) && (!f.aux || o.auxiliar === f.aux); }); }
+function soma(l, k) { return l.reduce(function (s, o) { return s + (o[k] || 0); }, 0); }
+function porTipo(l) { var r = {}; ORDEM.forEach(function (t) { r[t] = 0; }); l.forEach(function (o) { r[o.tipo] = (r[o.tipo] || 0) + 1; }); return r; }
+function mini(l) { var t = porTipo(l); return '<div class="mini">' + ORDEM.filter(function (k) { return t[k]; }).map(function (k) { return '<span style="--c:' + TIPOS[k].c + '" title="' + TIPOS[k].nome + '">' + t[k] + " " + TIPOS[k].curto + "</span>"; }).join("") + "</div>"; }
+function agrupar(l, chave) { var m = {}; l.forEach(function (o) { chave(o).forEach(function (k) { if (!k) return; (m[k] = m[k] || []).push(o); }); }); return Object.keys(m).map(function (k) { return { nome: k, os: m[k] }; }); }
+function desenhar() {
+  var l = filtradas(), mo = soma(l, "valorMO"), min = soma(l, "minutos"), orc = soma(l, "valorOrc"), aj = l.filter(function (o) { return o.ajuste; }).length;
+  var semFech = l.filter(function (o) { return !o.fechado; }).length;
+  $("#alerta").innerHTML = (S.d.pendentes ? '<div class="alerta">⚠ ' + S.d.pendentes + (S.d.pendentes === 1 ? " OS executada aguarda" : " OS executadas aguardam") + ' o fechamento da Assistência (tempo e mão de obra). Elas entram no relatório quando forem finalizadas. <a href="#" data-ir="/assistencia/os">Abrir Quadro de OS</a></div>' : "") +
+    (semFech ? '<div class="alerta" style="margin-top:8px">' + semFech + (semFech === 1 ? " OS foi finalizada" : " OS foram finalizadas") + " antes do fechamento com mão de obra (sem valor).</div>" : "");
+  $("#kpis").innerHTML = '<div class="kpi dark"><span>Total produzido no mês</span><b>' + brl(mo + orc) + '</b><small>instalações (produtos do orçamento) + mão de obra</small></div><div class="kpi"><span>Mão de obra</span><b>' + brl(mo) + "</b><small>" + (min ? brl(mo / (min / 60)) + " por hora no cliente" : "—") + '</small></div><div class="kpi"><span>OS finalizadas</span><b>' + l.length + "</b><small>" + (l.length ? "média de " + horas(min / l.length) + " por OS" : "") + '</small></div><div class="kpi"><span>Horas no cliente</span><b>' + horas(min) + '</b><small>pelo check-in e check-out</small></div><div class="kpi"><span>Instalações executadas</span><b>' + brl(orc) + "</b><small>" + l.filter(function (o) { return o.tipo === "pedido"; }).length + " pedido(s) · valor do orçamento" + (soma(l, "mensal") ? " · + " + brl(soma(l, "mensal")) + "/mês" : "") + '</small></div><div class="kpi"><span>Mão de obra ajustada</span><b>' + aj + "</b><small>" + (aj ? "OS com valor diferente da sugestão" : "todas conforme a sugestão") + "</small></div>";
+  var tt = porTipo(l), mx = Math.max(1, Math.max.apply(null, ORDEM.map(function (k) { return tt[k]; })));
+  $("#tipos").innerHTML = ORDEM.map(function (k) { var ls = l.filter(function (o) { return o.tipo === k; }); return '<button type="button" class="tp' + (S.f.tipo === k ? " on" : "") + '" style="--c:' + TIPOS[k].c + '" data-tp="' + k + '" aria-pressed="' + (S.f.tipo === k) + '"><div class="n"><b>' + ls.length + "</b><span>" + TIPOS[k].nome + '</span></div><div class="bar"><i style="width:' + (ls.length / mx * 100) + '%"></i></div><div class="l"><span>' + horas(soma(ls, "minutos")) + " no cliente</span><b>" + brl(soma(ls, "valorMO")) + "</b></div>" + (k === "pedido" && soma(ls, "valorOrc") ? '<div class="l"><span>Produtos instalados</span><b>' + brl(soma(ls, "valorOrc")) + "</b></div>" : "") + "</button>"; }).join("");
+  $$("[data-tp]").forEach(function (b) { b.onclick = function () { S.f.tipo = S.f.tipo === b.dataset.tp ? "" : b.dataset.tp; $("#f-tipo").value = S.f.tipo; desenhar(); }; });
+  $$("[data-ir]").forEach(function (a) { a.onclick = function (e) { e.preventDefault(); try { parent.postMessage({ sgo: "ir", url: a.dataset.ir }, "*"); } catch (er) {} }; });
+  if (!S.d.os.length) { $("#corpo").innerHTML = '<div class="vazio">Nenhuma OS finalizada em ' + MESES[S.mes].toLowerCase() + " de " + S.ano + ".</div>"; return; }
+  if (!l.length) { $("#corpo").innerHTML = '<div class="vazio">Nenhuma OS com esses filtros.</div>'; return; }
+  $("#corpo").innerHTML = S.aba === "os" ? tabelaOS(l) : tabelaGrupo(l, S.aba);
+}
+function tabelaGrupo(l, aba) {
+  var g = agrupar(l, aba === "tec" ? function (o) { return o.pessoas; } : aba === "aux" ? function (o) { return [o.auxiliar]; } : function (o) { return [o.equipe]; });
+  if (!g.length) return '<div class="vazio">' + (aba === "aux" ? "Nenhuma OS com auxiliar técnico neste mês." : "Sem dados.") + "</div>";
+  g.forEach(function (x) { x.min = soma(x.os, "minutos"); x.mo = soma(x.os, "valorMO"); x.ax = soma(x.os, "valorAux"); x.orc = soma(x.os, "valorOrc"); });
+  g.sort(function (a, b) { return (b.mo + b.orc) - (a.mo + a.orc) || b.min - a.min; });
+  var mx = Math.max.apply(null, g.map(function (x) { return x.min; })) || 1;
+  var rot = aba === "tec" ? "Técnico" : aba === "aux" ? "Auxiliar técnico" : "Equipe";
+  var h = '<div class="box"><table><thead><tr><th>' + rot + '</th><th>OS por tipo</th><th class="r">OS</th><th>Horas no cliente</th><th class="r">Média por OS</th>' + (aba === "aux" ? '<th class="r">Mão de obra do auxiliar</th><th class="r">Mão de obra total das OS</th>' : '<th class="r">Instalações<br>(produtos)</th><th class="r">Mão de obra</th><th class="r">Total produzido</th><th class="r">R$/h mão de obra</th>') + '</tr></thead><tbody>' +
+    g.map(function (x) { return '<tr><td><div class="pess"><span class="av' + (aba === "aux" ? " aux" : "") + '">' + esc(ini(x.nome)) + "</span>" + esc(x.nome) + "</div></td><td>" + mini(x.os) + '</td><td class="r"><b>' + x.os.length + '</b></td><td><div class="hbar"><b>' + horas(x.min) + '</b><div class="bar"><i style="width:' + (x.min / mx * 100) + '%"></i></div></div></td><td class="r">' + horas(x.min / x.os.length) + '</td>' + (aba === "aux" ? '<td class="r"><b>' + brl(x.ax) + '</b></td><td class="r">' + brl(x.mo) + "</td>" : '<td class="r">' + (x.orc ? brl(x.orc) : "—") + '</td><td class="r">' + brl(x.mo) + '</td><td class="r"><b>' + brl(x.mo + x.orc) + '</b></td><td class="r">' + (x.min ? brl(x.mo / (x.min / 60)) : "—") + "</td>") + "</tr>"; }).join("") + "</tbody>";
+  if (aba === "eq") h += '<tfoot><tr><td>Total da assistência</td><td>' + mini(l) + '</td><td class="r">' + l.length + "</td><td>" + horas(soma(l, "minutos")) + '</td><td class="r"></td><td class="r">' + brl(soma(l, "valorOrc")) + '</td><td class="r">' + brl(soma(l, "valorMO")) + '</td><td class="r">' + brl(soma(l, "valorOrc") + soma(l, "valorMO")) + '</td><td class="r"></td></tr></tfoot>';
+  h += "</table>";
+  if (aba !== "eq") h += '<div class="nota">Cada pessoa recebe o tempo, a mão de obra e o valor das instalações das OS em que participou. Quando dois vão juntos, a OS conta para os dois, por isso a soma desta tabela pode passar do total da assistência (veja a aba Por equipe).</div>';
+  return h + "</div>";
+}
+function tabelaOS(l) {
+  return '<div class="box"><table><thead><tr><th>OS</th><th>Finalizada</th><th>Tipo</th><th>Cliente</th><th>Equipe / técnicos</th><th>Auxiliar</th><th class="r">Tempo</th><th class="r">Mão de obra</th><th class="r">Instalação<br>(orçamento)</th></tr></thead><tbody>' +
+    l.map(function (o) { var t = TIPOS[o.tipo] || TIPOS.pedido; return "<tr><td><b>" + esc(o.num) + "</b></td><td>" + dbr(o.fim) + '</td><td><span class="tag" style="--c:' + t.c + '">' + t.curto + "</span>" + (o.sub ? ' <span class="mut">' + esc(o.sub) + "</span>" : "") + '</td><td class="cli">' + esc(o.cliente) + (o.cidade ? '<div class="mut">' + esc(o.cidade) + "</div>" : "") + "</td><td>" + esc(o.equipe) + '<div class="mut">' + esc(o.pessoas.join(", ")) + "</div></td><td>" + (esc(o.auxiliar) || '<span class="mut">—</span>') + '</td><td class="r">' + (o.minutos ? horas(o.minutos) : "—") + (o.manual ? '<div class="mut">corrigido</div>' : "") + '</td><td class="r mo"><b>' + (o.fechado ? brl(o.valorMO) : '<span class="sf">sem fechamento</span>') + "</b>" + (o.ajuste ? '<span class="aj" title="' + esc("Sugestão " + brl(o.sugestao) + " · " + o.ajuste) + '">ajustada</span>' : "") + (o.mo ? '<div class="mut">' + esc(o.mo) + "</div>" : "") + '</td><td class="r">' + (o.valorOrc ? brl(o.valorOrc) + '<div class="mut">' + esc(o.orcNum) + "</div>" : '<span class="mut">—</span>') + "</td></tr>"; }).join("") +
+    '</tbody><tfoot><tr><td colspan="6">Total · ' + l.length + ' OS</td><td class="r">' + horas(soma(l, "minutos")) + '</td><td class="r">' + brl(soma(l, "valorMO")) + '</td><td class="r">' + brl(soma(l, "valorOrc")) + "</td></tr></tfoot></table></div>";
+}
+function csv() {
+  var l = filtradas(), sep = ";", n = function (v) { return String((Math.round((v || 0) * 100) / 100).toFixed(2)).replace(".", ","); };
+  var q = function (s) { return '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"'; };
+  var linhas = [["OS", "Finalizada", "Tipo", "Subtipo", "Cliente", "Cidade", "Equipe", "Técnicos", "Auxiliar", "Minutos no cliente", "Horas no cliente", "Tempo corrigido à mão", "Mão de obra (R$)", "Sugestão (R$)", "Motivo do ajuste", "Itens de mão de obra", "Orçamento", "Valor do orçamento (R$)", "Mensal do orçamento (R$)"].map(q).join(sep)];
+  l.forEach(function (o) { linhas.push([q(o.num), q(dbr(o.fim) + "/" + o.fim.slice(0, 4)), q((TIPOS[o.tipo] || {}).nome || o.tipo), q(o.sub), q(o.cliente), q(o.cidade), q(o.equipe), q(o.pessoas.join(", ")), q(o.auxiliar), o.minutos, n(o.minutos / 60), q(o.manual ? "sim" : "não"), n(o.valorMO), o.sugestao == null ? "" : n(o.sugestao), q(o.ajuste || ""), q(o.mo), q(o.orcNum), n(o.valorOrc), n(o.mensal)].join(sep)); });
+  var b = new Blob(["﻿" + linhas.join("\r\n")], { type: "text/csv;charset=utf-8" }), a = document.createElement("a");
+  a.href = URL.createObjectURL(b); a.download = "relatorio-os-" + S.ano + "-" + pad(S.mes + 1) + ".csv"; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+$("#m-ant").onclick = function () { S.mes--; if (S.mes < 0) { S.mes = 11; S.ano--; } carregar(); };
+$("#m-prox").onclick = function () { S.mes++; if (S.mes > 11) { S.mes = 0; S.ano++; } carregar(); };
+[["#f-tipo", "tipo"], ["#f-equipe", "equipe"], ["#f-tec", "tec"], ["#f-aux", "aux"]].forEach(function (p) { $(p[0]).onchange = function () { S.f[p[1]] = this.value; desenhar(); }; });
+$$(".abas button").forEach(function (b) { b.onclick = function () { S.aba = b.dataset.a; $$(".abas button").forEach(function (z) { z.classList.toggle("on", z === b); z.setAttribute("aria-selected", z === b); }); if (S.d) desenhar(); }; });
+$("#b-csv").onclick = function () { if (S.d) csv(); };
+$("#b-imp").onclick = function () { window.print(); };
+carregar();
+</script>
+</body>
+</html>

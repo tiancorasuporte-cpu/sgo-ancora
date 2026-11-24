@@ -1,0 +1,22 @@
+<main class="pag">
+  <div class="barra">
+    <div class="mes" role="group" aria-label="Mês do relatório"><button type="button" id="m-ant" aria-label="Mês anterior">‹</button><b id="m-txt">—</b><button type="button" id="m-prox" aria-label="Próximo mês">›</button></div>
+    <select class="sel" id="f-tipo" aria-label="Tipo de OS"><option value="">Todos os tipos</option></select>
+    <select class="sel" id="f-equipe" aria-label="Equipe"><option value="">Todas as equipes</option></select>
+    <select class="sel" id="f-tec" aria-label="Técnico"><option value="">Todos os técnicos</option></select>
+    <select class="sel" id="f-aux" aria-label="Auxiliar técnico"><option value="">Todos os auxiliares</option></select>
+    <span class="sp"></span>
+    <button type="button" class="btn" id="b-csv">Exportar CSV</button>
+    <button type="button" class="btn" id="b-imp">Imprimir / PDF</button>
+  </div>
+  <div id="alerta"></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="tipos" id="tipos"></div>
+  <div class="abas" role="tablist">
+    <button type="button" role="tab" data-a="tec" class="on" aria-selected="true">Por técnico</button>
+    <button type="button" role="tab" data-a="aux" aria-selected="false">Por auxiliar</button>
+    <button type="button" role="tab" data-a="eq" aria-selected="false">Por equipe</button>
+    <button type="button" role="tab" data-a="os" aria-selected="false">OS do mês</button>
+  </div>
+  <div id="corpo"></div>
+</main>

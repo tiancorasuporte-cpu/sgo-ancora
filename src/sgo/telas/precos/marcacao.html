@@ -1,0 +1,23 @@
+<main class="pag">
+  <section class="hero" aria-label="Tabela de preços">
+    <div style="position:relative">
+      <div class="k">Comercial · consulta do vendedor</div>
+      <h1>Tabela de preços</h1>
+      <p>Serviços mensais e mão de obra com o valor de venda atual. Clique em um cartão para copiar o preço e mandar ao cliente.</p>
+    </div>
+    <div class="nums" id="nums"></div>
+  </section>
+  <div class="barra">
+    <label class="busca"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5a5a5a" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input type="search" id="q" placeholder="Buscar serviço ou mão de obra…" aria-label="Buscar na tabela de preços"></label>
+    <div class="seg" role="group" aria-label="Mostrar">
+      <button type="button" data-v="tudo" class="on">Tudo</button>
+      <button type="button" data-v="servicos">Serviços mensais</button>
+      <button type="button" data-v="maoobra">Mão de obra</button>
+    </div>
+    <span class="sp"></span>
+    <span class="atual" id="atual"></span>
+    <button class="btn" type="button" id="b-custo" hidden>Mostrar custo e margem</button>
+    <button class="btn" type="button" id="b-imp"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7"/></svg>Imprimir / PDF</button>
+  </div>
+  <div id="conteudo"></div>
+</main>

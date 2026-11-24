@@ -1,0 +1,1299 @@
+import "@tanstack/react-start/server-only";
+
+import { getDb } from "@/db/schema";
+import {
+  DEFAULT_EXPENSE_TYPES,
+  DEFAULT_FUEL_TYPES,
+  DEFAULT_PAYMENT_METHODS,
+  DEFAULT_SERVICE_TYPES,
+  DEFAULT_STATIONS,
+  DEFAULT_SUPPLIERS,
+} from "@/lib/frota-domain";
+
+function num(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function str(v: unknown) {
+  return v == null ? "" : String(v);
+}
+
+function nullableStr(v: unknown) {
+  const s = str(v).trim();
+  return s || null;
+}
+
+export type FleetVehicle = {
+  id: number;
+  name: string;
+  brand: string | null;
+  model: string | null;
+  plate: string | null;
+  year: number | null;
+  color: string | null;
+  fuelCapacityLiters: number | null;
+  currentOdometer: number;
+  notes: string | null;
+  active: boolean;
+};
+
+export type FleetDriver = {
+  id: number;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  cnh: string | null;
+  userId: number | null;
+  active: boolean;
+};
+
+export type FleetRefuelingPhoto = { foto: string; thumb: string };
+
+export type FleetHistoryItem = {
+  id: number;
+  kind: "refueling" | "expense" | "income" | "service" | "route" | "reading" | "checklist";
+  vehicleId: number;
+  occurredAt: string;
+  title: string;
+  subtitle: string | null;
+  amount: number;
+  odometer: number | null;
+  /** Km rodados desde a leitura anterior (só para reading). */
+  kmDay: number | null;
+  driverName: string | null;
+  createdByName: string | null;
+  hasAttachment: boolean;
+};
+
+function mapVehicle(row: Record<string, unknown>): FleetVehicle {
+  return {
+    id: num(row["id"]),
+    name: str(row["name"]),
+    brand: row["brand"] == null ? null : str(row["brand"]),
+    model: row["model"] == null ? null : str(row["model"]),
+    plate: row["plate"] == null ? null : str(row["plate"]),
+    year: row["year"] == null ? null : num(row["year"]),
+    color: row["color"] == null ? null : str(row["color"]),
+    fuelCapacityLiters: row["fuel_capacity_liters"] == null ? null : num(row["fuel_capacity_liters"]),
+    currentOdometer: num(row["current_odometer"]),
+    notes: row["notes"] == null ? null : str(row["notes"]),
+    active: Boolean(row["active"]),
+  };
+}
+
+function mapDriver(row: Record<string, unknown>): FleetDriver {
+  return {
+    id: num(row["id"]),
+    name: str(row["name"]),
+    phone: row["phone"] == null ? null : str(row["phone"]),
+    email: row["email"] == null ? null : str(row["email"]),
+    cnh: row["cnh"] == null ? null : str(row["cnh"]),
+    userId: row["user_id"] == null ? null : num(row["user_id"]),
+    active: Boolean(row["active"]),
+  };
+}
+
+const MAX_PHOTO_CHARS = 1_600_000;
+const MAX_THUMB_CHARS = 120_000;
+const PHOTO_MIME = /^data:image\/(jpeg|png|webp);base64,/;
+
+function assertFleetPhoto(value: string, max: number, label: string) {
+  if (!PHOTO_MIME.test(value)) throw new Error(`${label} em formato inválido.`);
+  if (value.length > max) throw new Error(`${label} muito grande. Tire a foto novamente.`);
+}
+
+function normalizeRefuelingPhotos(photos: FleetRefuelingPhoto[] | undefined | null) {
+  const list = (photos ?? []).slice(0, 6);
+  for (const photo of list) {
+    assertFleetPhoto(photo.foto, MAX_PHOTO_CHARS, "Foto da nota");
+    assertFleetPhoto(photo.thumb, MAX_THUMB_CHARS, "Miniatura da nota");
+  }
+  return list;
+}
+
+function encodeAttachmentPayload(photos: FleetRefuelingPhoto[]) {
+  if (!photos.length) return { name: null as string | null, data: null as string | null };
+  return {
+    name: photos.length === 1 ? "nota.jpg" : `${photos.length} fotos`,
+    data: JSON.stringify(photos),
+  };
+}
+
+function decodeAttachmentPhotos(raw: string | null | undefined): FleetRefuelingPhoto[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (p): p is FleetRefuelingPhoto =>
+          Boolean(p) &&
+          typeof p === "object" &&
+          typeof (p as FleetRefuelingPhoto).foto === "string" &&
+          typeof (p as FleetRefuelingPhoto).thumb === "string",
+      )
+      .slice(0, 6);
+  } catch {
+    // legado: data URL única
+    if (PHOTO_MIME.test(raw)) return [{ foto: raw, thumb: raw }];
+    return [];
+  }
+}
+
+/** Garante motorista vinculado ao usuário com acesso à Frota. */
+export async function ensureFleetDriverForUser(user: {
+  id: number;
+  name: string;
+}) {
+  const db = await getDb();
+  const name = user.name.trim() || `Usuário #${user.id}`;
+  const [linked] = (await db`
+    select * from fleet_drivers where user_id = ${user.id} limit 1
+  `) as Array<Record<string, unknown>>;
+  if (linked) {
+    await db`
+      update fleet_drivers
+      set name = ${name}, active = true
+      where id = ${num(linked["id"])}
+    `;
+    return mapDriver({ ...linked, name, active: true, user_id: user.id });
+  }
+  const [orphan] = (await db`
+    select * from fleet_drivers
+    where user_id is null and lower(trim(name)) = lower(${name})
+    order by id asc
+    limit 1
+  `) as Array<Record<string, unknown>>;
+  if (orphan) {
+    await db`
+      update fleet_drivers
+      set user_id = ${user.id}, active = true, name = ${name}
+      where id = ${num(orphan["id"])}
+    `;
+    return mapDriver({ ...orphan, user_id: user.id, name, active: true });
+  }
+  const [row] = (await db`
+    insert into fleet_drivers (name, user_id, active)
+    values (${name}, ${user.id}, true)
+    returning *
+  `) as Array<Record<string, unknown>>;
+  return mapDriver(row!);
+}
+
+export async function deactivateFleetDriverForUser(userId: number) {
+  const db = await getDb();
+  await db`update fleet_drivers set active = false where user_id = ${userId}`;
+}
+
+export async function ensureFleetCatalogDefaults() {
+  const db = await getDb();
+  const seeds: Array<{ kind: string; names: readonly string[] }> = [
+    { kind: "fuel", names: DEFAULT_FUEL_TYPES },
+    { kind: "expense", names: DEFAULT_EXPENSE_TYPES },
+    { kind: "service", names: DEFAULT_SERVICE_TYPES },
+    { kind: "payment", names: DEFAULT_PAYMENT_METHODS },
+    { kind: "station", names: DEFAULT_STATIONS },
+    { kind: "supplier", names: DEFAULT_SUPPLIERS },
+  ];
+  for (const group of seeds) {
+    for (const name of group.names) {
+      await db`
+        insert into fleet_catalog (kind, name)
+        values (${group.kind}, ${name})
+        on conflict (kind, name) do nothing
+      `;
+    }
+  }
+}
+
+export async function listFleetVehicles(activeOnly = true) {
+  const db = await getDb();
+  const rows = (await db`
+    select * from fleet_vehicles
+    where (${activeOnly} = false or active = true)
+    order by name asc
+  `) as Array<Record<string, unknown>>;
+  return rows.map(mapVehicle);
+}
+
+export async function getFleetVehicleById(id: number) {
+  const db = await getDb();
+  const [row] = (await db`
+    select * from fleet_vehicles where id = ${id} limit 1
+  `) as Array<Record<string, unknown>>;
+  return row ? mapVehicle(row) : null;
+}
+
+export async function listFleetDrivers(activeOnly = true) {
+  const db = await getDb();
+  const rows = (await db`
+    select * from fleet_drivers
+    where (${activeOnly} = false or active = true)
+    order by name asc
+  `) as Array<Record<string, unknown>>;
+  return rows.map(mapDriver);
+}
+
+export async function listFleetCatalog(kind: string) {
+  const db = await getDb();
+  const rows = (await db`
+    select id, kind, name from fleet_catalog
+    where kind = ${kind} and active = true
+    order by name asc
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({ id: num(r["id"]), kind: str(r["kind"]), name: str(r["name"]) }));
+}
+
+export async function deleteFleetVehicle(vehicleId: number) {
+  if (!Number.isFinite(vehicleId) || vehicleId <= 0) {
+    throw new Error("Veículo inválido.");
+  }
+  const db = await getDb();
+  const [row] = (await db`
+    select id, name from fleet_vehicles where id = ${vehicleId} limit 1
+  `) as Array<{ id: number; name: string }>;
+  if (!row) throw new Error("Veículo não encontrado.");
+  await db`delete from fleet_vehicles where id = ${vehicleId}`;
+  return { ok: true as const, id: vehicleId, name: str(row.name) };
+}
+
+async function syncVehicleOdometerFromReadings(vehicleId: number) {
+  const db = await getDb();
+  await db`
+    update fleet_vehicles v
+    set current_odometer = coalesce((
+      select max(coalesce(r.odometer_close, r.odometer))::float
+      from fleet_readings r where r.vehicle_id = v.id
+    ), v.current_odometer),
+        updated_at = now()
+    where v.id = ${vehicleId}
+  `;
+}
+
+export async function updateReading(input: {
+  id: number;
+  odometer: number;
+  occurredAt?: string | null;
+  reason?: string | null;
+  notes?: string | null;
+}) {
+  if (!Number.isFinite(input.id) || input.id <= 0) {
+    throw new Error("Lançamento inválido.");
+  }
+  if (!Number.isFinite(input.odometer) || input.odometer < 0) {
+    throw new Error("Informe o odômetro (km) válido.");
+  }
+  const reason = nullableStr(input.reason);
+  if (!reason) throw new Error("Informe o motivo da atualização do KM.");
+  const db = await getDb();
+  const [row] = (await db`
+    select id, vehicle_id from fleet_readings where id = ${input.id} limit 1
+  `) as Array<{ id: number; vehicle_id: number }>;
+  if (!row) throw new Error("Lançamento de KM não encontrado.");
+
+  const occurredAt = input.occurredAt?.trim() || null;
+  await db`
+    update fleet_readings
+    set odometer = ${input.odometer},
+        reason = ${reason.slice(0, 200)},
+        notes = ${nullableStr(input.notes)},
+        occurred_at = coalesce(${occurredAt}::timestamptz, occurred_at)
+    where id = ${input.id}
+  `;
+  await syncVehicleOdometerFromReadings(row.vehicle_id);
+  return { ok: true as const, id: input.id, vehicleId: row.vehicle_id };
+}
+
+export async function deleteReading(readingId: number) {
+  if (!Number.isFinite(readingId) || readingId <= 0) {
+    throw new Error("Lançamento inválido.");
+  }
+  const db = await getDb();
+  const [row] = (await db`
+    select id, vehicle_id from fleet_readings where id = ${readingId} limit 1
+  `) as Array<{ id: number; vehicle_id: number }>;
+  if (!row) throw new Error("Lançamento de KM não encontrado.");
+  await db`delete from fleet_readings where id = ${readingId}`;
+  await syncVehicleOdometerFromReadings(row.vehicle_id);
+  return { ok: true as const, id: readingId, vehicleId: row.vehicle_id };
+}
+
+export async function saveFleetVehicle(input: {
+  id?: number | null;
+  name: string;
+  brand?: string | null;
+  model?: string | null;
+  plate?: string | null;
+  year?: number | null;
+  color?: string | null;
+  fuelCapacityLiters?: number | null;
+  currentOdometer?: number | null;
+  notes?: string | null;
+  active?: boolean;
+}) {
+  const db = await getDb();
+  const name = input.name.trim();
+  if (!name) throw new Error("Informe o nome/código do veículo.");
+  if (input.id) {
+    await db`
+      update fleet_vehicles set
+        name = ${name},
+        brand = ${nullableStr(input.brand)},
+        model = ${nullableStr(input.model)},
+        plate = ${nullableStr(input.plate)},
+        year = ${input.year ?? null},
+        color = ${nullableStr(input.color)},
+        fuel_capacity_liters = ${input.fuelCapacityLiters ?? null},
+        current_odometer = ${input.currentOdometer ?? 0},
+        notes = ${nullableStr(input.notes)},
+        active = ${input.active ?? true},
+        updated_at = now()
+      where id = ${input.id}
+    `;
+    return input.id;
+  }
+  const [row] = (await db`
+    insert into fleet_vehicles (
+      name, brand, model, plate, year, color, fuel_capacity_liters, current_odometer, notes, active
+    ) values (
+      ${name},
+      ${nullableStr(input.brand)},
+      ${nullableStr(input.model)},
+      ${nullableStr(input.plate)},
+      ${input.year ?? null},
+      ${nullableStr(input.color)},
+      ${input.fuelCapacityLiters ?? null},
+      ${input.currentOdometer ?? 0},
+      ${nullableStr(input.notes)},
+      ${input.active ?? true}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  return row!.id;
+}
+
+export async function saveFleetDriver(input: {
+  id?: number | null;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  cnh?: string | null;
+  userId?: number | null;
+  active?: boolean;
+}) {
+  const db = await getDb();
+  const name = input.name.trim();
+  if (!name) throw new Error("Informe o nome do motorista.");
+  if (input.id) {
+    await db`
+      update fleet_drivers set
+        name = ${name},
+        phone = ${nullableStr(input.phone)},
+        email = ${nullableStr(input.email)},
+        cnh = ${nullableStr(input.cnh)},
+        active = ${input.active ?? true}
+      where id = ${input.id}
+    `;
+    return input.id;
+  }
+  const [row] = (await db`
+    insert into fleet_drivers (name, phone, email, cnh, user_id, active)
+    values (
+      ${name},
+      ${nullableStr(input.phone)},
+      ${nullableStr(input.email)},
+      ${nullableStr(input.cnh)},
+      ${input.userId ?? null},
+      ${input.active ?? true}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  return row!.id;
+}
+
+async function bumpVehicleOdometer(vehicleId: number, odometer: number | null | undefined) {
+  if (odometer == null || !Number.isFinite(odometer)) return;
+  const db = await getDb();
+  await db`
+    update fleet_vehicles
+    set current_odometer = greatest(current_odometer, ${odometer}),
+        updated_at = now()
+    where id = ${vehicleId}
+  `;
+}
+
+export async function createRefueling(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer: number;
+  fuelType: string;
+  pricePerLiter: number;
+  totalAmount: number;
+  liters: number;
+  fullTank?: boolean;
+  station?: string | null;
+  reason?: string | null;
+  paymentMethod?: string | null;
+  discount?: number;
+  previousMissing?: boolean;
+  notes?: string | null;
+  photos?: FleetRefuelingPhoto[];
+  createdBy?: number | null;
+}) {
+  const photos = normalizeRefuelingPhotos(input.photos);
+  const attachment = encodeAttachmentPayload(photos);
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_refuelings (
+      vehicle_id, driver_id, occurred_at, odometer, fuel_type, price_per_liter,
+      total_amount, liters, full_tank, station, reason, payment_method, discount,
+      previous_missing, attachment_name, attachment_data, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${input.odometer},
+      ${input.fuelType}, ${input.pricePerLiter}, ${input.totalAmount}, ${input.liters},
+      ${input.fullTank ?? false}, ${nullableStr(input.station)}, ${nullableStr(input.reason)},
+      ${nullableStr(input.paymentMethod)}, ${input.discount ?? 0}, ${input.previousMissing ?? false},
+      ${attachment.name}, ${attachment.data},
+      ${nullableStr(input.notes)}, ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometer);
+  return row!.id;
+}
+
+export async function getRefuelingAttachments(refuelingId: number) {
+  const db = await getDb();
+  const [row] = (await db`
+    select attachment_name, attachment_data
+    from fleet_refuelings
+    where id = ${refuelingId}
+    limit 1
+  `) as Array<{ attachment_name: string | null; attachment_data: string | null }>;
+  if (!row) return null;
+  return {
+    name: row.attachment_name,
+    photos: decodeAttachmentPhotos(row.attachment_data),
+  };
+}
+
+export async function createExpense(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer?: number | null;
+  title?: string | null;
+  expenseType: string;
+  amount: number;
+  discount?: number;
+  installments?: number | null;
+  location?: string | null;
+  supplier?: string | null;
+  reason?: string | null;
+  paymentMethod?: string | null;
+  notes?: string | null;
+  createdBy?: number | null;
+}) {
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_expenses (
+      vehicle_id, driver_id, occurred_at, odometer, title, expense_type, amount,
+      discount, installments, location, supplier, reason, payment_method, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${input.odometer ?? null},
+      ${nullableStr(input.title)}, ${input.expenseType}, ${input.amount}, ${input.discount ?? 0},
+      ${input.installments ?? null}, ${nullableStr(input.location)}, ${nullableStr(input.supplier)},
+      ${nullableStr(input.reason)},
+      ${nullableStr(input.paymentMethod)}, ${nullableStr(input.notes)}, ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometer);
+  return row!.id;
+}
+
+export async function createIncome(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer?: number | null;
+  title?: string | null;
+  incomeType?: string;
+  amount: number;
+  location?: string | null;
+  paymentMethod?: string | null;
+  notes?: string | null;
+  createdBy?: number | null;
+}) {
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_incomes (
+      vehicle_id, driver_id, occurred_at, odometer, title, income_type, amount,
+      location, payment_method, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${input.odometer ?? null},
+      ${nullableStr(input.title)}, ${input.incomeType ?? "Receita"}, ${input.amount},
+      ${nullableStr(input.location)}, ${nullableStr(input.paymentMethod)},
+      ${nullableStr(input.notes)}, ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometer);
+  return row!.id;
+}
+
+export async function createService(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer?: number | null;
+  title?: string | null;
+  serviceType: string;
+  amount: number;
+  discount?: number;
+  installments?: number | null;
+  location?: string | null;
+  supplier?: string | null;
+  paymentMethod?: string | null;
+  notes?: string | null;
+  createdBy?: number | null;
+}) {
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_services (
+      vehicle_id, driver_id, occurred_at, odometer, title, service_type, amount,
+      discount, installments, location, supplier, payment_method, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${input.odometer ?? null},
+      ${nullableStr(input.title)}, ${input.serviceType}, ${input.amount}, ${input.discount ?? 0},
+      ${input.installments ?? null}, ${nullableStr(input.location)}, ${nullableStr(input.supplier)},
+      ${nullableStr(input.paymentMethod)}, ${nullableStr(input.notes)}, ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometer);
+  return row!.id;
+}
+
+export async function createRoute(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometerStart?: number | null;
+  odometerEnd?: number | null;
+  distanceKm?: number | null;
+  origin?: string | null;
+  destination?: string | null;
+  purpose?: string | null;
+  freightAmount?: number;
+  notes?: string | null;
+  createdBy?: number | null;
+}) {
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_routes (
+      vehicle_id, driver_id, occurred_at, odometer_start, odometer_end, distance_km,
+      origin, destination, purpose, freight_amount, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt},
+      ${input.odometerStart ?? null}, ${input.odometerEnd ?? null}, ${input.distanceKm ?? null},
+      ${nullableStr(input.origin)}, ${nullableStr(input.destination)}, ${nullableStr(input.purpose)},
+      ${input.freightAmount ?? 0}, ${nullableStr(input.notes)}, ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometerEnd ?? input.odometerStart);
+  return row!.id;
+}
+
+export async function createReading(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer: number;
+  kind?: string;
+  reason?: string | null;
+  notes?: string | null;
+  createdBy?: number | null;
+  profile?: "monitoramento" | "assistencia" | null;
+  odometerOpen?: number | null;
+  monitorOperatorOpen?: string | null;
+  usageReason?: string | null;
+}) {
+  const profile = input.profile === "monitoramento" || input.profile === "assistencia" ? input.profile : null;
+  const odometerOpen = Number(input.odometerOpen ?? input.odometer);
+  if (!Number.isFinite(odometerOpen) || odometerOpen < 0) {
+    throw new Error("Informe o odômetro (km) válido.");
+  }
+
+  const monitorOperatorOpen = nullableStr(input.monitorOperatorOpen);
+  const usageReason = nullableStr(input.usageReason);
+  let reason = nullableStr(input.reason);
+  if (profile === "monitoramento") {
+    if (!monitorOperatorOpen) throw new Error("Informe o operador de monitoramento na abertura.");
+    reason = reason || `Monitoramento · ${monitorOperatorOpen}`;
+  } else if (profile === "assistencia") {
+    if (!usageReason) throw new Error("Informe o motivo do uso.");
+    reason = reason || usageReason;
+  } else if (!reason) {
+    throw new Error("Informe o motivo da atualização do KM.");
+  }
+
+  const db = await getDb();
+  const [vehicle] = (await db`
+    select current_odometer::float as current_odometer
+    from fleet_vehicles
+    where id = ${input.vehicleId}
+    limit 1
+  `) as Array<{ current_odometer: number }>;
+  if (!vehicle) throw new Error("Veículo não encontrado.");
+  const previousOdometer = Number(vehicle.current_odometer ?? 0);
+  if (odometerOpen + 0.05 < previousOdometer) {
+    throw new Error(
+      `Odômetro (${odometerOpen} km) não pode ser menor que o atual do veículo (${previousOdometer} km).`,
+    );
+  }
+  const [row] = (await db`
+    insert into fleet_readings (
+      vehicle_id, driver_id, occurred_at, odometer, previous_odometer, kind, reason, notes, created_by,
+      profile, opened_at, odometer_open, monitor_operator_open, usage_reason
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${odometerOpen},
+      ${previousOdometer}, ${input.kind ?? "daily_km"}, ${reason!.slice(0, 200)},
+      ${nullableStr(input.notes)}, ${input.createdBy ?? null},
+      ${profile}, ${input.occurredAt}, ${odometerOpen},
+      ${monitorOperatorOpen ? monitorOperatorOpen.slice(0, 120) : null},
+      ${usageReason ? usageReason.slice(0, 200) : null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, odometerOpen);
+  return row!.id;
+}
+
+export async function closeReading(input: {
+  id: number;
+  closedAt: string;
+  odometerClose: number;
+  monitorOperatorClose?: string | null;
+  notes?: string | null;
+}) {
+  if (!Number.isFinite(input.id) || input.id <= 0) {
+    throw new Error("Lançamento inválido.");
+  }
+  if (!Number.isFinite(input.odometerClose) || input.odometerClose < 0) {
+    throw new Error("Informe o odômetro de fechamento válido.");
+  }
+  const db = await getDb();
+  const [row] = (await db`
+    select
+      id, vehicle_id, profile, odometer_open::float as odometer_open, odometer::float as odometer,
+      closed_at::text as closed_at
+    from fleet_readings
+    where id = ${input.id}
+    limit 1
+  `) as Array<{
+    id: number;
+    vehicle_id: number;
+    profile: string | null;
+    odometer_open: number | null;
+    odometer: number;
+    closed_at: string | null;
+  }>;
+  if (!row) throw new Error("Lançamento de KM não encontrado.");
+  if (row.closed_at) throw new Error("Este lançamento já está fechado.");
+
+  const openKm = Number(row.odometer_open ?? row.odometer);
+  if (input.odometerClose + 0.05 < openKm) {
+    throw new Error(
+      `Odômetro de fechamento (${input.odometerClose} km) não pode ser menor que a abertura (${openKm} km).`,
+    );
+  }
+
+  const operatorClose = nullableStr(input.monitorOperatorClose);
+  if (row.profile === "monitoramento" && !operatorClose) {
+    throw new Error("Informe o operador de monitoramento no fechamento.");
+  }
+
+  await db`
+    update fleet_readings
+    set odometer = ${input.odometerClose},
+        odometer_close = ${input.odometerClose},
+        closed_at = ${input.closedAt},
+        monitor_operator_close = ${operatorClose ? operatorClose.slice(0, 120) : null},
+        notes = coalesce(${nullableStr(input.notes)}, notes)
+    where id = ${input.id}
+  `;
+  await bumpVehicleOdometer(row.vehicle_id, input.odometerClose);
+  return { ok: true as const, id: input.id, vehicleId: row.vehicle_id };
+}
+
+export async function listOpenReadings(vehicleId: number) {
+  if (!Number.isFinite(vehicleId) || vehicleId <= 0) return [];
+  const db = await getDb();
+  const rows = (await db`
+    select
+      r.id,
+      r.vehicle_id,
+      r.profile,
+      r.opened_at::text as opened_at,
+      r.occurred_at::text as occurred_at,
+      coalesce(r.odometer_open, r.odometer)::float as odometer_open,
+      r.monitor_operator_open,
+      r.usage_reason,
+      r.reason,
+      d.name as driver_name
+    from fleet_readings r
+    left join fleet_drivers d on d.id = r.driver_id
+    where r.vehicle_id = ${vehicleId}
+      and r.odometer_close is null
+      and r.profile is not null
+    order by coalesce(r.opened_at, r.occurred_at) desc, r.id desc
+    limit 50
+  `) as Array<Record<string, unknown>>;
+
+  return rows.map((r) => ({
+    id: num(r["id"]),
+    vehicleId: num(r["vehicle_id"]),
+    profile: r["profile"] == null ? null : str(r["profile"]),
+    openedAt: str(r["opened_at"] ?? r["occurred_at"]),
+    odometerOpen: num(r["odometer_open"]),
+    monitorOperatorOpen: r["monitor_operator_open"] == null ? null : str(r["monitor_operator_open"]),
+    usageReason: r["usage_reason"] == null ? null : str(r["usage_reason"]),
+    reason: r["reason"] == null ? null : str(r["reason"]),
+    driverName: r["driver_name"] == null ? null : str(r["driver_name"]),
+  }));
+}
+
+export type FleetDailyKmRow = {
+  id: number;
+  vehicleId: number;
+  vehicleName: string;
+  vehiclePlate: string | null;
+  occurredAt: string;
+  previousOdometer: number | null;
+  odometer: number;
+  kmDay: number | null;
+  reason: string | null;
+  notes: string | null;
+  driverName: string | null;
+  createdByName: string | null;
+  profile: string | null;
+  openedAt: string | null;
+  closedAt: string | null;
+  odometerOpen: number | null;
+  odometerClose: number | null;
+  monitorOperatorOpen: string | null;
+  monitorOperatorClose: string | null;
+  usageReason: string | null;
+};
+
+export async function listDailyKmReadings(input: {
+  vehicleId?: number | null;
+  driverId?: number | null;
+  from?: string | null;
+  to?: string | null;
+  limit?: number;
+}): Promise<FleetDailyKmRow[]> {
+  const db = await getDb();
+  const limit = Math.min(Math.max(input.limit ?? 500, 1), 2000);
+  const vehicleId = input.vehicleId && input.vehicleId > 0 ? input.vehicleId : null;
+  const driverId = input.driverId && input.driverId > 0 ? input.driverId : null;
+  const from = input.from?.trim() || null;
+  const to = input.to?.trim() || null;
+
+  const rows = (await db`
+    with base as (
+      select
+        r.id,
+        r.vehicle_id,
+        r.occurred_at,
+        r.odometer,
+        r.previous_odometer,
+        r.reason,
+        r.notes,
+        r.driver_id,
+        r.created_by,
+        r.profile,
+        r.opened_at,
+        r.closed_at,
+        r.odometer_open,
+        r.odometer_close,
+        r.monitor_operator_open,
+        r.monitor_operator_close,
+        r.usage_reason,
+        lag(r.odometer) over (partition by r.vehicle_id order by r.occurred_at, r.id) as lag_odometer
+      from fleet_readings r
+      where (${vehicleId}::int is null or r.vehicle_id = ${vehicleId})
+        and (${driverId}::int is null or r.driver_id = ${driverId})
+        and (${from}::timestamptz is null or r.occurred_at >= ${from}::timestamptz)
+        and (${to}::timestamptz is null or r.occurred_at <= ${to}::timestamptz)
+    )
+    select
+      b.id,
+      b.vehicle_id,
+      v.name as vehicle_name,
+      v.plate as vehicle_plate,
+      b.occurred_at::text as occurred_at,
+      coalesce(b.odometer_open, b.previous_odometer, b.lag_odometer)::float as previous_odometer,
+      b.odometer::float as odometer,
+      case
+        when b.odometer_open is not null and b.odometer_close is not null
+          then greatest(b.odometer_close - b.odometer_open, 0)::float
+        when coalesce(b.previous_odometer, b.lag_odometer) is null then null
+        else greatest(b.odometer - coalesce(b.previous_odometer, b.lag_odometer), 0)::float
+      end as km_day,
+      b.reason,
+      b.notes,
+      d.name as driver_name,
+      u.name as created_by_name,
+      b.profile,
+      b.opened_at::text as opened_at,
+      b.closed_at::text as closed_at,
+      b.odometer_open::float as odometer_open,
+      b.odometer_close::float as odometer_close,
+      b.monitor_operator_open,
+      b.monitor_operator_close,
+      b.usage_reason
+    from base b
+    join fleet_vehicles v on v.id = b.vehicle_id
+    left join fleet_drivers d on d.id = b.driver_id
+    left join users u on u.id = b.created_by
+    order by b.occurred_at desc, b.id desc
+    limit ${limit}
+  `) as Array<Record<string, unknown>>;
+
+  return rows.map((r) => ({
+    id: num(r["id"]),
+    vehicleId: num(r["vehicle_id"]),
+    vehicleName: str(r["vehicle_name"]),
+    vehiclePlate: r["vehicle_plate"] == null ? null : str(r["vehicle_plate"]),
+    occurredAt: str(r["occurred_at"]),
+    previousOdometer: r["previous_odometer"] == null ? null : num(r["previous_odometer"]),
+    odometer: num(r["odometer"]),
+    kmDay: r["km_day"] == null ? null : num(r["km_day"]),
+    reason: r["reason"] == null ? null : str(r["reason"]),
+    notes: r["notes"] == null ? null : str(r["notes"]),
+    driverName: r["driver_name"] == null ? null : str(r["driver_name"]),
+    createdByName: r["created_by_name"] == null ? null : str(r["created_by_name"]),
+    profile: r["profile"] == null ? null : str(r["profile"]),
+    openedAt: r["opened_at"] == null ? null : str(r["opened_at"]),
+    closedAt: r["closed_at"] == null ? null : str(r["closed_at"]),
+    odometerOpen: r["odometer_open"] == null ? null : num(r["odometer_open"]),
+    odometerClose: r["odometer_close"] == null ? null : num(r["odometer_close"]),
+    monitorOperatorOpen: r["monitor_operator_open"] == null ? null : str(r["monitor_operator_open"]),
+    monitorOperatorClose: r["monitor_operator_close"] == null ? null : str(r["monitor_operator_close"]),
+    usageReason: r["usage_reason"] == null ? null : str(r["usage_reason"]),
+  }));
+}
+
+export async function createChecklist(input: {
+  vehicleId: number;
+  driverId?: number | null;
+  occurredAt: string;
+  odometer?: number | null;
+  title?: string;
+  items: Array<{ label: string; ok: boolean; note?: string }>;
+  notes?: string | null;
+  createdBy?: number | null;
+}) {
+  const db = await getDb();
+  const [row] = (await db`
+    insert into fleet_checklists (
+      vehicle_id, driver_id, occurred_at, odometer, title, items_json, notes, created_by
+    ) values (
+      ${input.vehicleId}, ${input.driverId ?? null}, ${input.occurredAt}, ${input.odometer ?? null},
+      ${input.title ?? "Checklist"}, ${JSON.stringify(input.items)}, ${nullableStr(input.notes)},
+      ${input.createdBy ?? null}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  await bumpVehicleOdometer(input.vehicleId, input.odometer);
+  return row!.id;
+}
+
+export async function saveReminder(input: {
+  id?: number | null;
+  vehicleId: number;
+  title: string;
+  triggerKind?: string;
+  dueDate?: string | null;
+  dueOdometer?: number | null;
+  lastDoneAt?: string | null;
+  lastDoneOdometer?: number | null;
+  intervalDays?: number | null;
+  intervalKm?: number | null;
+  active?: boolean;
+  notes?: string | null;
+}) {
+  const db = await getDb();
+  const title = input.title.trim();
+  if (!title) throw new Error("Informe o título do lembrete.");
+  if (input.id) {
+    await db`
+      update fleet_reminders set
+        title = ${title},
+        trigger_kind = ${input.triggerKind ?? "both"},
+        due_date = ${input.dueDate ?? null},
+        due_odometer = ${input.dueOdometer ?? null},
+        last_done_at = ${input.lastDoneAt ?? null},
+        last_done_odometer = ${input.lastDoneOdometer ?? null},
+        interval_days = ${input.intervalDays ?? null},
+        interval_km = ${input.intervalKm ?? null},
+        active = ${input.active ?? true},
+        notes = ${nullableStr(input.notes)}
+      where id = ${input.id}
+    `;
+    return input.id;
+  }
+  const [row] = (await db`
+    insert into fleet_reminders (
+      vehicle_id, title, trigger_kind, due_date, due_odometer, last_done_at,
+      last_done_odometer, interval_days, interval_km, active, notes
+    ) values (
+      ${input.vehicleId}, ${title}, ${input.triggerKind ?? "both"}, ${input.dueDate ?? null},
+      ${input.dueOdometer ?? null}, ${input.lastDoneAt ?? null}, ${input.lastDoneOdometer ?? null},
+      ${input.intervalDays ?? null}, ${input.intervalKm ?? null}, ${input.active ?? true},
+      ${nullableStr(input.notes)}
+    )
+    returning id
+  `) as Array<{ id: number }>;
+  return row!.id;
+}
+
+export async function listReminders(vehicleId?: number | null) {
+  const db = await getDb();
+  const rows = (await db`
+    select * from fleet_reminders
+    where active = true
+      and (${vehicleId ?? null}::int is null or vehicle_id = ${vehicleId ?? null})
+    order by due_date nulls last, due_odometer nulls last, id desc
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: num(r["id"]),
+    vehicleId: num(r["vehicle_id"]),
+    title: str(r["title"]),
+    triggerKind: str(r["trigger_kind"]),
+    dueDate: r["due_date"] == null ? null : str(r["due_date"]).slice(0, 10),
+    dueOdometer: r["due_odometer"] == null ? null : num(r["due_odometer"]),
+    lastDoneAt: r["last_done_at"] == null ? null : str(r["last_done_at"]).slice(0, 10),
+    lastDoneOdometer: r["last_done_odometer"] == null ? null : num(r["last_done_odometer"]),
+    intervalDays: r["interval_days"] == null ? null : num(r["interval_days"]),
+    intervalKm: r["interval_km"] == null ? null : num(r["interval_km"]),
+    notes: r["notes"] == null ? null : str(r["notes"]),
+  }));
+}
+
+export async function listVehicleHistory(vehicleId: number, limit = 200): Promise<FleetHistoryItem[]> {
+  const db = await getDb();
+  const rows = (await db`
+    (
+      select r.id, 'refueling'::text as kind, r.vehicle_id, r.occurred_at::text as occurred_at,
+             r.fuel_type as title, r.station as subtitle, r.total_amount as amount, r.odometer,
+             null::float as km_day,
+             d.name as driver_name, u.name as created_by_name,
+             (r.attachment_data is not null and length(r.attachment_data) > 0) as has_attachment
+      from fleet_refuelings r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    union all
+    (
+      select r.id, 'expense', r.vehicle_id, r.occurred_at::text,
+             coalesce(nullif(r.title,''), r.expense_type), r.location, r.amount, r.odometer,
+             null::float, d.name, u.name,
+             (r.attachment_data is not null and length(r.attachment_data) > 0)
+      from fleet_expenses r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    union all
+    (
+      select r.id, 'income', r.vehicle_id, r.occurred_at::text,
+             coalesce(nullif(r.title,''), r.income_type), r.location, r.amount, r.odometer,
+             null::float, d.name, u.name, false
+      from fleet_incomes r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    union all
+    (
+      select r.id, 'service', r.vehicle_id, r.occurred_at::text,
+             coalesce(nullif(r.title,''), r.service_type), r.location, r.amount, r.odometer,
+             null::float, d.name, u.name,
+             (r.attachment_data is not null and length(r.attachment_data) > 0)
+      from fleet_services r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    union all
+    (
+      select r.id, 'route', r.vehicle_id, r.occurred_at::text,
+             coalesce(r.origin,'') || ' → ' || coalesce(r.destination,''),
+             r.purpose, r.freight_amount, r.odometer_end,
+             r.distance_km::float, d.name, u.name, false
+      from fleet_routes r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    union all
+    (
+      select r.id, 'reading', r.vehicle_id, r.occurred_at::text,
+             case
+               when lower(coalesce(r.kind, '')) = 'entrada' then 'KM · Entrada'
+               when lower(coalesce(r.kind, '')) in ('saida', 'saída') then 'KM · Saída'
+               else 'KM do dia'
+             end,
+             trim(both ' · ' from concat_ws(' · ',
+               case
+                 when r.prev_odo is null then 'Primeira leitura'
+                 else 'Rodou ' || trim(to_char(greatest(r.odometer - r.prev_odo, 0), 'FM999999990.0999')) || ' km'
+               end,
+               nullif(r.reason, '')
+             )),
+             0, r.odometer,
+             case when r.prev_odo is null then null
+                  else greatest(r.odometer - r.prev_odo, 0)::float end,
+             d.name, u.name, false
+      from (
+        select rd.*,
+               coalesce(
+                 rd.previous_odometer,
+                 lag(rd.odometer) over (partition by rd.vehicle_id order by rd.occurred_at, rd.id)
+               ) as prev_odo
+        from fleet_readings rd
+        where rd.vehicle_id = ${vehicleId}
+      ) r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+    )
+    union all
+    (
+      select r.id, 'checklist', r.vehicle_id, r.occurred_at::text, r.title, null, 0, r.odometer,
+             null::float, d.name, u.name, false
+      from fleet_checklists r
+      left join fleet_drivers d on d.id = r.driver_id
+      left join users u on u.id = r.created_by
+      where r.vehicle_id = ${vehicleId}
+    )
+    order by occurred_at desc
+    limit ${limit}
+  `) as Array<Record<string, unknown>>;
+
+  return rows.map((r) => ({
+    id: num(r["id"]),
+    kind: str(r["kind"]) as FleetHistoryItem["kind"],
+    vehicleId: num(r["vehicle_id"]),
+    occurredAt: str(r["occurred_at"]),
+    title: str(r["title"]),
+    subtitle: r["subtitle"] == null ? null : str(r["subtitle"]),
+    amount: num(r["amount"]),
+    odometer: r["odometer"] == null ? null : num(r["odometer"]),
+    kmDay: r["km_day"] == null ? null : num(r["km_day"]),
+    driverName: r["driver_name"] == null ? null : str(r["driver_name"]),
+    createdByName: r["created_by_name"] == null ? null : str(r["created_by_name"]),
+    hasAttachment: Boolean(r["has_attachment"]),
+  }));
+}
+
+export async function getFleetReportTotals(
+  vehicleId: number | null,
+  fromIso: string,
+  toIso: string,
+) {
+  const db = await getDb();
+  const vid = vehicleId;
+  const [refuel] = (await db`
+    select coalesce(sum(total_amount),0)::float as total, count(*)::int as qty,
+           coalesce(sum(liters),0)::float as liters,
+           coalesce(avg(nullif(price_per_liter,0)),0)::float as avg_price,
+           coalesce(min(nullif(price_per_liter,0)),0)::float as min_price,
+           coalesce(max(price_per_liter),0)::float as max_price,
+           coalesce(sum(case when full_tank then 1 else 0 end),0)::int as full_tank_qty
+    from fleet_refuelings
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{
+    total: number;
+    qty: number;
+    liters: number;
+    avg_price: number;
+    min_price: number;
+    max_price: number;
+    full_tank_qty: number;
+  }>;
+  const [expense] = (await db`
+    select coalesce(sum(amount),0)::float as total, count(*)::int as qty
+    from fleet_expenses
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ total: number; qty: number }>;
+  const [service] = (await db`
+    select coalesce(sum(amount),0)::float as total, count(*)::int as qty
+    from fleet_services
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ total: number; qty: number }>;
+  const [income] = (await db`
+    select coalesce(sum(amount),0)::float as total, count(*)::int as qty
+    from fleet_incomes
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ total: number; qty: number }>;
+  const [route] = (await db`
+    select coalesce(sum(distance_km),0)::float as km, coalesce(sum(freight_amount),0)::float as freight,
+           count(*)::int as qty
+    from fleet_routes
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ km: number; freight: number; qty: number }>;
+  const [reading] = (await db`
+    select count(*)::int as qty from fleet_readings
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ qty: number }>;
+  const [checklist] = (await db`
+    select count(*)::int as qty from fleet_checklists
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+  `) as Array<{ qty: number }>;
+  const [reminder] = (await db`
+    select count(*)::int as qty from fleet_reminders
+    where (${vid}::int is null or vehicle_id = ${vid}) and active = true
+  `) as Array<{ qty: number }>;
+
+  const refuelRows = (await db`
+    select vehicle_id::int as vehicle_id, occurred_at::text as occurred_at,
+           odometer::float as odometer, liters::float as liters,
+           total_amount::float as total_amount, price_per_liter::float as price_per_liter,
+           full_tank
+    from fleet_refuelings
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+    order by vehicle_id asc, occurred_at asc, odometer asc, id asc
+  `) as Array<{
+    vehicle_id: number;
+    occurred_at: string;
+    odometer: number;
+    liters: number;
+    total_amount: number;
+    price_per_liter: number;
+    full_tank: boolean;
+  }>;
+
+  const efficiencies: number[] = [];
+  const gapsKm: number[] = [];
+  const gapsDays: number[] = [];
+  for (let i = 1; i < refuelRows.length; i++) {
+    const prev = refuelRows[i - 1]!;
+    const cur = refuelRows[i]!;
+    if (prev.vehicle_id !== cur.vehicle_id) continue;
+    const km = num(cur.odometer) - num(prev.odometer);
+    if (km > 0) gapsKm.push(km);
+    const dayMs = new Date(cur.occurred_at).getTime() - new Date(prev.occurred_at).getTime();
+    if (dayMs > 0) gapsDays.push(dayMs / 86_400_000);
+    // eficiência típica: km desde o abastecimento anterior / litros do atual (tanque cheio)
+    if (cur.full_tank && km > 0 && num(cur.liters) > 0) {
+      efficiencies.push(km / num(cur.liters));
+    }
+  }
+
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+  const fromMs = new Date(fromIso).getTime();
+  const toMs = new Date(toIso).getTime();
+  const periodDays = Math.max(1, Math.round((toMs - fromMs) / 86_400_000) || 1);
+
+  const monthlyRaw = (await db`
+    select to_char(occurred_at, 'YYYY-MM') as month, coalesce(sum(total_amount),0)::float as total
+    from fleet_refuelings
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+    group by 1 order by 1
+  `) as Array<{ month: string; total: number }>;
+  const monthlyExpense = (await db`
+    select to_char(occurred_at, 'YYYY-MM') as month, coalesce(sum(amount),0)::float as total
+    from fleet_expenses
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+    group by 1 order by 1
+  `) as Array<{ month: string; total: number }>;
+  const monthlyIncome = (await db`
+    select to_char(occurred_at, 'YYYY-MM') as month, coalesce(sum(amount),0)::float as total
+    from fleet_incomes
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+    group by 1 order by 1
+  `) as Array<{ month: string; total: number }>;
+  const monthlyService = (await db`
+    select to_char(occurred_at, 'YYYY-MM') as month, coalesce(sum(amount),0)::float as total
+    from fleet_services
+    where (${vid}::int is null or vehicle_id = ${vid})
+      and occurred_at >= ${fromIso} and occurred_at <= ${toIso}
+    group by 1 order by 1
+  `) as Array<{ month: string; total: number }>;
+
+  const cost = num(refuel?.total) + num(expense?.total) + num(service?.total);
+  const revenue = num(income?.total) + num(route?.freight);
+  const refuelQty = num(refuel?.qty);
+  const refuelLiters = num(refuel?.liters);
+  const refuelTotal = num(refuel?.total);
+  const avgEfficiency = avg(efficiencies);
+
+  return {
+    vehicleId: vid,
+    from: fromIso,
+    to: toIso,
+    periodDays,
+    cost,
+    revenue,
+    balance: revenue - cost,
+    refuelTotal,
+    refuelLiters,
+    expenseTotal: num(expense?.total),
+    serviceTotal: num(service?.total),
+    incomeTotal: num(income?.total),
+    distanceKm: num(route?.km),
+    counts: {
+      refuel: refuelQty,
+      expense: num(expense?.qty),
+      service: num(service?.qty),
+      income: num(income?.qty),
+      route: num(route?.qty),
+      reading: num(reading?.qty),
+      checklist: num(checklist?.qty),
+      reminder: num(reminder?.qty),
+    },
+    refueling: {
+      cost: refuelTotal,
+      costPerDay: refuelTotal / periodDays,
+      costPerKm: gapsKm.length ? refuelTotal / gapsKm.reduce((a, b) => a + b, 0) : 0,
+      liters: refuelLiters,
+      litersPerRefuel: refuelQty ? refuelLiters / refuelQty : 0,
+      litersPerDay: refuelLiters / periodDays,
+      avgPrice: num(refuel?.avg_price),
+      minPrice: num(refuel?.min_price),
+      maxPrice: num(refuel?.max_price),
+      avgEfficiency,
+      minEfficiency: efficiencies.length ? Math.min(...efficiencies) : 0,
+      maxEfficiency: efficiencies.length ? Math.max(...efficiencies) : 0,
+      kmBetween: avg(gapsKm),
+      frequencyDays: avg(gapsDays),
+      monthlyProjection: (refuelTotal / periodDays) * 30,
+      fullTankQty: num(refuel?.full_tank_qty),
+      fullTankPct: refuelQty ? (num(refuel?.full_tank_qty) / refuelQty) * 100 : 0,
+    },
+    monthly: {
+      refuel: monthlyRaw.map((r) => ({ month: str(r.month), total: num(r.total) })),
+      expense: monthlyExpense.map((r) => ({ month: str(r.month), total: num(r.total) })),
+      income: monthlyIncome.map((r) => ({ month: str(r.month), total: num(r.total) })),
+      service: monthlyService.map((r) => ({ month: str(r.month), total: num(r.total) })),
+    },
+  };
+}

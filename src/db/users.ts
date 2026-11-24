@@ -1,0 +1,314 @@
+import { compare, hash } from "bcryptjs";
+
+import {
+  modulesForRole,
+  serializeModules,
+  type AppModuleId,
+} from "@/lib/modules";
+import { getDb, type AppRole, type AppUser, type AppUserRow } from "./schema";
+
+function toRole(value: string | null | undefined): AppRole {
+  if (value === "superadmin") return "superadmin";
+  if (value === "admin") return "admin";
+  return "operator";
+}
+
+function toPublicUser(row: AppUserRow): AppUser {
+  const role = toRole(row.role);
+  return {
+    id: row.id,
+    username: row.username,
+    name: row.name,
+    role,
+    active: row.active,
+    modules: modulesForRole(role, row.modules ?? null),
+    isTecnico: Boolean(row.is_tecnico),
+    isComprador: Boolean(row.is_comprador),
+    isVendedor: Boolean(row.is_vendedor),
+    defaultVehicleId:
+      row.default_vehicle_id == null ? null : Number(row.default_vehicle_id),
+  };
+}
+
+export async function findUserByUsername(username: string) {
+  const db = await getDb();
+  const rows = (await db`
+    select id, username, password_hash, name, role, active, modules,
+           coalesce(is_tecnico, false) as is_tecnico,
+           coalesce(is_comprador, false) as is_comprador,
+           coalesce(is_vendedor, false) as is_vendedor,
+           default_vehicle_id
+    from users
+    where username = ${username}
+    limit 1
+  `) as AppUserRow[];
+  return rows[0];
+}
+
+export async function findUserById(id: number, opts?: { includeInactive?: boolean }) {
+  const db = await getDb();
+  const rows = opts?.includeInactive
+    ? ((await db`
+        select id, username, password_hash, name, role, active, modules,
+               coalesce(is_tecnico, false) as is_tecnico,
+               coalesce(is_comprador, false) as is_comprador,
+               coalesce(is_vendedor, false) as is_vendedor,
+               default_vehicle_id
+        from users
+        where id = ${id}
+        limit 1
+      `) as AppUserRow[])
+    : ((await db`
+        select id, username, password_hash, name, role, active, modules,
+               coalesce(is_tecnico, false) as is_tecnico,
+               coalesce(is_comprador, false) as is_comprador,
+               coalesce(is_vendedor, false) as is_vendedor,
+               default_vehicle_id
+        from users
+        where id = ${id} and active = true
+        limit 1
+      `) as AppUserRow[]);
+  const row = rows[0];
+  return row ? toPublicUser(row) : undefined;
+}
+
+export async function authenticateUser(username: string, password: string) {
+  const user = await findUserByUsername(username);
+  if (!user || !user.active) return undefined;
+  const matches = await compare(password, user.password_hash);
+  if (!matches) return undefined;
+  return findUserById(user.id);
+}
+
+export async function listUsers() {
+  const db = await getDb();
+  const rows = (await db`
+    select id, username, password_hash, name, role, active, modules,
+           coalesce(is_tecnico, false) as is_tecnico,
+           coalesce(is_comprador, false) as is_comprador,
+           coalesce(is_vendedor, false) as is_vendedor,
+           default_vehicle_id
+    from users
+    order by name
+  `) as AppUserRow[];
+  return rows.map(toPublicUser);
+}
+
+export async function listTecnicos(activeOnly = true) {
+  const db = await getDb();
+  const rows = (await db`
+    select id, username, password_hash, name, role, active, modules,
+           coalesce(is_tecnico, false) as is_tecnico,
+           coalesce(is_comprador, false) as is_comprador,
+           coalesce(is_vendedor, false) as is_vendedor,
+           default_vehicle_id
+    from users
+    where coalesce(is_tecnico, false) = true
+      and (${activeOnly}::boolean = false or active = true)
+    order by name
+  `) as AppUserRow[];
+  return rows.map(toPublicUser);
+}
+
+export async function listVendedores(activeOnly = true) {
+  const db = await getDb();
+  const rows = (await db`
+    select id, username, password_hash, name, role, active, modules,
+           coalesce(is_tecnico, false) as is_tecnico,
+           coalesce(is_comprador, false) as is_comprador,
+           coalesce(is_vendedor, false) as is_vendedor,
+           default_vehicle_id
+    from users
+    where coalesce(is_vendedor, false) = true
+      and (${activeOnly}::boolean = false or active = true)
+    order by name
+  `) as AppUserRow[];
+  return rows.map(toPublicUser);
+}
+
+export async function createUser(input: {
+  username: string;
+  password: string;
+  name: string;
+  role: Exclude<AppRole, "superadmin">;
+  modules?: AppModuleId[];
+  isTecnico?: boolean;
+  isComprador?: boolean;
+  isVendedor?: boolean;
+  defaultVehicleId?: number | null;
+}) {
+  const db = await getDb();
+  const passwordHash = await hash(input.password, 10);
+  const modulesJson =
+    input.role === "operator" ? serializeModules(input.modules ?? []) : null;
+  const rows = (await db`
+    insert into users (
+      username, password_hash, name, role, active, modules,
+      is_tecnico, is_comprador, is_vendedor, default_vehicle_id
+    )
+    values (
+      ${input.username}, ${passwordHash}, ${input.name}, ${input.role}, true,
+      ${modulesJson},
+      ${Boolean(input.isTecnico)},
+      ${Boolean(input.isComprador)},
+      ${Boolean(input.isVendedor)},
+      ${input.defaultVehicleId ?? null}
+    )
+    returning id, username, password_hash, name, role, active, modules,
+              coalesce(is_tecnico, false) as is_tecnico,
+              coalesce(is_comprador, false) as is_comprador,
+              coalesce(is_vendedor, false) as is_vendedor,
+              default_vehicle_id
+  `) as AppUserRow[];
+  const row = rows[0];
+  if (!row) throw new Error("Não foi possível criar o usuário");
+  return toPublicUser(row);
+}
+
+export async function setUserActive(id: number, active: boolean) {
+  const db = await getDb();
+  await db`update users set active = ${active}, updated_at = now() where id = ${id}`;
+}
+
+export async function updateUserModules(id: number, modules: AppModuleId[]) {
+  const db = await getDb();
+  const target = await findUserById(id, { includeInactive: true });
+  if (!target) throw new Error("Usuário não encontrado.");
+  if (target.role !== "operator") {
+    throw new Error("Somente operadores têm módulos configuráveis.");
+  }
+  await db`
+    update users
+    set modules = ${serializeModules(modules)}, updated_at = now()
+    where id = ${id}
+  `;
+  return findUserById(id, { includeInactive: true });
+}
+
+export async function updateUserStaff(
+  id: number,
+  input: {
+    isTecnico: boolean;
+    isComprador: boolean;
+    isVendedor: boolean;
+    defaultVehicleId: number | null;
+  },
+) {
+  const db = await getDb();
+  const target = await findUserById(id, { includeInactive: true });
+  if (!target) throw new Error("Usuário não encontrado.");
+  await db`
+    update users
+    set is_tecnico = ${input.isTecnico},
+        is_comprador = ${input.isComprador},
+        is_vendedor = ${input.isVendedor},
+        default_vehicle_id = ${input.defaultVehicleId},
+        updated_at = now()
+    where id = ${id}
+  `;
+  return findUserById(id, { includeInactive: true });
+}
+
+export async function updateUserProfile(id: number, name: string, password?: string) {
+  const db = await getDb();
+  if (password) {
+    const passwordHash = await hash(password, 10);
+    await db`
+      update users
+      set name = ${name}, password_hash = ${passwordHash}, updated_at = now()
+      where id = ${id}
+    `;
+    return;
+  }
+  await db`update users set name = ${name}, updated_at = now() where id = ${id}`;
+}
+
+export async function setUserPasswordByAdmin(id: number, password: string) {
+  const db = await getDb();
+  const passwordHash = await hash(password, 10);
+  await db`
+    update users
+    set password_hash = ${passwordHash}, updated_at = now()
+    where id = ${id}
+  `;
+  return findUserById(id, { includeInactive: true });
+}
+
+export async function updateTecnicoLocation(
+  userId: number,
+  input: {
+    lat: number;
+    lng: number;
+    at?: Date | string | null;
+    accuracy?: number | null;
+  },
+) {
+  const lat = Number(input.lat);
+  const lng = Number(input.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error("Coordenadas inválidas.");
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    throw new Error("Coordenadas fora do intervalo.");
+  }
+  const at =
+    input.at != null && input.at !== ""
+      ? new Date(input.at)
+      : new Date();
+  if (Number.isNaN(at.getTime())) {
+    throw new Error("Timestamp de localização inválido.");
+  }
+  const accuracyRaw =
+    input.accuracy == null || input.accuracy === ("" as unknown)
+      ? null
+      : Number(input.accuracy);
+  const accuracy =
+    accuracyRaw != null && Number.isFinite(accuracyRaw) && accuracyRaw >= 0
+      ? Math.round(accuracyRaw * 100) / 100
+      : null;
+
+  const db = await getDb();
+  // Se já temos um ponto fresco e bem preciso, ignora leitura bem pior.
+  if (accuracy != null && accuracy > 80) {
+    const [prev] = (await db`
+      select last_lat, last_lng, last_location_at, last_accuracy_m
+      from users where id = ${userId} limit 1
+    `) as Array<{
+      last_lat: number | string | null;
+      last_lng: number | string | null;
+      last_location_at: Date | string | null;
+      last_accuracy_m: number | string | null;
+    }>;
+    if (prev?.last_lat != null && prev.last_lng != null && prev.last_location_at) {
+      const ageMs = Date.now() - new Date(prev.last_location_at).getTime();
+      const prevAcc =
+        prev.last_accuracy_m == null ? null : Number(prev.last_accuracy_m);
+      if (
+        ageMs < 15 * 60 * 1000 &&
+        prevAcc != null &&
+        Number.isFinite(prevAcc) &&
+        prevAcc <= 50 &&
+        accuracy > prevAcc * 2
+      ) {
+        return {
+          lat: Number(prev.last_lat),
+          lng: Number(prev.last_lng),
+          at: new Date(prev.last_location_at).toISOString(),
+          accuracy: prevAcc,
+          keptPrevious: true as const,
+        };
+      }
+    }
+  }
+
+  await db`
+    update users
+    set last_lat = ${lat},
+        last_lng = ${lng},
+        last_location_at = ${at},
+        last_accuracy_m = ${accuracy},
+        updated_at = now()
+    where id = ${userId}
+  `;
+  return { lat, lng, at: at.toISOString(), accuracy, keptPrevious: false as const };
+}

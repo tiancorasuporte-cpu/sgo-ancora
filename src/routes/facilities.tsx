@@ -1,0 +1,4889 @@
+﻿import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { z } from "zod";
+
+import { AppShell } from "@/components/AppShell";
+import { PageTitle } from "@/components/PageChrome";
+import { Icon } from "@/components/Icon";
+import { TablePager, paginateList } from "@/components/TablePager";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { APP_NAME } from "@/lib/brand";
+import {
+  createFacilitiesCollaboratorFn,
+  createFacilitiesPostFn,
+  createFacilitiesSubstitutionFn,
+  createFacilitiesVacationFn,
+  deactivateFacilitiesCollaboratorFn,
+  deactivateFacilitiesPostFn,
+  deleteFacilitiesSubstitutionFn,
+  deleteFacilitiesVacationFn,
+  deleteFacilitiesSubstitutionAtestadoFn,
+  getFacilitiesBootstrapFn,
+  getFacilitiesSubstitutionAtestadoFn,
+  importFacilitiesCollaboratorsFn,
+  importFacilitiesPostsFn,
+  saveFacilitiesHourRatesFn,
+  updateFacilitiesCollaboratorFn,
+  updateFacilitiesPostFn,
+  updateFacilitiesSubstitutionAlmocoFn,
+  updateFacilitiesSubstitutionFn,
+} from "@/lib/facilities";
+import {
+  combineHoursAndMinutes,
+  countInclusiveDays,
+  currentMonthKey,
+  defaultAplicaDesconto,
+  defaultHoursForEscala,
+  defaultPeriodoFromEscala,
+  FACILITIES_MOTIVOS_SUBSTITUICAO,
+  FACILITIES_PERIODOS,
+  facilitiesFuncaoLabel,
+  facilitiesMotivoHint,
+  facilitiesMotivoPagaHoras,
+  formatDurationHours,
+  isFacilitiesExtraMotivo,
+  isFacilitiesPermutaMotivo,
+  splitDecimalHours,
+  type FacilitiesEmpresaId,
+  type FacilitiesEscalaId,
+  type FacilitiesFuncaoId,
+  type FacilitiesHourRate,
+  type FacilitiesMotivoId,
+  type FacilitiesPeriodoId,
+} from "@/lib/facilities-domain";
+import {
+  downloadFacilitiesCollaboratorsModeloExcel,
+  downloadFacilitiesPostsModeloExcel,
+  parseFacilitiesCollaboratorsFromMatrix,
+  parseFacilitiesPostsFromMatrix,
+  readFacilitiesSpreadsheetMatrix,
+} from "@/lib/facilities-cadastro-excel";
+import { downloadFacilitiesFechamentoExcel } from "@/lib/facilities-excel";
+import { downloadFacilitiesFechamentoPdf } from "@/lib/facilities-fechamento-pdf";
+import { requireModule } from "@/lib/require-auth";
+import { notifyError, notifyOk } from "@/lib/notify";
+import { matchesQuery } from "@/lib/text-search";
+import { cn } from "@/lib/utils";
+
+const searchSchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/)
+    .catch(currentMonthKey()),
+  tab: z
+    .enum(["painel", "lancar", "ferias", "cadastros", "valores", "fechamento"])
+    .catch("painel"),
+  postoId: z.coerce.number().int().positive().optional().catch(undefined),
+  collaboratorId: z.coerce.number().int().positive().optional().catch(undefined),
+  dataDe: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .catch(undefined),
+  dataAte: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .catch(undefined),
+});
+
+export const Route = createFileRoute("/facilities")({
+  validateSearch: searchSchema,
+  beforeLoad: () => requireModule("facilities"),
+  loaderDeps: ({ search }) => ({
+    monthKey: search.month,
+  }),
+  loader: ({ deps }) =>
+    getFacilitiesBootstrapFn({
+      data: {
+        monthKey: deps.monthKey,
+      },
+    }),
+  head: () => ({
+    meta: [{ title: `Facilities — ${APP_NAME}` }],
+  }),
+  component: FacilitiesPage,
+});
+
+type TabId = z.infer<typeof searchSchema>["tab"];
+type PageSize = 10 | 20;
+
+function PageSizeSelect({
+  value,
+  onChange,
+}: {
+  value: PageSize;
+  onChange: (value: PageSize) => void;
+}) {
+  return (
+    <label className="block space-y-xs">
+      <span className="text-label-md text-primary">Por página</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value) as PageSize)}
+        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-28"
+      >
+        <option value={10}>10</option>
+        <option value={20}>20</option>
+      </select>
+    </label>
+  );
+}
+
+const TABS: Array<{ id: TabId; label: string; icon: string }> = [
+  { id: "painel", label: "Painel", icon: "dashboard" },
+  { id: "lancar", label: "Lançar", icon: "swap_horiz" },
+  { id: "ferias", label: "Férias", icon: "beach_access" },
+  { id: "cadastros", label: "Cadastros", icon: "badge" },
+  { id: "valores", label: "Valores", icon: "payments" },
+  { id: "fechamento", label: "Fechamento", icon: "receipt_long" },
+];
+
+async function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function downloadDataUrl(dataUrl: string, fileName: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = fileName;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+const EMPRESA_TONE: Record<string, string> = {
+  angela: "bg-amber-100 text-amber-900",
+  ancora: "bg-sky-100 text-sky-900",
+  belfer: "bg-emerald-100 text-emerald-900",
+};
+
+function formatDateBr(value: string) {
+  const iso = /^\d{4}-\d{2}-\d{2}/.test(value)
+    ? value.slice(0, 10)
+    : (() => {
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return null;
+        const y = parsed.getUTCFullYear();
+        const m = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+        const d = String(parsed.getUTCDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      })();
+  if (!iso) return value;
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return value;
+  return `${d}/${m}/${y}`;
+}
+
+function isoToBr(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  return formatDateBr(value);
+}
+
+function brToIso(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 8);
+  if (digits.length !== 8) return null;
+  const d = digits.slice(0, 2);
+  const m = digits.slice(2, 4);
+  const y = digits.slice(4, 8);
+  const day = Number(d);
+  const month = Number(m);
+  const year = Number(y);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900) return null;
+  const dt = new Date(year, month - 1, day);
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) {
+    return null;
+  }
+  return `${y}-${m}-${d}`;
+}
+
+function maskBrDateInput(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+function DateInputBr({
+  label,
+  valueIso,
+  onChangeIso,
+  required,
+  fullWidth,
+}: {
+  label: string;
+  valueIso: string;
+  onChangeIso: (iso: string) => void;
+  required?: boolean;
+  fullWidth?: boolean;
+}) {
+  const [text, setText] = useState(() => (valueIso ? isoToBr(valueIso) : ""));
+  const pickerRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setText(valueIso ? isoToBr(valueIso) : "");
+  }, [valueIso]);
+
+  const openPicker = () => {
+    const el = pickerRef.current;
+    if (!el) return;
+    try {
+      if (typeof el.showPicker === "function") {
+        el.showPicker();
+      } else {
+        el.click();
+      }
+    } catch {
+      el.click();
+    }
+  };
+
+  return (
+    <label className="block space-y-xs">
+      <span className="text-label-md text-primary">{label}</span>
+      <div className={cn("relative", fullWidth ? "w-full" : "w-full sm:w-40")}>
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="dd/mm/aaaa"
+          required={required}
+          value={text}
+          onChange={(e) => {
+            const masked = maskBrDateInput(e.target.value);
+            setText(masked);
+            if (masked.length === 0) {
+              onChangeIso("");
+              return;
+            }
+            const iso = brToIso(masked);
+            if (iso) onChangeIso(iso);
+          }}
+          onBlur={() => {
+            if (!text.trim()) {
+              onChangeIso("");
+              setText("");
+              return;
+            }
+            const iso = brToIso(text);
+            if (iso) {
+              setText(isoToBr(iso));
+              onChangeIso(iso);
+            } else if (valueIso) {
+              setText(isoToBr(valueIso));
+            } else {
+              setText("");
+            }
+          }}
+          className="w-full rounded-lg border border-outline-variant bg-surface py-sm pl-sm pr-10 text-body-md"
+        />
+        <input
+          ref={pickerRef}
+          type="date"
+          tabIndex={-1}
+          aria-hidden
+          value={/^\d{4}-\d{2}-\d{2}$/.test(valueIso) ? valueIso : ""}
+          onChange={(e) => {
+            const iso = e.target.value;
+            onChangeIso(iso);
+            setText(iso ? isoToBr(iso) : "");
+          }}
+          className="pointer-events-none absolute h-0 w-0 opacity-0"
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={`Abrir calendário — ${label}`}
+          onClick={openPicker}
+          className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-on-surface-variant hover:bg-surface-container-high hover:text-primary"
+        >
+          <Icon name="calendar_month" className="text-[20px]" />
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function formatHours(value: number) {
+  return formatDurationHours(value);
+}
+
+function durationPartsFromHours(value: number | string) {
+  const parts = splitDecimalHours(Number(value) || 0);
+  return {
+    horasHoras: String(parts.hours),
+    horasMinutos: String(parts.minutes),
+  };
+}
+
+function hasObservacao(value: string | null | undefined) {
+  return Boolean(value && value.trim());
+}
+
+function formatMoneyBr(value: number) {
+  return value.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function almocoLabel(row: { pagaAlmoco?: boolean; valorAlmoco?: number }) {
+  if (!row.pagaAlmoco || !(Number(row.valorAlmoco) > 0)) return null;
+  return `Almoço ${formatMoneyBr(Number(row.valorAlmoco))}`;
+}
+
+function monthLabel(monthKey: string) {
+  const [y, m] = monthKey.split("-").map(Number);
+  if (!y || !m || m < 1 || m > 12) return monthKey;
+  const months = [
+    "Janeiro",
+    "Fevereiro",
+    "Março",
+    "Abril",
+    "Maio",
+    "Junho",
+    "Julho",
+    "Agosto",
+    "Setembro",
+    "Outubro",
+    "Novembro",
+    "Dezembro",
+  ];
+  return `${months[m - 1]} de ${y}`;
+}
+
+function shiftMonth(monthKey: string, delta: number) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const date = new Date(y!, (m! - 1) + delta, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function EmpresaBadge({ id, label }: { id: string; label: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full px-sm py-xs text-label-md font-semibold",
+        EMPRESA_TONE[id] ?? "bg-surface-container-high text-on-surface",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+type SearchPickOption = {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  keywords?: Array<string | number | null | undefined>;
+  disabled?: boolean;
+};
+
+function SearchablePick({
+  label,
+  value,
+  options,
+  placeholder = "Digite para buscar...",
+  emptyLabel = "Nenhum resultado",
+  onChange,
+  allowClear = false,
+  clearLabel = "Limpar",
+}: {
+  label: string;
+  value: string;
+  options: SearchPickOption[];
+  placeholder?: string;
+  emptyLabel?: string;
+  onChange: (id: string) => void;
+  allowClear?: boolean;
+  clearLabel?: string;
+}) {
+  const selected = options.find((o) => o.id === value && !o.disabled) ?? null;
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    if (!selected && open) {
+      inputRef.current?.focus();
+    }
+  }, [selected, open]);
+
+  const filtered = useMemo(() => {
+    const list = options.filter((o) => !o.disabled);
+    const matched = list.filter((o) =>
+      matchesQuery(query, [o.title, o.subtitle, ...(o.keywords ?? [])]),
+    );
+    return matched.slice(0, 50);
+  }, [options, query]);
+
+  if (selected) {
+    return (
+      <div className="block space-y-xs">
+        <span className="text-label-md text-primary">{label}</span>
+        <div className="flex min-h-11 items-center justify-between gap-sm rounded-lg border border-outline-variant bg-surface px-sm py-sm">
+          <div className="min-w-0">
+            <p className="truncate text-body-md text-on-surface">{selected.title}</p>
+            {selected.subtitle ? (
+              <p className="truncate text-label-md text-on-surface-variant">{selected.subtitle}</p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="shrink-0 rounded-lg px-sm py-xs text-label-md font-semibold text-primary hover:bg-surface-container-high"
+            onClick={() => {
+              onChange("");
+              setQuery("");
+              setOpen(true);
+            }}
+          >
+            Trocar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="block space-y-xs" ref={rootRef}>
+      <span className="text-label-md text-primary">{label}</span>
+      <div className="relative">
+        <Icon
+          name="search"
+          className="pointer-events-none absolute left-sm top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant"
+        />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          autoComplete="off"
+          className="w-full rounded-lg border border-outline-variant bg-surface py-sm pl-[40px] pr-sm text-body-md min-h-11"
+        />
+        {open ? (
+          <ul className="absolute z-20 mt-xs max-h-[min(16rem,50vh)] w-full overflow-auto rounded-lg border border-outline-variant bg-surface-container-lowest shadow-lg">
+            {allowClear ? (
+              <li>
+                <button
+                  type="button"
+                  className="block w-full px-sm py-md text-left text-body-md text-on-surface-variant hover:bg-surface-container-high"
+                  onClick={() => {
+                    onChange("");
+                    setQuery("");
+                    setOpen(false);
+                  }}
+                >
+                  {clearLabel}
+                </button>
+              </li>
+            ) : null}
+            {filtered.length === 0 ? (
+              <li className="px-sm py-md text-center text-body-md text-on-surface-variant">
+                {emptyLabel}
+              </li>
+            ) : (
+              filtered.map((option) => (
+                <li key={option.id}>
+                  <button
+                    type="button"
+                    className="block w-full px-sm py-md text-left hover:bg-surface-container-high active:bg-surface-container"
+                    onClick={() => {
+                      onChange(option.id);
+                      setQuery("");
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="block text-body-md text-on-surface">{option.title}</span>
+                    {option.subtitle ? (
+                      <span className="block text-label-md text-on-surface-variant">
+                        {option.subtitle}
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function FacilitiesPage() {
+  const data = Route.useLoaderData();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const router = useRouter();
+
+  const [importReport, setImportReport] = useState<{
+    title: string;
+    created: number;
+    skipped: number;
+    errors: string[];
+  } | null>(null);
+  const [pending, setPending] = useState(false);
+
+  const [lancarMode, setLancarMode] = useState<"substituicao" | "extra">("substituicao");
+  const [editingSubstitutionId, setEditingSubstitutionId] = useState<number | null>(null);
+  const [editingKeepAtestado, setEditingKeepAtestado] = useState(false);
+  const [subForm, setSubForm] = useState({
+    data: todayIso(),
+    motivo: "falta" as FacilitiesMotivoId,
+    postoId: "",
+    ausenteId: "",
+    substitutoId: "",
+    horasHoras: "12",
+    horasMinutos: "0",
+    periodo: "diurno" as FacilitiesPeriodoId,
+    temHoraExtra: false,
+    horasExtraHoras: "0",
+    horasExtraMinutos: "0",
+    periodoExtra: "diurno" as FacilitiesPeriodoId,
+    aplicaDesconto: true,
+    atestadoNome: null as string | null,
+    atestadoMime: null as string | null,
+    atestadoData: null as string | null,
+    observacao: "",
+    pagaAlmoco: false,
+    valorAlmoco: "",
+  });
+  const [ratesForm, setRatesForm] = useState<FacilitiesHourRate[]>(() =>
+    (data.hourRates ?? []).map((r) => ({ ...r })),
+  );
+
+  const [vacForm, setVacForm] = useState({
+    colaboradorId: "",
+    coberturaId: "",
+    postoId: "",
+    dataInicio: todayIso(),
+    dataFim: todayIso(),
+    horasHoras: "12",
+    horasMinutos: "0",
+    horasPorDia: true,
+    observacao: "",
+  });
+  const [feriasPage, setFeriasPage] = useState(1);
+  const [feriasPageSize, setFeriasPageSize] = useState<PageSize>(10);
+  const [fechFeriasPage, setFechFeriasPage] = useState(1);
+
+  const [postDialog, setPostDialog] = useState(false);
+  const [postForm, setPostForm] = useState({
+    id: 0,
+    nome: "",
+    endereco: "",
+    cidade: "",
+    observacao: "",
+    active: true,
+  });
+
+  const [colDialog, setColDialog] = useState(false);
+  const [colForm, setColForm] = useState({
+    id: 0,
+    nome: "",
+    empresa: "ancora" as FacilitiesEmpresaId,
+    funcao: "vigilante" as FacilitiesFuncaoId,
+    escala: "12x36_diurno" as FacilitiesEscalaId,
+    postoBaseId: "",
+    telefone: "",
+    active: true,
+  });
+
+  const [cadastroTab, setCadastroTab] = useState<"postos" | "colaboradores">("postos");
+  const [postFilterQuery, setPostFilterQuery] = useState("");
+  const [postFilterStatus, setPostFilterStatus] = useState<"all" | "active" | "inactive">("all");
+  const [colFilterQuery, setColFilterQuery] = useState("");
+  const [colFilterEmpresa, setColFilterEmpresa] = useState<"" | FacilitiesEmpresaId>("");
+  const [colFilterFuncao, setColFilterFuncao] = useState<"" | FacilitiesFuncaoId>("");
+  const [colFilterEscala, setColFilterEscala] = useState<"" | FacilitiesEscalaId>("");
+  const postImportRef = useRef<HTMLInputElement>(null);
+  const colImportRef = useRef<HTMLInputElement>(null);
+  const atestadoInputRef = useRef<HTMLInputElement>(null);
+  const [colFilterPostoId, setColFilterPostoId] = useState("");
+  const [colFilterStatus, setColFilterStatus] = useState<"all" | "active" | "inactive">("all");
+  const [lancPage, setLancPage] = useState(1);
+  const [lancPageSize, setLancPageSize] = useState<PageSize>(10);
+  const [cadPage, setCadPage] = useState(1);
+  const [cadPageSize, setCadPageSize] = useState<PageSize>(10);
+  const [fechPageSize, setFechPageSize] = useState<PageSize>(10);
+  const [fechColPage, setFechColPage] = useState(1);
+  const [fechPostoPage, setFechPostoPage] = useState(1);
+  const [fechLancPage, setFechLancPage] = useState(1);
+  const [fechPanel, setFechPanel] = useState<"pagamento" | "lancamentos" | "ferias">(
+    "pagamento",
+  );
+  const [copied, setCopied] = useState(false);
+  const [obsDialog, setObsDialog] = useState<(typeof data.substitutions)[number] | null>(null);
+  const [almocoDialog, setAlmocoDialog] = useState<(typeof data.substitutions)[number] | null>(
+    null,
+  );
+  const [almocoForm, setAlmocoForm] = useState({ pagaAlmoco: false, valorAlmoco: "" });
+  const canEditAlmocoMonth = data.monthKey === currentMonthKey();
+
+  const activePosts = useMemo(() => data.posts.filter((p) => p.active), [data.posts]);
+  const activeCollaborators = useMemo(
+    () => data.collaborators.filter((c) => c.active),
+    [data.collaborators],
+  );
+
+  const selectedAusente = activeCollaborators.find((c) => String(c.id) === subForm.ausenteId);
+  const selectedSubstituto = activeCollaborators.find(
+    (c) => String(c.id) === subForm.substitutoId,
+  );
+  const selectedPostoId = Number(subForm.postoId) || 0;
+
+  const selectedVacColaborador = activeCollaborators.find(
+    (c) => String(c.id) === vacForm.colaboradorId,
+  );
+  const selectedVacCobertura = activeCollaborators.find(
+    (c) => String(c.id) === vacForm.coberturaId,
+  );
+  const vacDias = useMemo(
+    () => countInclusiveDays(vacForm.dataInicio, vacForm.dataFim),
+    [vacForm.dataInicio, vacForm.dataFim],
+  );
+  const vacHorasDia = useMemo(
+    () =>
+      combineHoursAndMinutes(
+        Number.parseInt(vacForm.horasHoras || "0", 10),
+        Number.parseInt(vacForm.horasMinutos || "0", 10),
+      ),
+    [vacForm.horasHoras, vacForm.horasMinutos],
+  );
+  const vacHorasTotal = useMemo(() => {
+    if (vacForm.horasPorDia) {
+      return Math.round(vacHorasDia * Math.max(vacDias, 0) * 10000) / 10000;
+    }
+    return vacHorasDia;
+  }, [vacForm.horasPorDia, vacHorasDia, vacDias]);
+  const vacCoberturaPropria =
+    Boolean(vacForm.colaboradorId) && vacForm.colaboradorId === vacForm.coberturaId;
+
+  const pagedFerias = useMemo(
+    () => paginateList(data.vacations ?? [], feriasPage, feriasPageSize),
+    [data.vacations, feriasPage, feriasPageSize],
+  );
+  const pagedFechFerias = useMemo(
+    () => paginateList(data.summary.byCoberturaFerias ?? [], fechFeriasPage, fechPageSize),
+    [data.summary.byCoberturaFerias, fechFeriasPage, fechPageSize],
+  );
+  const substitutoForaBase =
+    selectedSubstituto?.postoBaseId != null &&
+    selectedPostoId > 0 &&
+    selectedSubstituto.postoBaseId !== selectedPostoId;
+
+  const suggestedSubstitutes = useMemo(() => {
+    if (!selectedAusente) return activeCollaborators;
+    return [
+      ...activeCollaborators.filter(
+        (c) => c.id !== selectedAusente.id && c.funcao === selectedAusente.funcao,
+      ),
+      ...activeCollaborators.filter(
+        (c) => c.id !== selectedAusente.id && c.funcao !== selectedAusente.funcao,
+      ),
+    ];
+  }, [activeCollaborators, selectedAusente]);
+
+  const ausenteOptions = useMemo<SearchPickOption[]>(
+    () =>
+      activeCollaborators.map((c) => ({
+        id: String(c.id),
+        title: c.nome,
+        subtitle: [c.empresaLabel, c.funcaoLabel, c.postoBaseNome].filter(Boolean).join(" · "),
+        keywords: [c.empresa, c.funcao, c.escala, c.telefone],
+      })),
+    [activeCollaborators],
+  );
+
+  /** Todos os ativos — lançamento extra não precisa filtrar por ausente. */
+  const extraCollaboratorOptions = ausenteOptions;
+
+  const substitutoOptions = useMemo<SearchPickOption[]>(
+    () =>
+      suggestedSubstitutes.map((c) => ({
+        id: String(c.id),
+        title: c.nome,
+        subtitle: [
+          c.empresaLabel,
+          c.escalaLabel,
+          selectedAusente && c.funcao === selectedAusente.funcao ? "mesma função" : null,
+          c.postoBaseNome,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        keywords: [c.empresa, c.funcao, c.escala, c.telefone],
+        disabled: String(c.id) === subForm.ausenteId,
+      })),
+    [suggestedSubstitutes, selectedAusente, subForm.ausenteId],
+  );
+
+  const postoOptions = useMemo<SearchPickOption[]>(
+    () =>
+      activePosts.map((p) => ({
+        id: String(p.id),
+        title: p.nome,
+        subtitle: [p.cidade, p.endereco].filter(Boolean).join(" · "),
+        keywords: [p.cidade, p.endereco],
+      })),
+    [activePosts],
+  );
+
+  const filterPostoOptions = useMemo<SearchPickOption[]>(
+    () =>
+      data.posts.map((p) => ({
+        id: String(p.id),
+        title: p.nome + (p.active ? "" : " (inativo)"),
+        subtitle: p.cidade || null,
+        keywords: [p.cidade, p.endereco],
+      })),
+    [data.posts],
+  );
+
+  const filterCollaboratorOptions = useMemo<SearchPickOption[]>(
+    () =>
+      data.collaborators.map((c) => ({
+        id: String(c.id),
+        title: c.nome + (c.active ? "" : " (inativo)"),
+        subtitle: [c.empresaLabel, c.funcaoLabel].filter(Boolean).join(" · "),
+        keywords: [c.empresa, c.funcao, c.telefone],
+      })),
+    [data.collaborators],
+  );
+
+  const visibleSubstitutions = useMemo(() => {
+    return data.substitutions.filter((row) => {
+      if (search.postoId && row.postoId !== search.postoId) return false;
+      if (
+        search.collaboratorId &&
+        row.ausenteId !== search.collaboratorId &&
+        row.substitutoId !== search.collaboratorId
+      ) {
+        return false;
+      }
+      if (search.dataDe && row.data < search.dataDe) return false;
+      if (search.dataAte && row.data > search.dataAte) return false;
+      return true;
+    });
+  }, [
+    data.substitutions,
+    search.postoId,
+    search.collaboratorId,
+    search.dataDe,
+    search.dataAte,
+  ]);
+
+  useEffect(() => {
+    setLancPage(1);
+  }, [
+    search.month,
+    search.postoId,
+    search.collaboratorId,
+    search.dataDe,
+    search.dataAte,
+    lancPageSize,
+  ]);
+
+  useEffect(() => {
+    setCadPage(1);
+  }, [
+    cadastroTab,
+    cadPageSize,
+    postFilterQuery,
+    postFilterStatus,
+    colFilterQuery,
+    colFilterStatus,
+    colFilterEmpresa,
+    colFilterFuncao,
+    colFilterEscala,
+    colFilterPostoId,
+  ]);
+
+  useEffect(() => {
+    setFechColPage(1);
+    setFechPostoPage(1);
+    setFechLancPage(1);
+    setFechFeriasPage(1);
+  }, [search.month, fechPageSize]);
+
+  const pagedSubstitutions = useMemo(
+    () => paginateList(visibleSubstitutions, lancPage, lancPageSize),
+    [visibleSubstitutions, lancPage, lancPageSize],
+  );
+
+  const filteredPosts = useMemo(() => {
+    return data.posts.filter((post) => {
+      if (postFilterStatus === "active" && !post.active) return false;
+      if (postFilterStatus === "inactive" && post.active) return false;
+      return matchesQuery(postFilterQuery, [post.nome, post.cidade, post.endereco, post.observacao]);
+    });
+  }, [data.posts, postFilterQuery, postFilterStatus]);
+
+  const filteredCollaborators = useMemo(() => {
+    return data.collaborators.filter((col) => {
+      if (colFilterStatus === "active" && !col.active) return false;
+      if (colFilterStatus === "inactive" && col.active) return false;
+      if (colFilterEmpresa && col.empresa !== colFilterEmpresa) return false;
+      if (colFilterFuncao && col.funcao !== colFilterFuncao) return false;
+      if (colFilterEscala && col.escala !== colFilterEscala) return false;
+      if (colFilterPostoId && String(col.postoBaseId ?? "") !== colFilterPostoId) return false;
+      return matchesQuery(colFilterQuery, [
+        col.nome,
+        col.empresaLabel,
+        col.funcaoLabel,
+        col.escalaLabel,
+        col.postoBaseNome,
+        col.telefone,
+      ]);
+    });
+  }, [
+    data.collaborators,
+    colFilterQuery,
+    colFilterStatus,
+    colFilterEmpresa,
+    colFilterFuncao,
+    colFilterEscala,
+    colFilterPostoId,
+  ]);
+
+  const pagedPosts = useMemo(
+    () => paginateList(filteredPosts, cadPage, cadPageSize),
+    [filteredPosts, cadPage, cadPageSize],
+  );
+
+  const pagedCollaborators = useMemo(
+    () => paginateList(filteredCollaborators, cadPage, cadPageSize),
+    [filteredCollaborators, cadPage, cadPageSize],
+  );
+
+  const fechamentoLancamentos = useMemo(
+    () => [...data.substitutions].sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : b.id - a.id)),
+    [data.substitutions],
+  );
+
+  const pagedFechColaboradores = useMemo(
+    () => paginateList(data.summary.bySubstituto, fechColPage, fechPageSize),
+    [data.summary.bySubstituto, fechColPage, fechPageSize],
+  );
+
+  const pagedFechPostos = useMemo(
+    () => paginateList(data.summary.byPosto, fechPostoPage, fechPageSize),
+    [data.summary.byPosto, fechPostoPage, fechPageSize],
+  );
+
+  const pagedFechLancamentos = useMemo(
+    () => paginateList(fechamentoLancamentos, fechLancPage, fechPageSize),
+    [fechamentoLancamentos, fechLancPage, fechPageSize],
+  );
+
+  const colPostoFilterOptions = useMemo<SearchPickOption[]>(
+    () =>
+      data.posts.map((p) => ({
+        id: String(p.id),
+        title: p.nome + (p.active ? "" : " (inativo)"),
+        subtitle: p.cidade || null,
+      })),
+    [data.posts],
+  );
+
+  const setTab = (tab: TabId) => {
+    navigate({
+      search: (prev) => ({ ...prev, tab }),
+    });
+  };
+
+  const setMonth = (month: string) => {
+    navigate({
+      search: (prev) => ({
+        ...prev,
+        month,
+        dataDe: undefined,
+        dataAte: undefined,
+      }),
+    });
+  };
+
+  const flash = (ok: string | null, err: string | null = null) => {
+    if (ok || err) setImportReport(null);
+    if (err) notifyError(err);
+    else if (ok) notifyOk(ok);
+  };
+
+  const buildFechamentoExport = () => ({
+    monthKey: data.monthKey,
+    monthLabel: monthLabel(data.monthKey),
+    horasPagar: data.summary.horas,
+    horasExtra: data.summary.horasExtra ?? 0,
+    trocas: data.summary.trocas,
+    permutas: data.summary.permutas,
+    almoco: data.summary.almoco ?? 0,
+    pagamento: data.summary.pagamento ?? 0,
+    desconto: data.summary.desconto ?? 0,
+    ferias: data.summary.ferias ?? 0,
+    feriasDias: data.summary.feriasDias ?? 0,
+    feriasHoras: data.summary.feriasHoras ?? 0,
+    bySubstituto: data.summary.bySubstituto,
+    byPosto: data.summary.byPosto,
+    byAusente: data.summary.byAusente ?? [],
+    byMotivo: data.summary.byMotivo ?? [],
+    byCoberturaFerias: data.summary.byCoberturaFerias ?? [],
+    lancamentos: data.substitutions.map((row) => ({
+      data: row.data,
+      postoNome: row.postoNome,
+      ausenteNome: row.ausenteNome,
+      ausenteEmpresa: row.ausenteEmpresa,
+      substitutoNome: row.substitutoNome,
+      substitutoEmpresa: row.substitutoEmpresa,
+      substitutoEscala: row.substitutoEscala,
+      motivoLabel: row.motivoLabel,
+      periodoLabel: row.periodoLabel,
+      periodoExtraLabel: row.periodoExtraLabel,
+      horas: row.horas,
+      horasExtra: row.horasExtra,
+      tarifaHora: row.tarifaHora,
+      tarifaExtra: row.tarifaExtra,
+      tarifaDesconto: row.tarifaDesconto,
+      pagaHoras: row.pagaHoras,
+      aplicaDesconto: row.aplicaDesconto,
+      valorPagamento: row.valorPagamento,
+      valorDesconto: row.valorDesconto,
+      pagaAlmoco: row.pagaAlmoco,
+      valorAlmoco: row.valorAlmoco,
+      hasAtestado: row.hasAtestado,
+      foraDoPostoBase: row.foraDoPostoBase,
+      observacao: row.observacao,
+      registradoPor: row.createdByName,
+    })),
+    feriasLancamentos: (data.vacations ?? []).map((row) => ({
+      dataInicio: row.dataInicio,
+      dataFim: row.dataFim,
+      dias: row.dias,
+      postoNome: row.postoNome,
+      colaboradorNome: row.colaboradorNome,
+      colaboradorEmpresa: row.colaboradorEmpresa,
+      coberturaNome: row.coberturaNome,
+      coberturaEmpresa: row.coberturaEmpresa,
+      horas: row.horas,
+      coberturaPropria: row.coberturaPropria,
+      observacao: row.observacao,
+      registradoPor: row.createdByName,
+    })),
+  });
+
+  useEffect(() => {
+    setRatesForm((data.hourRates ?? []).map((r) => ({ ...r })));
+  }, [data.hourRates]);
+
+  const onSelectSubstituto = (id: string) => {
+    const person = activeCollaborators.find((c) => String(c.id) === id);
+    setSubForm((prev) => ({
+      ...prev,
+      substitutoId: id,
+      ...(person
+        ? {
+            ...durationPartsFromHours(person.defaultHours),
+            periodo: defaultPeriodoFromEscala(person.escala),
+            periodoExtra: defaultPeriodoFromEscala(person.escala),
+          }
+        : {}),
+    }));
+  };
+
+  const onSelectAusente = (id: string) => {
+    const person = activeCollaborators.find((c) => String(c.id) === id);
+    setSubForm((prev) => {
+      const hasSubstituto = Boolean(
+        prev.substitutoId &&
+          activeCollaborators.find((c) => String(c.id) === prev.substitutoId),
+      );
+      return {
+        ...prev,
+        ausenteId: id,
+        postoId: person?.postoBaseId ? String(person.postoBaseId) : prev.postoId,
+        ...(hasSubstituto
+          ? {}
+          : person
+            ? {
+                ...durationPartsFromHours(defaultHoursForEscala(person.escala)),
+                periodo: defaultPeriodoFromEscala(person.escala),
+                periodoExtra: defaultPeriodoFromEscala(person.escala),
+              }
+            : {}),
+      };
+    });
+  };
+
+  const submitSubstitution = async () => {
+    const isExtra = lancarMode === "extra" || isFacilitiesExtraMotivo(subForm.motivo);
+    if (!subForm.data || !/^\d{4}-\d{2}-\d{2}$/.test(subForm.data)) {
+      flash(null, "Informe a data no formato dd/mm/aaaa.");
+      return;
+    }
+    if (!subForm.substitutoId || !subForm.postoId) {
+      flash(
+        null,
+        isExtra
+          ? "Selecione o posto e o colaborador que vai ganhar as horas."
+          : "Selecione ausente, posto e substituto.",
+      );
+      return;
+    }
+    if (!isExtra && !subForm.ausenteId) {
+      flash(null, "Selecione quem faltou (ausente).");
+      return;
+    }
+    const horasNum = Number.parseInt(subForm.horasHoras || "0", 10);
+    const minutosNum = Number.parseInt(subForm.horasMinutos || "0", 10);
+    if (
+      !Number.isFinite(horasNum) ||
+      !Number.isFinite(minutosNum) ||
+      horasNum < 0 ||
+      minutosNum < 0 ||
+      minutosNum > 59
+    ) {
+      flash(null, "Informe horas e minutos válidos (minutos de 0 a 59).");
+      return;
+    }
+    const horas = combineHoursAndMinutes(horasNum, minutosNum);
+    if (!(horas > 0)) {
+      flash(null, "A duração deve ser maior que zero.");
+      return;
+    }
+    const heH = Number.parseInt(subForm.horasExtraHoras || "0", 10);
+    const heM = Number.parseInt(subForm.horasExtraMinutos || "0", 10);
+    const horasExtra = subForm.temHoraExtra
+      ? combineHoursAndMinutes(
+          Number.isFinite(heH) ? heH : 0,
+          Number.isFinite(heM) ? heM : 0,
+        )
+      : 0;
+    if (subForm.temHoraExtra && !(horasExtra > 0)) {
+      flash(null, "Informe a duração da hora extra.");
+      return;
+    }
+    const motivo: FacilitiesMotivoId = isExtra ? "extra" : subForm.motivo;
+    if (
+      motivo === "atestado" &&
+      !subForm.atestadoData &&
+      !(editingSubstitutionId != null && editingKeepAtestado)
+    ) {
+      flash(null, "Anexe o atestado (PDF ou imagem).");
+      return;
+    }
+    const valorAlmoco = subForm.pagaAlmoco
+      ? Number(String(subForm.valorAlmoco).replace(",", "."))
+      : 0;
+    if (subForm.pagaAlmoco && (!(valorAlmoco > 0) || !Number.isFinite(valorAlmoco))) {
+      flash(null, "Informe o valor do almoço.");
+      return;
+    }
+    const payload = {
+      data: subForm.data,
+      motivo,
+      postoId: Number(subForm.postoId),
+      ausenteId: isExtra ? null : Number(subForm.ausenteId),
+      substitutoId: Number(subForm.substitutoId),
+      horas,
+      periodo: subForm.periodo,
+      horasExtra,
+      periodoExtra: horasExtra > 0 ? subForm.periodoExtra : null,
+      aplicaDesconto: isExtra ? false : subForm.aplicaDesconto,
+      atestadoNome: motivo === "atestado" ? subForm.atestadoNome : null,
+      atestadoMime: motivo === "atestado" ? subForm.atestadoMime : null,
+      atestadoData: motivo === "atestado" ? subForm.atestadoData : null,
+      observacao: subForm.observacao.trim() || null,
+      pagaAlmoco: subForm.pagaAlmoco,
+      valorAlmoco,
+    };
+    setPending(true);
+    flash(null);
+    try {
+      const result =
+        editingSubstitutionId != null
+          ? await updateFacilitiesSubstitutionFn({
+              data: {
+                id: editingSubstitutionId,
+                ...payload,
+                keepExistingAtestado:
+                  motivo === "atestado" && !subForm.atestadoData && editingKeepAtestado,
+              },
+            })
+          : await createFacilitiesSubstitutionFn({ data: payload });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      const payTxt =
+        result.substitution.valorPagamento > 0
+          ? ` · pgto ${formatMoneyBr(result.substitution.valorPagamento)}`
+          : "";
+      const descTxt =
+        result.substitution.valorDesconto > 0
+          ? ` · desc. ${formatMoneyBr(result.substitution.valorDesconto)}`
+          : "";
+      const almocoTxt =
+        result.substitution.pagaAlmoco && result.substitution.valorAlmoco > 0
+          ? ` · almoço ${formatMoneyBr(result.substitution.valorAlmoco)}`
+          : "";
+      const wasEdit = editingSubstitutionId != null;
+      flash(
+        wasEdit
+          ? `Lançamento atualizado: ${result.substitution.substitutoNome} · ${result.substitution.postoNome} (${formatHours(result.substitution.horas)}${payTxt}${descTxt}${almocoTxt}).`
+          : isFacilitiesExtraMotivo(result.substitution.motivo)
+            ? `Extra lançado: ${result.substitution.substitutoNome} no posto ${result.substitution.postoNome} (${formatHours(result.substitution.horas)}${payTxt}${almocoTxt}).`
+            : result.substitution.pagaHoras
+              ? `Troca lançada: ${result.substitution.substitutoNome} cobriu ${result.substitution.ausenteNome} (${formatHours(result.substitution.horas)}${payTxt}${descTxt}${almocoTxt}).`
+              : isFacilitiesPermutaMotivo(result.substitution.motivo)
+                ? `Solicitação de troca registrada: ${result.substitution.substitutoNome} ↔ ${result.substitution.ausenteNome} (sem horas a pagar${almocoTxt}).`
+                : `Lançamento registrado: ${result.substitution.substitutoNome} cobriu ${result.substitution.ausenteNome} (${result.substitution.motivoLabel}, sem horas a pagar${almocoTxt}).`,
+      );
+      resetSubFormAfterSave();
+      await router.invalidate();
+      navigate({ search: (prev) => ({ ...prev, tab: "painel" }) });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const saveHourRates = async () => {
+    setPending(true);
+    flash(null);
+    try {
+      const result = await saveFacilitiesHourRatesFn({ data: { rates: ratesForm } });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      setRatesForm(result.rates.map((r) => ({ ...r })));
+      flash("Valores das horas salvos.");
+      await router.invalidate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const downloadAtestado = async (id: number) => {
+    setPending(true);
+    try {
+      const result = await getFacilitiesSubstitutionAtestadoFn({ data: { id } });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      downloadDataUrl(result.file.data, result.file.name);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const removeAtestado = async (id: number) => {
+    if (!confirm("Apagar o atestado anexado deste lançamento?")) return;
+    setPending(true);
+    flash(null);
+    try {
+      const result = await deleteFacilitiesSubstitutionAtestadoFn({ data: { id } });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      flash("Atestado apagado.");
+      await router.invalidate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const clearSubFormAtestado = () => {
+    if (atestadoInputRef.current) atestadoInputRef.current.value = "";
+    setEditingKeepAtestado(false);
+    setSubForm((p) => ({
+      ...p,
+      atestadoNome: null,
+      atestadoMime: null,
+      atestadoData: null,
+    }));
+  };
+
+  const resetSubFormAfterSave = () => {
+    setEditingSubstitutionId(null);
+    setEditingKeepAtestado(false);
+    if (atestadoInputRef.current) atestadoInputRef.current.value = "";
+    setSubForm((prev) => ({
+      ...prev,
+      ausenteId: "",
+      substitutoId: "",
+      observacao: "",
+      horasHoras: "12",
+      horasMinutos: "0",
+      temHoraExtra: false,
+      horasExtraHoras: "0",
+      horasExtraMinutos: "0",
+      aplicaDesconto: defaultAplicaDesconto(prev.motivo === "extra" ? "falta" : prev.motivo),
+      atestadoNome: null,
+      atestadoMime: null,
+      atestadoData: null,
+      pagaAlmoco: false,
+      valorAlmoco: "",
+    }));
+  };
+
+  const openEditSubstitution = (row: (typeof data.substitutions)[number]) => {
+    const isExtra = isFacilitiesExtraMotivo(row.motivo);
+    const horasParts = splitDecimalHours(row.horas);
+    const heParts = splitDecimalHours(row.horasExtra);
+    setLancarMode(isExtra ? "extra" : "substituicao");
+    setEditingSubstitutionId(row.id);
+    setEditingKeepAtestado(Boolean(row.hasAtestado));
+    if (atestadoInputRef.current) atestadoInputRef.current.value = "";
+    setSubForm({
+      data: row.data,
+      motivo: isExtra ? "extra" : row.motivo,
+      postoId: String(row.postoId),
+      ausenteId: row.ausenteId != null ? String(row.ausenteId) : "",
+      substitutoId: String(row.substitutoId),
+      horasHoras: String(horasParts.hours),
+      horasMinutos: String(horasParts.minutes),
+      periodo: row.periodo,
+      temHoraExtra: row.horasExtra > 0,
+      horasExtraHoras: String(heParts.hours),
+      horasExtraMinutos: String(heParts.minutes),
+      periodoExtra: row.periodoExtra ?? "diurno",
+      aplicaDesconto: row.aplicaDesconto,
+      atestadoNome: row.hasAtestado ? row.atestadoNome : null,
+      atestadoMime: row.hasAtestado ? row.atestadoMime : null,
+      atestadoData: null,
+      observacao: row.observacao ?? "",
+      pagaAlmoco: Boolean(row.pagaAlmoco),
+      valorAlmoco:
+        row.pagaAlmoco && Number(row.valorAlmoco) > 0 ? String(Number(row.valorAlmoco)) : "",
+    });
+    setTab("lancar");
+    flash(`Editando lançamento de ${formatDateBr(row.data)} · ${row.postoNome}.`);
+  };
+
+  const cancelEditSubstitution = () => {
+    resetSubFormAfterSave();
+    flash("Edição cancelada.");
+  };
+
+  const submitVacation = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!vacForm.colaboradorId || !vacForm.coberturaId || !vacForm.postoId) {
+      flash(null, "Selecione colaborador, cobertura e posto.");
+      return;
+    }
+    if (vacDias <= 0) {
+      flash(null, "Informe um período válido de férias.");
+      return;
+    }
+    if (!(vacHorasTotal >= 0)) {
+      flash(null, "Informe as horas do período.");
+      return;
+    }
+    setPending(true);
+    flash(null);
+    try {
+      const result = await createFacilitiesVacationFn({
+        data: {
+          colaboradorId: Number(vacForm.colaboradorId),
+          coberturaId: Number(vacForm.coberturaId),
+          postoId: Number(vacForm.postoId),
+          dataInicio: vacForm.dataInicio,
+          dataFim: vacForm.dataFim,
+          dias: vacDias,
+          horas: vacHorasTotal,
+          observacao: vacForm.observacao.trim() || null,
+        },
+      });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      flash(
+        result.vacation.coberturaPropria
+          ? `Férias lançadas: ${result.vacation.colaboradorNome} · ${result.vacation.dias} dia(s) · ${formatHours(result.vacation.horas)} (cobertura própria).`
+          : `Férias lançadas: ${result.vacation.colaboradorNome} coberto por ${result.vacation.coberturaNome} · ${result.vacation.dias} dia(s) · ${formatHours(result.vacation.horas)}.`,
+      );
+      setVacForm((prev) => ({
+        ...prev,
+        colaboradorId: "",
+        coberturaId: "",
+        observacao: "",
+      }));
+      await router.invalidate();
+      navigate({ search: (prev) => ({ ...prev, tab: "ferias" }) });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const deleteVacation = async (id: number) => {
+    setPending(true);
+    flash(null);
+    try {
+      const result = await deleteFacilitiesVacationFn({ data: { id } });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      flash("Período de férias excluído.");
+      await router.invalidate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const paymentText = useMemo(() => {
+    const lines = [
+      `Facilities — fechamento ${monthLabel(data.monthKey)}`,
+      `Horas a pagar: ${formatHours(data.summary.horas)}` +
+        ((data.summary.horasExtra ?? 0) > 0
+          ? ` · HE ${formatHours(data.summary.horasExtra ?? 0)}`
+          : "") +
+        ` · ${data.summary.trocas - data.summary.permutas} cobertura(s) pagáveis` +
+        (data.summary.permutas > 0
+          ? ` · ${data.summary.permutas} solicitação(ões) de troca (sem pagamento)`
+          : ""),
+      `Pagamento: ${formatMoneyBr(data.summary.pagamento ?? 0)} · Desconto: ${formatMoneyBr(data.summary.desconto ?? 0)}` +
+        ((data.summary.almoco ?? 0) > 0
+          ? ` · Almoço: ${formatMoneyBr(data.summary.almoco ?? 0)}`
+          : ""),
+      `Férias: ${data.summary.ferias ?? 0} período(s) · ${data.summary.feriasDias ?? 0} dia(s) · ${formatHours(data.summary.feriasHoras ?? 0)}`,
+      "",
+      "Pagamento por substituto:",
+      ...data.summary.bySubstituto.map(
+        (row) =>
+          `- ${row.nome} (${row.empresa}) · ${row.trocas} cobertura(s) · ${formatHours(row.horas)}` +
+          ((row.horasExtra ?? 0) > 0 ? ` + HE ${formatHours(row.horasExtra ?? 0)}` : "") +
+          ` · ${formatMoneyBr(row.pagamento ?? 0)} · escala ${row.escala}` +
+          ((row.almoco ?? 0) > 0 ? ` · almoço ${formatMoneyBr(row.almoco ?? 0)}` : ""),
+      ),
+      "",
+      "Desconto por ausente:",
+      ...((data.summary.byAusente ?? []).length > 0
+        ? (data.summary.byAusente ?? []).map(
+            (row) =>
+              `- ${row.nome} (${row.empresa}) · ${row.lancamentos} lanç. · ${formatHours(row.horas)} · desc. ${formatMoneyBr(row.desconto)}`,
+          )
+        : ["- Nenhum desconto neste mês."]),
+      "",
+      "Por posto:",
+      ...data.summary.byPosto.map(
+        (row) =>
+          `- ${row.nome} · ${row.trocas} lanç. · ${formatHours(row.horas)}` +
+          ((row.horasExtra ?? 0) > 0 ? ` + HE ${formatHours(row.horasExtra ?? 0)}` : "") +
+          ` · pgto ${formatMoneyBr(row.pagamento ?? 0)} · desc. ${formatMoneyBr(row.desconto ?? 0)}` +
+          ((row.almoco ?? 0) > 0 ? ` · almoço ${formatMoneyBr(row.almoco ?? 0)}` : ""),
+      ),
+      "",
+      "Por motivo:",
+      ...(data.summary.byMotivo ?? []).map(
+        (row) =>
+          `- ${row.motivoLabel} · ${row.trocas} · ${formatHours(row.horas)} · pgto ${formatMoneyBr(row.pagamento ?? 0)} · desc. ${formatMoneyBr(row.desconto ?? 0)}`,
+      ),
+      "",
+      "Férias — cobertura (dias e horas):",
+      ...(data.summary.byCoberturaFerias ?? []).map(
+        (row) =>
+          `- ${row.nome} (${row.empresa}) · ${row.ferias} período(s) · ${row.dias} dia(s) · ${formatHours(row.horas)}` +
+          (row.propria > 0 ? ` · ${row.propria} própria(s)` : ""),
+      ),
+    ];
+    return lines.join("\n");
+  }, [data.monthKey, data.summary]);
+
+  const isExtraMode = lancarMode === "extra";
+  const isPermuta = !isExtraMode && isFacilitiesPermutaMotivo(subForm.motivo);
+  const pagaHorasMotivo = isExtraMode
+    ? true
+    : facilitiesMotivoPagaHoras(subForm.motivo);
+  const motivoHint = isExtraMode
+    ? facilitiesMotivoHint("extra")
+    : facilitiesMotivoHint(subForm.motivo);
+
+  const copyPayment = async () => {
+    try {
+      await navigator.clipboard.writeText(paymentText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      flash(null, "Não foi possível copiar o resumo.");
+    }
+  };
+
+  const removeSubstitution = async (id: number) => {
+    if (!confirm("Excluir este lançamento?")) return;
+    setPending(true);
+    flash(null);
+    try {
+      const result = await deleteFacilitiesSubstitutionFn({ data: { id } });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      flash("Lançamento excluído.");
+      await router.invalidate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const openAlmocoDialog = (row: (typeof data.substitutions)[number]) => {
+    setAlmocoDialog(row);
+    setAlmocoForm({
+      pagaAlmoco: Boolean(row.pagaAlmoco),
+      valorAlmoco:
+        row.pagaAlmoco && Number(row.valorAlmoco) > 0 ? String(Number(row.valorAlmoco)) : "",
+    });
+  };
+
+  const substitutionActionsMenu = (row: (typeof data.substitutions)[number]) => (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-outline-variant bg-surface text-on-surface hover:bg-surface-container-high disabled:opacity-50"
+          aria-label={`Ações do lançamento ${row.postoNome} · ${formatDateBr(row.data)}`}
+          disabled={pending}
+        >
+          <Icon name="more_vert" className="text-[18px]" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[12rem]">
+        <DropdownMenuItem
+          disabled={pending}
+          onSelect={() => openEditSubstitution(row)}
+        >
+          <Icon name="edit" className="text-[16px]" />
+          Editar
+        </DropdownMenuItem>
+        {row.hasAtestado ? (
+          <>
+            <DropdownMenuItem
+              disabled={pending}
+              onSelect={() => void downloadAtestado(row.id)}
+            >
+              <Icon name="attach_file" className="text-[16px]" />
+              Baixar atestado
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={pending}
+              className="text-destructive focus:text-destructive"
+              onSelect={() => void removeAtestado(row.id)}
+            >
+              <Icon name="delete" className="text-[16px]" />
+              Apagar anexo
+            </DropdownMenuItem>
+          </>
+        ) : null}
+        {hasObservacao(row.observacao) ? (
+          <DropdownMenuItem onSelect={() => setObsDialog(row)}>
+            <Icon name="notes" className="text-[16px]" />
+            Ver observação
+          </DropdownMenuItem>
+        ) : null}
+        {canEditAlmocoMonth ? (
+          <DropdownMenuItem
+            disabled={pending}
+            onSelect={() => openAlmocoDialog(row)}
+          >
+            <Icon name="restaurant" className="text-[16px]" />
+            Almoço
+          </DropdownMenuItem>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={pending}
+          className="text-destructive focus:text-destructive"
+          onSelect={() => void removeSubstitution(row.id)}
+        >
+          <Icon name="delete" className="text-[16px]" />
+          Excluir
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const saveAlmocoEdit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!almocoDialog) return;
+    const valorAlmoco = almocoForm.pagaAlmoco
+      ? Number(String(almocoForm.valorAlmoco).replace(",", "."))
+      : 0;
+    if (almocoForm.pagaAlmoco && (!(valorAlmoco > 0) || !Number.isFinite(valorAlmoco))) {
+      flash(null, "Informe o valor do almoço.");
+      return;
+    }
+    setPending(true);
+    flash(null);
+    try {
+      const result = await updateFacilitiesSubstitutionAlmocoFn({
+        data: {
+          id: almocoDialog.id,
+          pagaAlmoco: almocoForm.pagaAlmoco,
+          valorAlmoco,
+        },
+      });
+      if (!result.ok) {
+        flash(null, result.error);
+        return;
+      }
+      setAlmocoDialog(null);
+      flash(
+        result.substitution.pagaAlmoco
+          ? `Almoço atualizado: ${formatMoneyBr(result.substitution.valorAlmoco)}.`
+          : "Almoço removido do lançamento.",
+      );
+      await router.invalidate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const formatImportResult = (created: number, skipped: number, errors: string[]) => {
+    const parts = [`${created} cadastrado(s)`];
+    if (skipped > 0) parts.push(`${skipped} já existia(m)`);
+    if (errors.length > 0) parts.push(`${errors.length} com erro`);
+    return parts.join(" · ");
+  };
+
+  const applyImportOutcome = (input: {
+    title: string;
+    created: number;
+    skipped: number;
+    errors: string[];
+  }) => {
+    const summary = formatImportResult(input.created, input.skipped, input.errors);
+    setImportReport({
+      title: input.title,
+      created: input.created,
+      skipped: input.skipped,
+      errors: input.errors,
+    });
+    if (input.created > 0 || input.skipped > 0) {
+      notifyOk(`${input.title}: ${summary}`);
+    } else if (input.errors.length > 0) {
+      notifyError(`${input.title}: nenhum cadastrado · ${input.errors.length} com erro.`);
+    } else {
+      notifyError(`${input.title}: nenhuma linha válida para importar.`);
+    }
+  };
+
+  const importPostsFromFile = async (file: File | null) => {
+    if (!file) return;
+    setPending(true);
+    setImportReport(null);
+    try {
+      const matrix = await readFacilitiesSpreadsheetMatrix(file);
+      const parsed = parseFacilitiesPostsFromMatrix(matrix);
+      if (parsed.rows.length === 0) {
+        applyImportOutcome({
+          title: "Postos",
+          created: 0,
+          skipped: 0,
+          errors: parsed.errors.length > 0 ? parsed.errors : ["Nenhuma linha válida para importar."],
+        });
+        return;
+      }
+      const result = await importFacilitiesPostsFn({ data: { rows: parsed.rows } });
+      applyImportOutcome({
+        title: "Postos",
+        created: result.created,
+        skipped: result.skipped,
+        errors: [...parsed.errors, ...result.errors],
+      });
+      await router.invalidate();
+    } catch (err) {
+      flash(null, err instanceof Error ? err.message : "Falha ao importar postos.");
+    } finally {
+      setPending(false);
+      if (postImportRef.current) postImportRef.current.value = "";
+    }
+  };
+
+  const importCollaboratorsFromFile = async (file: File | null) => {
+    if (!file) return;
+    setPending(true);
+    setImportReport(null);
+    try {
+      const matrix = await readFacilitiesSpreadsheetMatrix(file);
+      const parsed = parseFacilitiesCollaboratorsFromMatrix(matrix);
+      if (parsed.rows.length === 0) {
+        applyImportOutcome({
+          title: "Colaboradores",
+          created: 0,
+          skipped: 0,
+          errors:
+            parsed.errors.length > 0 ? parsed.errors : ["Nenhuma linha válida para importar."],
+        });
+        return;
+      }
+      const result = await importFacilitiesCollaboratorsFn({ data: { rows: parsed.rows } });
+      applyImportOutcome({
+        title: "Colaboradores",
+        created: result.created,
+        skipped: result.skipped,
+        errors: [...parsed.errors, ...result.errors],
+      });
+      await router.invalidate();
+    } catch (err) {
+      flash(null, err instanceof Error ? err.message : "Falha ao importar colaboradores.");
+    } finally {
+      setPending(false);
+      if (colImportRef.current) colImportRef.current.value = "";
+    }
+  };
+
+  return (
+    <AppShell mobileTitle="Facilities">
+      <main className="relative flex-1 p-margin-mobile pb-24 md:p-margin-desktop md:pb-margin-desktop">
+        <div className="mx-auto max-w-6xl space-y-lg">
+          <PageTitle
+            title="Facilities"
+            subtitle="Substituições, permutas e horas a pagar por posto."
+          >
+            <div className="flex items-center justify-between gap-sm rounded-lg border border-white/25 bg-white/5 p-sm">
+              <button
+                type="button"
+                className="rounded-lg p-sm text-on-primary hover:bg-white/10"
+                onClick={() => setMonth(shiftMonth(search.month, -1))}
+                aria-label="Mês anterior"
+              >
+                <Icon name="chevron_left" className="text-[22px]" />
+              </button>
+              <div className="min-w-[9.5rem] text-center">
+                <p className="text-label-md text-white/70">Competência</p>
+                <p className="text-title-md font-semibold text-on-primary">
+                  {monthLabel(search.month)}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg p-sm text-on-primary hover:bg-white/10"
+                onClick={() => setMonth(shiftMonth(search.month, 1))}
+                aria-label="Próximo mês"
+              >
+                <Icon name="chevron_right" className="text-[22px]" />
+              </button>
+            </div>
+          </PageTitle>
+
+          <div className="sticky top-0 z-20 -mx-margin-mobile border-b border-outline-variant/70 bg-background/95 px-margin-mobile py-sm backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0 md:py-0 md:backdrop-blur-none">
+            <div className="flex gap-sm overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] md:flex-wrap md:overflow-visible [&::-webkit-scrollbar]:hidden">
+              {TABS.map((tab) => {
+                const active = search.tab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setTab(tab.id)}
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-xs rounded-lg px-md py-sm text-label-md font-semibold transition-colors",
+                      active
+                        ? "bg-secondary-container text-primary"
+                        : "bg-surface-container-high text-on-surface-variant hover:bg-surface-container",
+                    )}
+                  >
+                    <Icon name={tab.icon} className="text-[18px]" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {importReport && importReport.errors.length > 0 ? (
+            <div className="rounded-xl border border-error/40 bg-error/10 px-md py-sm text-body-md text-error">
+              <div className="flex flex-wrap items-start justify-between gap-sm">
+                <div className="min-w-0">
+                  <p className="font-semibold">
+                    {importReport.title}: linhas para correção ({importReport.errors.length})
+                  </p>
+                  <p className="mt-1 text-sm opacity-90">
+                    {importReport.created > 0 || importReport.skipped > 0
+                      ? "As linhas válidas já foram salvas. Corrija só as abaixo e importe de novo."
+                      : "Nenhuma linha foi salva. Corrija e importe novamente."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setImportReport(null)}
+                  className="shrink-0 rounded-lg border border-error/30 px-sm py-xs text-label-md"
+                >
+                  Fechar
+                </button>
+              </div>
+              <ul className="mt-sm max-h-56 list-disc space-y-1 overflow-y-auto pl-5 text-sm">
+                {importReport.errors.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+              <p className="mt-sm text-xs opacity-80">
+                Empresa válida: Angela, Âncora ou Belfer · Função: Vigilante, Porteiro ou
+                Recepcionista · Escala: 12x36 Diurno, 12x36 Noturno ou Horário comercial.
+              </p>
+            </div>
+          ) : null}
+
+          {search.tab === "painel" && (
+            <section className="space-y-lg">
+              <div className="grid grid-cols-2 gap-sm xl:grid-cols-4 xl:gap-md">
+                {[
+                  {
+                    label: "Trocas no mês",
+                    value: data.summary.trocas,
+                    icon: "swap_horiz",
+                  },
+                  {
+                    label: "Horas a pagar",
+                    value: `${formatHours(data.summary.horas)}`,
+                    icon: "schedule",
+                  },
+                  {
+                    label: "Pagamento",
+                    value: formatMoneyBr(data.summary.pagamento ?? 0),
+                    icon: "payments",
+                  },
+                  {
+                    label: "Desconto",
+                    value: formatMoneyBr(data.summary.desconto ?? 0),
+                    icon: "remove_circle",
+                  },
+                ].map((card) => (
+                  <div
+                    key={card.label}
+                    className="rounded-xl border border-outline-variant bg-surface-container-lowest p-sm sm:p-md"
+                  >
+                    <div className="flex items-start justify-between gap-xs">
+                      <p className="text-label-md leading-snug text-on-surface-variant">{card.label}</p>
+                      <Icon name={card.icon} className="hidden text-[22px] text-secondary sm:inline" />
+                    </div>
+                    <p className="mt-sm text-title-lg font-semibold text-primary sm:text-headline-md">
+                      {card.value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden gap-lg lg:grid lg:grid-cols-2">
+                <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                  <div className="border-b border-outline-variant px-md py-sm">
+                    <h3 className="text-title-md text-primary">Trocas por posto</h3>
+                    <p className="text-body-md text-on-surface-variant">
+                      Volume e horas cobertas em cada posto de serviço.
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left text-body-md">
+                      <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                        <tr>
+                          <th className="px-md py-sm">Posto</th>
+                          <th className="px-md py-sm">Trocas</th>
+                          <th className="px-md py-sm">Horas</th>
+                          <th className="px-md py-sm">Pagamento</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.summary.byPosto.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-md py-xl text-center text-on-surface-variant">
+                              Nenhuma troca neste mês.
+                            </td>
+                          </tr>
+                        ) : (
+                          data.summary.byPosto.map((row) => (
+                            <tr key={row.id} className="border-t border-outline-variant/60">
+                              <td className="px-md py-sm text-primary">{row.nome}</td>
+                              <td className="px-md py-sm">{row.trocas}</td>
+                              <td className="px-md py-sm font-semibold">{formatHours(row.horas)}</td>
+                              <td className="px-md py-sm">{formatMoneyBr(row.pagamento ?? 0)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                  <div className="border-b border-outline-variant px-md py-sm">
+                    <h3 className="text-title-md text-primary">Top substitutos</h3>
+                    <p className="text-body-md text-on-surface-variant">
+                      Quem mais cobriu fora da escala — base do pagamento.
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left text-body-md">
+                      <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                        <tr>
+                          <th className="px-md py-sm">Colaborador</th>
+                          <th className="px-md py-sm">Empresa</th>
+                          <th className="px-md py-sm">Trocas</th>
+                          <th className="px-md py-sm">Horas</th>
+                          <th className="px-md py-sm">Pagamento</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.summary.bySubstituto.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="px-md py-xl text-center text-on-surface-variant">
+                              Sem substituições ainda.
+                            </td>
+                          </tr>
+                        ) : (
+                          data.summary.bySubstituto.slice(0, 8).map((row) => (
+                            <tr key={row.id} className="border-t border-outline-variant/60">
+                              <td className="px-md py-sm text-primary">{row.nome}</td>
+                              <td className="px-md py-sm text-on-surface-variant">{row.empresa}</td>
+                              <td className="px-md py-sm">{row.trocas}</td>
+                              <td className="px-md py-sm font-semibold">{formatHours(row.horas)}</td>
+                              <td className="px-md py-sm">{formatMoneyBr(row.pagamento ?? 0)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                <div className="flex flex-col gap-sm border-b border-outline-variant px-md py-sm sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-title-md text-primary">Lançamentos do mês</h3>
+                    <p className="hidden text-body-md text-on-surface-variant sm:block">
+                      Filtros por posto, colaborador e data.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetSubFormAfterSave();
+                      setTab("lancar");
+                    }}
+                    className="hidden items-center gap-xs rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary md:inline-flex"
+                  >
+                    <Icon name="add" className="text-[18px]" />
+                    Nova troca
+                  </button>
+                </div>
+                <div className="flex flex-col gap-sm border-b border-outline-variant px-md py-sm sm:flex-row sm:flex-wrap sm:items-end">
+                  <div className="min-w-[16rem] flex-1">
+                    <SearchablePick
+                      label="Filtrar posto"
+                      value={search.postoId ? String(search.postoId) : ""}
+                      options={filterPostoOptions}
+                      placeholder="Buscar posto..."
+                      allowClear
+                      clearLabel="Todos os postos"
+                      onChange={(id) =>
+                        navigate({
+                          search: (prev) => ({
+                            ...prev,
+                            postoId: id ? Number(id) : undefined,
+                          }),
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="min-w-[16rem] flex-1">
+                    <SearchablePick
+                      label="Filtrar colaborador"
+                      value={search.collaboratorId ? String(search.collaboratorId) : ""}
+                      options={filterCollaboratorOptions}
+                      placeholder="Buscar colaborador..."
+                      allowClear
+                      clearLabel="Todos os colaboradores"
+                      onChange={(id) =>
+                        navigate({
+                          search: (prev) => ({
+                            ...prev,
+                            collaboratorId: id ? Number(id) : undefined,
+                          }),
+                        })
+                      }
+                    />
+                  </div>
+                  <DateInputBr
+                    label="Data de"
+                    valueIso={search.dataDe ?? ""}
+                    onChangeIso={(iso) =>
+                      navigate({
+                        search: (prev) => ({
+                          ...prev,
+                          dataDe: iso || undefined,
+                        }),
+                      })
+                    }
+                  />
+                  <DateInputBr
+                    label="Data até"
+                    valueIso={search.dataAte ?? ""}
+                    onChangeIso={(iso) =>
+                      navigate({
+                        search: (prev) => ({
+                          ...prev,
+                          dataAte: iso || undefined,
+                        }),
+                      })
+                    }
+                  />
+                  <PageSizeSelect value={lancPageSize} onChange={setLancPageSize} />
+                </div>
+                <div className="space-y-sm p-md md:hidden">
+                  {pagedSubstitutions.totalItems === 0 ? (
+                    <p className="py-lg text-center text-body-md text-on-surface-variant">
+                      Nenhum lançamento neste filtro.
+                    </p>
+                  ) : (
+                    pagedSubstitutions.items.map((row) => (
+                      <article
+                        key={row.id}
+                        className="rounded-xl border border-outline-variant bg-surface p-md"
+                      >
+                        <div className="flex items-start justify-between gap-sm">
+                          <div>
+                            <p className="text-label-md text-on-surface-variant">
+                              {formatDateBr(row.data)} · {row.motivoLabel} · {row.periodoLabel}
+                            </p>
+                            <p className="mt-xs text-title-md text-primary">{row.postoNome}</p>
+                          </div>
+                          <div className="flex shrink-0 items-start gap-xs">
+                            <div className="text-right">
+                              {row.pagaHoras ? (
+                                <>
+                                  <p className="text-title-md font-semibold text-primary">
+                                    {formatHours(row.horas)}
+                                  </p>
+                                  <p className="text-label-md text-on-surface-variant">
+                                    {formatMoneyBr(row.valorPagamento ?? 0)}
+                                  </p>
+                                </>
+                              ) : (
+                                <p className="text-label-md font-semibold text-on-surface-variant">
+                                  Sem pgto
+                                </p>
+                              )}
+                              {almocoLabel(row) ? (
+                                <p className="text-label-md text-secondary">{almocoLabel(row)}</p>
+                              ) : null}
+                            </div>
+                            {substitutionActionsMenu(row)}
+                          </div>
+                        </div>
+                        <div className="mt-sm grid gap-xs text-body-md">
+                          {isFacilitiesExtraMotivo(row.motivo) ? (
+                            <p>
+                              <span className="text-on-surface-variant">Extra no posto: </span>
+                              {row.substitutoNome}
+                            </p>
+                          ) : (
+                            <>
+                              <p>
+                                <span className="text-on-surface-variant">Ausente: </span>
+                                {row.ausenteNome}
+                              </p>
+                              <p>
+                                <span className="text-on-surface-variant">Cobriu: </span>
+                                {row.substitutoNome}
+                              </p>
+                            </>
+                          )}
+                          {(row.valorDesconto ?? 0) > 0 ? (
+                            <p>
+                              <span className="text-on-surface-variant">Desconto: </span>
+                              {formatMoneyBr(row.valorDesconto)}
+                            </p>
+                          ) : null}
+                          {row.createdByName ? (
+                            <p>
+                              <span className="text-on-surface-variant">Registrado por: </span>
+                              {row.createdByName}
+                            </p>
+                          ) : null}
+                          {row.foraDoPostoBase ? (
+                            <p className="text-label-md text-secondary">Fora do posto base</p>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="min-w-full text-left text-body-md">
+                    <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                      <tr>
+                        <th className="px-md py-sm">Data</th>
+                        <th className="px-md py-sm">Posto</th>
+                        <th className="px-md py-sm">Ausente</th>
+                        <th className="px-md py-sm">Substituto</th>
+                        <th className="px-md py-sm">Motivo</th>
+                        <th className="px-md py-sm">Período</th>
+                        <th className="px-md py-sm">Horas</th>
+                        <th className="px-md py-sm">Pagamento</th>
+                        <th className="px-md py-sm">Desconto</th>
+                        <th className="px-md py-sm">Registrado por</th>
+                        <th className="px-md py-sm" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedSubstitutions.totalItems === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="px-md py-xl text-center text-on-surface-variant">
+                            Nenhum lançamento neste filtro.
+                          </td>
+                        </tr>
+                      ) : (
+                        pagedSubstitutions.items.map((row) => (
+                          <tr key={row.id} className="border-t border-outline-variant/60">
+                            <td className="px-md py-sm whitespace-nowrap">{formatDateBr(row.data)}</td>
+                            <td className="px-md py-sm text-primary">
+                              {row.postoNome}
+                              {row.foraDoPostoBase ? (
+                                <span className="mt-xs block text-label-md text-secondary">
+                                  Substituto fora do posto base
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="px-md py-sm">
+                              <div>{row.ausenteNome}</div>
+                              <div className="text-label-md text-on-surface-variant">
+                                {row.ausenteEmpresa}
+                              </div>
+                            </td>
+                            <td className="px-md py-sm">
+                              <div>{row.substitutoNome}</div>
+                              <div className="text-label-md text-on-surface-variant">
+                                {row.substitutoEmpresa} · {row.substitutoEscala}
+                              </div>
+                            </td>
+                            <td className="px-md py-sm">{row.motivoLabel}</td>
+                            <td className="px-md py-sm">{row.periodoLabel}</td>
+                            <td className="px-md py-sm font-semibold">
+                              {row.pagaHoras ? (
+                                <>
+                                  {formatHours(row.horas)}
+                                  {row.horasExtra > 0
+                                    ? ` + HE ${formatHours(row.horasExtra)}`
+                                    : ""}
+                                </>
+                              ) : (
+                                <span className="text-label-md font-semibold text-on-surface-variant">
+                                  Sem pagamento
+                                </span>
+                              )}
+                              {almocoLabel(row) ? (
+                                <div className="text-label-md font-normal text-secondary">
+                                  {almocoLabel(row)}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-md py-sm">{formatMoneyBr(row.valorPagamento ?? 0)}</td>
+                            <td className="px-md py-sm">{formatMoneyBr(row.valorDesconto ?? 0)}</td>
+                            <td className="px-md py-sm text-on-surface-variant">
+                              {row.createdByName ?? "—"}
+                            </td>
+                            <td className="px-md py-sm text-right">
+                              {substitutionActionsMenu(row)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePager
+                  page={pagedSubstitutions.page}
+                  totalPages={pagedSubstitutions.totalPages}
+                  totalItems={pagedSubstitutions.totalItems}
+                  pageSize={lancPageSize}
+                  onPageChange={setLancPage}
+                />
+              </div>
+
+              {data.summary.byMotivo.length > 0 && (
+                <div className="flex flex-wrap gap-sm">
+                  {data.summary.byMotivo.map((row) => (
+                    <div
+                      key={row.motivo}
+                      className="rounded-lg border border-outline-variant bg-surface-container-low px-md py-sm"
+                    >
+                      <p className="text-label-md text-on-surface-variant">{row.motivoLabel}</p>
+                      <p className="text-title-md text-primary">
+                        {row.trocas}
+                        {row.pagaHoras ? ` · ${formatHours(row.horas)}` : " · sem pgto"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {search.tab === "lancar" && (
+            <section className="mx-auto w-full max-w-[42rem] space-y-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
+              <div>
+                <h3 className="text-title-lg text-primary">
+                  {editingSubstitutionId ? "Editar lançamento" : "Lançamentos"}
+                </h3>
+                <p className="mt-xs text-body-md text-on-surface-variant">
+                  {editingSubstitutionId
+                    ? "Altere os dados e salve. O pagamento e o desconto são recalculados."
+                    : "Substituição cobre um ausente. Extra é colaborador a mais solicitado pelo posto — quem for setado ganha as horas."}
+                </p>
+              </div>
+              {editingSubstitutionId ? (
+                <div className="flex flex-wrap items-center justify-between gap-sm rounded-lg border border-outline-variant bg-surface px-md py-sm">
+                  <p className="text-body-md text-on-surface">
+                    Editando lançamento <strong>#{editingSubstitutionId}</strong>
+                  </p>
+                  <button
+                    type="button"
+                    className="text-label-md font-semibold text-primary hover:underline"
+                    onClick={cancelEditSubstitution}
+                  >
+                    Cancelar edição
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap gap-xs">
+                {(
+                  [
+                    ["substituicao", "Substituição"],
+                    ["extra", "Lançamento extra"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setLancarMode(mode);
+                      setSubForm((prev) => ({
+                        ...prev,
+                        motivo: mode === "extra" ? "extra" : prev.motivo === "extra" ? "falta" : prev.motivo,
+                        ausenteId: mode === "extra" ? "" : prev.ausenteId,
+                      }));
+                    }}
+                    className={cn(
+                      "rounded-full px-md py-xs text-label-md transition-colors",
+                      lancarMode === mode
+                        ? "bg-secondary-container font-semibold text-on-secondary-container"
+                        : "bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {activePosts.length === 0 ||
+              activeCollaborators.length < (isExtraMode ? 1 : 2) ? (
+                <div className="rounded-lg border border-dashed border-outline-variant p-md text-body-md text-on-surface-variant">
+                  Cadastre ao menos um posto e{" "}
+                  {isExtraMode ? "um colaborador ativo" : "dois colaboradores ativos"} antes de
+                  lançar.{" "}
+                  <button
+                    type="button"
+                    className="font-semibold text-primary underline"
+                    onClick={() => setTab("cadastros")}
+                  >
+                    Ir para cadastros
+                  </button>
+                </div>
+              ) : (
+                <form
+                  className="space-y-md"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submitSubstitution();
+                  }}
+                >
+                  <div className="grid gap-md sm:grid-cols-2">
+                    <DateInputBr
+                      label="Data"
+                      valueIso={subForm.data}
+                      required
+                      fullWidth
+                      onChangeIso={(iso) => setSubForm((p) => ({ ...p, data: iso }))}
+                    />
+                    {isExtraMode ? (
+                      <div className="rounded-lg border border-secondary/30 bg-secondary-container/30 px-md py-sm text-body-md text-primary sm:self-end">
+                        <strong>Extra:</strong> posto pediu reforço. Não há ausente — o colaborador
+                        setado recebe as horas no fechamento.
+                      </div>
+                    ) : (
+                      <label className="block space-y-xs">
+                        <span className="text-label-md text-primary">Motivo</span>
+                        <select
+                          value={subForm.motivo}
+                          onChange={(e) => {
+                            const motivo = e.target.value as FacilitiesMotivoId;
+                            setSubForm((p) => ({
+                              ...p,
+                              motivo,
+                              aplicaDesconto: defaultAplicaDesconto(motivo),
+                              atestadoNome: motivo === "atestado" ? p.atestadoNome : null,
+                              atestadoMime: motivo === "atestado" ? p.atestadoMime : null,
+                              atestadoData: motivo === "atestado" ? p.atestadoData : null,
+                            }));
+                          }}
+                          className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                        >
+                          {FACILITIES_MOTIVOS_SUBSTITUICAO.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}
+                              {m.pagaHoras === false ? " (sem pagamento)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+
+                  {isPermuta ? (
+                    <div className="rounded-lg border border-secondary/30 bg-secondary-container/30 px-md py-sm text-body-md text-primary">
+                      Solicitação de troca: os colaboradores permutam o dia entre si. O lançamento
+                      fica registrado, mas <strong>não conta como horas a pagar</strong>.
+                    </div>
+                  ) : null}
+                  {!pagaHorasMotivo && !isPermuta && !isExtraMode ? (
+                    <div className="rounded-lg border border-secondary/30 bg-secondary-container/30 px-md py-sm text-body-md text-primary">
+                      {motivoHint ??
+                        "Este motivo não gera horas a pagar no fechamento."}
+                    </div>
+                  ) : null}
+
+                  {!isExtraMode ? (
+                    <SearchablePick
+                      label="Quem faltou (ausente)"
+                      value={subForm.ausenteId}
+                      options={ausenteOptions}
+                      placeholder="Digite o nome do colaborador..."
+                      onChange={onSelectAusente}
+                    />
+                  ) : null}
+
+                  <SearchablePick
+                    label={isExtraMode ? "Posto do reforço" : "Posto da cobertura"}
+                    value={subForm.postoId}
+                    options={postoOptions}
+                    placeholder="Digite o nome do posto..."
+                    onChange={(id) => setSubForm((p) => ({ ...p, postoId: id }))}
+                  />
+
+                  <div className="space-y-xs">
+                    <SearchablePick
+                      label={
+                        isExtraMode
+                          ? "Colaborador (ganha as horas)"
+                          : "Quem cobriu (substituto)"
+                      }
+                      value={subForm.substitutoId}
+                      options={isExtraMode ? extraCollaboratorOptions : substitutoOptions}
+                      placeholder={
+                        isExtraMode
+                          ? "Digite o nome de quem vai no posto..."
+                          : "Digite o nome de quem cobriu..."
+                      }
+                      onChange={onSelectSubstituto}
+                    />
+                    {substitutoForaBase && (
+                      <p className="text-label-md text-secondary">
+                        Atenção: {selectedSubstituto?.nome} está{" "}
+                        {isExtraMode ? "indo" : "cobrindo"} fora do posto base (
+                        {selectedSubstituto?.postoBaseNome}).
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="grid gap-md sm:grid-cols-2">
+                    <div className="space-y-xs">
+                      <span className="text-label-md text-primary">
+                        {!pagaHorasMotivo ? "Duração do plantão (registro)" : "Horas da substituição"}
+                      </span>
+                      <div className="grid grid-cols-2 gap-sm">
+                        <label className="block space-y-xs">
+                          <span className="text-label-md text-on-surface-variant">Horas</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            required
+                            value={subForm.horasHoras}
+                            onChange={(e) =>
+                              setSubForm((p) => ({ ...p, horasHoras: e.target.value }))
+                            }
+                            className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                          />
+                        </label>
+                        <label className="block space-y-xs">
+                          <span className="text-label-md text-on-surface-variant">Minutos</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={59}
+                            step={1}
+                            required
+                            value={subForm.horasMinutos}
+                            onChange={(e) =>
+                              setSubForm((p) => ({ ...p, horasMinutos: e.target.value }))
+                            }
+                            className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                          />
+                        </label>
+                      </div>
+                      {!pagaHorasMotivo ? (
+                        <span className="text-label-md text-on-surface-variant">
+                          Só para histórico — não entra no fechamento de horas.
+                        </span>
+                      ) : (
+                        <span className="text-label-md text-on-surface-variant">
+                          Ex.: 7h30 → horas 7 e minutos 30.
+                        </span>
+                      )}
+                    </div>
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Período</span>
+                      <select
+                        value={subForm.periodo}
+                        onChange={(e) =>
+                          setSubForm((p) => ({
+                            ...p,
+                            periodo: e.target.value as FacilitiesPeriodoId,
+                          }))
+                        }
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                      >
+                        {FACILITIES_PERIODOS.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {pagaHorasMotivo ? (
+                    <div className="space-y-sm rounded-lg border border-outline-variant bg-surface p-md">
+                      <label className="flex items-center gap-sm text-body-md">
+                        <input
+                          type="checkbox"
+                          checked={subForm.temHoraExtra}
+                          onChange={(e) =>
+                            setSubForm((p) => ({
+                              ...p,
+                              temHoraExtra: e.target.checked,
+                              horasExtraHoras: e.target.checked ? p.horasExtraHoras : "0",
+                              horasExtraMinutos: e.target.checked ? p.horasExtraMinutos : "0",
+                            }))
+                          }
+                        />
+                        <span className="text-primary">Haverá hora extra?</span>
+                      </label>
+                      {subForm.temHoraExtra ? (
+                        <div className="grid gap-md sm:grid-cols-3">
+                          <label className="block space-y-xs">
+                            <span className="text-label-md text-on-surface-variant">Horas extra</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={subForm.horasExtraHoras}
+                              onChange={(e) =>
+                                setSubForm((p) => ({ ...p, horasExtraHoras: e.target.value }))
+                              }
+                              className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                            />
+                          </label>
+                          <label className="block space-y-xs">
+                            <span className="text-label-md text-on-surface-variant">Minutos extra</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={59}
+                              step={1}
+                              value={subForm.horasExtraMinutos}
+                              onChange={(e) =>
+                                setSubForm((p) => ({ ...p, horasExtraMinutos: e.target.value }))
+                              }
+                              className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                            />
+                          </label>
+                          <label className="block space-y-xs">
+                            <span className="text-label-md text-on-surface-variant">Período da extra</span>
+                            <select
+                              value={subForm.periodoExtra}
+                              onChange={(e) =>
+                                setSubForm((p) => ({
+                                  ...p,
+                                  periodoExtra: e.target.value as FacilitiesPeriodoId,
+                                }))
+                              }
+                              className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                            >
+                              {FACILITIES_PERIODOS.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {!isExtraMode && pagaHorasMotivo ? (
+                    <label className="flex items-center gap-sm rounded-lg border border-outline-variant bg-surface px-md py-sm text-body-md">
+                      <input
+                        type="checkbox"
+                        checked={subForm.aplicaDesconto}
+                        onChange={(e) =>
+                          setSubForm((p) => ({ ...p, aplicaDesconto: e.target.checked }))
+                        }
+                      />
+                      <span className="text-primary">Aplicar desconto no ausente?</span>
+                    </label>
+                  ) : null}
+
+                  {!isExtraMode && subForm.motivo === "atestado" ? (
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Atestado (PDF ou imagem)</span>
+                      <input
+                        ref={atestadoInputRef}
+                        type="file"
+                        accept="application/pdf,image/jpeg,image/png,image/webp"
+                        required={
+                          !subForm.atestadoData &&
+                          !(editingSubstitutionId != null && editingKeepAtestado)
+                        }
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) {
+                            clearSubFormAtestado();
+                            return;
+                          }
+                          if (file.size > 4_000_000) {
+                            flash(null, `Arquivo muito grande: ${file.name} (máx. 4 MB).`);
+                            e.target.value = "";
+                            return;
+                          }
+                          void (async () => {
+                            try {
+                              const dataUrl = await readFileAsDataUrl(file);
+                              setSubForm((p) => ({
+                                ...p,
+                                atestadoNome: file.name,
+                                atestadoMime: file.type || "application/octet-stream",
+                                atestadoData: dataUrl,
+                              }));
+                            } catch {
+                              flash(null, "Falha ao ler o atestado.");
+                            }
+                          })();
+                        }}
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md"
+                      />
+                      {subForm.atestadoNome ||
+                      (editingSubstitutionId != null && editingKeepAtestado) ? (
+                        <div className="flex flex-wrap items-center gap-sm">
+                          <span className="text-label-md text-on-surface-variant">
+                            Anexo:{" "}
+                            {subForm.atestadoNome ||
+                              (editingKeepAtestado ? "atestado já salvo (mantido)" : "—")}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-label-md font-semibold text-error hover:underline"
+                            onClick={clearSubFormAtestado}
+                          >
+                            Apagar anexo
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-label-md text-on-surface-variant">
+                          Obrigatório para motivo atestado.
+                        </span>
+                      )}
+                    </label>
+                  ) : null}
+
+                  <label className="block space-y-xs">
+                    <span className="text-label-md text-primary">Observação</span>
+                    <input
+                      value={subForm.observacao}
+                      onChange={(e) => setSubForm((p) => ({ ...p, observacao: e.target.value }))}
+                      placeholder="Opcional"
+                      className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                    />
+                  </label>
+
+                  <div className="grid gap-md sm:grid-cols-2">
+                    <label className="flex items-center gap-sm rounded-lg border border-outline-variant bg-surface px-md py-sm text-body-md">
+                      <input
+                        type="checkbox"
+                        checked={subForm.pagaAlmoco}
+                        onChange={(e) =>
+                          setSubForm((p) => ({
+                            ...p,
+                            pagaAlmoco: e.target.checked,
+                            valorAlmoco: e.target.checked ? p.valorAlmoco : "",
+                          }))
+                        }
+                      />
+                      <span className="text-primary">Pagará almoço?</span>
+                    </label>
+                    {subForm.pagaAlmoco ? (
+                      <label className="block space-y-xs">
+                        <span className="text-label-md text-primary">Valor do almoço (R$)</span>
+                        <input
+                          type="number"
+                          min={0.01}
+                          step="0.01"
+                          required
+                          value={subForm.valorAlmoco}
+                          onChange={(e) =>
+                            setSubForm((p) => ({ ...p, valorAlmoco: e.target.value }))
+                          }
+                          placeholder="Ex.: 25,00"
+                          className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                        />
+                      </label>
+                    ) : (
+                      <div />
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={pending}
+                    className="inline-flex w-full items-center justify-center gap-xs rounded-lg bg-secondary-container px-md py-md text-label-md font-semibold text-primary disabled:opacity-60 sm:w-auto sm:py-sm"
+                  >
+                    <Icon name="check" className="text-[18px]" />
+                    {pending
+                      ? "Salvando..."
+                      : editingSubstitutionId
+                        ? "Salvar alterações"
+                        : isExtraMode
+                          ? "Registrar extra"
+                          : isPermuta
+                            ? "Registrar permuta"
+                            : "Registrar troca"}
+                  </button>
+                </form>
+              )}
+            </section>
+          )}
+
+          {search.tab === "ferias" && (
+            <section className="space-y-lg">
+              <div className="rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
+                <h3 className="text-title-lg text-primary">Lançar férias</h3>
+                <p className="mt-xs text-body-md text-on-surface-variant">
+                  Informe o período (dias) e as horas. A cobertura pode ser outra pessoa ou a própria
+                  pessoa em férias.
+                </p>
+                <form onSubmit={(e) => void submitVacation(e)} className="mt-md space-y-md">
+                  <div className="grid gap-md sm:grid-cols-2">
+                    <DateInputBr
+                      label="Início"
+                      valueIso={vacForm.dataInicio}
+                      onChangeIso={(value) =>
+                        setVacForm((p) => ({
+                          ...p,
+                          dataInicio: value,
+                          dataFim: p.dataFim < value ? value : p.dataFim,
+                        }))
+                      }
+                    />
+                    <DateInputBr
+                      label="Fim"
+                      valueIso={vacForm.dataFim}
+                      onChangeIso={(value) =>
+                        setVacForm((p) => ({
+                          ...p,
+                          dataFim: value,
+                          dataInicio: p.dataInicio > value ? value : p.dataInicio,
+                        }))
+                      }
+                    />
+                  </div>
+                  <p className="rounded-lg bg-secondary-container/40 px-sm py-xs text-label-md text-primary">
+                    {vacDias > 0
+                      ? `${vacDias} dia(s) · ${formatHours(vacHorasTotal)} no período`
+                      : "Informe o período para calcular os dias."}
+                    {vacCoberturaPropria ? " · cobertura própria" : ""}
+                  </p>
+                  <SearchablePick
+                    label="Quem sai de férias"
+                    value={vacForm.colaboradorId}
+                    options={ausenteOptions}
+                    placeholder="Buscar colaborador..."
+                    onChange={(id) => {
+                      const person = activeCollaborators.find((c) => String(c.id) === id);
+                      setVacForm((prev) => ({
+                        ...prev,
+                        colaboradorId: id,
+                        postoId:
+                          prev.postoId ||
+                          (person?.postoBaseId != null ? String(person.postoBaseId) : ""),
+                        coberturaId: prev.coberturaId || id,
+                        ...(person && !prev.coberturaId
+                          ? durationPartsFromHours(person.defaultHours)
+                          : {}),
+                      }));
+                    }}
+                  />
+                  <SearchablePick
+                    label="Posto da cobertura"
+                    value={vacForm.postoId}
+                    options={postoOptions}
+                    placeholder="Buscar posto..."
+                    onChange={(id) => setVacForm((p) => ({ ...p, postoId: id }))}
+                  />
+                  <SearchablePick
+                    label="Quem cobre as férias"
+                    value={vacForm.coberturaId}
+                    options={ausenteOptions}
+                    placeholder="Pode ser a própria pessoa..."
+                    onChange={(id) => {
+                      const person = activeCollaborators.find((c) => String(c.id) === id);
+                      setVacForm((prev) => ({
+                        ...prev,
+                        coberturaId: id,
+                        ...(person ? durationPartsFromHours(person.defaultHours) : {}),
+                      }));
+                    }}
+                  />
+                  {vacCoberturaPropria ? (
+                    <p className="rounded-lg border border-sky-200 bg-sky-50 px-sm py-xs text-label-md text-sky-900">
+                      Cobertura própria: o mesmo colaborador fica registrado no período de férias.
+                    </p>
+                  ) : selectedVacCobertura && selectedVacColaborador ? (
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 px-sm py-xs text-label-md text-amber-950">
+                      {selectedVacCobertura.nome} cobre as férias de {selectedVacColaborador.nome}.
+                    </p>
+                  ) : null}
+                  <div className="grid gap-md sm:grid-cols-2">
+                    <label className="flex items-center gap-sm rounded-lg border border-outline-variant bg-surface px-md py-sm text-body-md">
+                      <input
+                        type="checkbox"
+                        checked={vacForm.horasPorDia}
+                        onChange={(e) =>
+                          setVacForm((p) => ({ ...p, horasPorDia: e.target.checked }))
+                        }
+                      />
+                      <span className="text-primary">Horas por dia × dias do período</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-sm">
+                      <label className="block space-y-xs">
+                        <span className="text-label-md text-primary">
+                          {vacForm.horasPorDia ? "Horas/dia" : "Horas totais"}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={vacForm.horasHoras}
+                          onChange={(e) =>
+                            setVacForm((p) => ({ ...p, horasHoras: e.target.value }))
+                          }
+                          className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                        />
+                      </label>
+                      <label className="block space-y-xs">
+                        <span className="text-label-md text-primary">Minutos</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={vacForm.horasMinutos}
+                          onChange={(e) =>
+                            setVacForm((p) => ({ ...p, horasMinutos: e.target.value }))
+                          }
+                          className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <label className="block space-y-xs">
+                    <span className="text-label-md text-primary">Observação</span>
+                    <input
+                      value={vacForm.observacao}
+                      onChange={(e) => setVacForm((p) => ({ ...p, observacao: e.target.value }))}
+                      placeholder="Opcional"
+                      className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={pending}
+                    className="inline-flex w-full items-center justify-center gap-xs rounded-lg bg-secondary-container px-md py-md text-label-md font-semibold text-primary disabled:opacity-60 sm:w-auto sm:py-sm"
+                  >
+                    <Icon name="beach_access" className="text-[18px]" />
+                    {pending ? "Salvando..." : "Registrar férias"}
+                  </button>
+                </form>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                <div className="flex flex-wrap items-end justify-between gap-sm border-b border-outline-variant px-md py-sm">
+                  <div>
+                    <h4 className="text-title-md text-primary">Férias no mês</h4>
+                    <p className="text-label-md text-on-surface-variant">
+                      {(data.vacations ?? []).length} período(s) · {data.summary.feriasDias ?? 0}{" "}
+                      dia(s) · {formatHours(data.summary.feriasHoras ?? 0)}
+                    </p>
+                  </div>
+                  <PageSizeSelect value={feriasPageSize} onChange={setFeriasPageSize} />
+                </div>
+                <div className="space-y-sm p-md md:hidden">
+                  {pagedFerias.totalItems === 0 ? (
+                    <p className="py-lg text-center text-body-md text-on-surface-variant">
+                      Nenhuma férias neste mês.
+                    </p>
+                  ) : (
+                    pagedFerias.items.map((row) => (
+                      <article
+                        key={row.id}
+                        className="rounded-xl border border-outline-variant bg-surface p-md"
+                      >
+                        <div className="flex items-start justify-between gap-sm">
+                          <div className="min-w-0">
+                            <p className="font-medium text-primary">{row.colaboradorNome}</p>
+                            <p className="text-label-md text-on-surface-variant">
+                              {formatDateBr(row.dataInicio)} → {formatDateBr(row.dataFim)} ·{" "}
+                              {row.dias} dia(s) · {formatHours(row.horas)}
+                            </p>
+                            <p className="mt-2xs text-label-md text-on-surface-variant">
+                              Cobertura: {row.coberturaNome}
+                              {row.coberturaPropria ? " (própria)" : ""} · {row.postoNome}
+                            </p>
+                          </div>
+                          <DropdownMenu modal={false}>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                disabled={pending}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-outline-variant bg-surface text-on-surface hover:bg-surface-container-high disabled:opacity-50"
+                                aria-label={`Ações das férias de ${row.colaboradorNome}`}
+                              >
+                                <Icon name="more_vert" className="text-[18px]" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="min-w-[10rem]">
+                              <DropdownMenuItem
+                                disabled={pending}
+                                className="text-destructive focus:text-destructive"
+                                onSelect={() => void deleteVacation(row.id)}
+                              >
+                                <Icon name="delete" className="text-[16px]" />
+                                Excluir
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="min-w-full text-left text-body-md">
+                    <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                      <tr>
+                        <th className="px-md py-sm">Período</th>
+                        <th className="px-md py-sm">Em férias</th>
+                        <th className="px-md py-sm">Cobertura</th>
+                        <th className="px-md py-sm">Posto</th>
+                        <th className="px-md py-sm">Dias</th>
+                        <th className="px-md py-sm">Horas</th>
+                        <th className="px-md py-sm">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedFerias.totalItems === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-md py-xl text-center text-on-surface-variant">
+                            Nenhuma férias neste mês.
+                          </td>
+                        </tr>
+                      ) : (
+                        pagedFerias.items.map((row) => (
+                          <tr key={row.id} className="border-t border-outline-variant/60">
+                            <td className="px-md py-sm whitespace-nowrap">
+                              {formatDateBr(row.dataInicio)} → {formatDateBr(row.dataFim)}
+                            </td>
+                            <td className="px-md py-sm font-medium text-primary">
+                              {row.colaboradorNome}
+                            </td>
+                            <td className="px-md py-sm">
+                              {row.coberturaNome}
+                              {row.coberturaPropria ? (
+                                <span className="ml-xs rounded-full bg-sky-100 px-xs py-2xs text-[10px] font-bold uppercase text-sky-900">
+                                  Própria
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="px-md py-sm">{row.postoNome}</td>
+                            <td className="px-md py-sm">{row.dias}</td>
+                            <td className="px-md py-sm font-semibold">{formatHours(row.horas)}</td>
+                            <td className="px-md py-sm text-right">
+                              <DropdownMenu modal={false}>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    disabled={pending}
+                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-outline-variant bg-surface text-on-surface hover:bg-surface-container-high disabled:opacity-50"
+                                    aria-label={`Ações das férias de ${row.colaboradorNome}`}
+                                  >
+                                    <Icon name="more_vert" className="text-[18px]" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="min-w-[10rem]">
+                                  <DropdownMenuItem
+                                    disabled={pending}
+                                    className="text-destructive focus:text-destructive"
+                                    onSelect={() => void deleteVacation(row.id)}
+                                  >
+                                    <Icon name="delete" className="text-[16px]" />
+                                    Excluir
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <TablePager
+                  page={pagedFerias.page}
+                  totalPages={pagedFerias.totalPages}
+                  totalItems={pagedFerias.totalItems}
+                  pageSize={feriasPageSize}
+                  onPageChange={setFeriasPage}
+                />
+              </div>
+            </section>
+          )}
+
+          {search.tab === "cadastros" && (
+            <section className="space-y-md">
+              <div className="flex flex-wrap gap-sm">
+                <button
+                  type="button"
+                  onClick={() => setCadastroTab("postos")}
+                  className={cn(
+                    "rounded-lg px-md py-sm text-label-md font-semibold",
+                    cadastroTab === "postos"
+                      ? "bg-primary text-on-primary"
+                      : "bg-surface-container-high text-on-surface-variant",
+                  )}
+                >
+                  Postos ({filteredPosts.length}
+                  {filteredPosts.length !== data.posts.length ? `/${data.posts.length}` : ""})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCadastroTab("colaboradores")}
+                  className={cn(
+                    "rounded-lg px-md py-sm text-label-md font-semibold",
+                    cadastroTab === "colaboradores"
+                      ? "bg-primary text-on-primary"
+                      : "bg-surface-container-high text-on-surface-variant",
+                  )}
+                >
+                  Colaboradores ({filteredCollaborators.length}
+                  {filteredCollaborators.length !== data.collaborators.length
+                    ? `/${data.collaborators.length}`
+                    : ""}
+                  )
+                </button>
+                <div className="flex-1" />
+                {cadastroTab === "postos" ? (
+                  <div className="flex flex-wrap items-center gap-sm">
+                    <input
+                      ref={postImportRef}
+                      type="file"
+                      accept=".xls,.csv,application/vnd.ms-excel,text/csv"
+                      className="hidden"
+                      onChange={(e) => void importPostsFromFile(e.target.files?.[0] ?? null)}
+                    />
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary"
+                      onClick={() => downloadFacilitiesPostsModeloExcel()}
+                    >
+                      <Icon name="download" className="text-[18px]" />
+                      Modelo Excel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      className="inline-flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary disabled:opacity-60"
+                      onClick={() => postImportRef.current?.click()}
+                    >
+                      <Icon name="upload" className="text-[18px]" />
+                      Importar Excel
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-xs rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+                      onClick={() => {
+                        setPostForm({
+                          id: 0,
+                          nome: "",
+                          endereco: "",
+                          cidade: "",
+                          observacao: "",
+                          active: true,
+                        });
+                        setPostDialog(true);
+                      }}
+                    >
+                      <Icon name="add" className="text-[18px]" />
+                      Novo posto
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-sm">
+                    <input
+                      ref={colImportRef}
+                      type="file"
+                      accept=".xls,.csv,application/vnd.ms-excel,text/csv"
+                      className="hidden"
+                      onChange={(e) =>
+                        void importCollaboratorsFromFile(e.target.files?.[0] ?? null)
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary"
+                      onClick={() => downloadFacilitiesCollaboratorsModeloExcel()}
+                    >
+                      <Icon name="download" className="text-[18px]" />
+                      Modelo Excel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      className="inline-flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary disabled:opacity-60"
+                      onClick={() => colImportRef.current?.click()}
+                    >
+                      <Icon name="upload" className="text-[18px]" />
+                      Importar Excel
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-xs rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+                      onClick={() => {
+                        setColForm({
+                          id: 0,
+                          nome: "",
+                          empresa: "ancora",
+                          funcao: "vigilante",
+                          escala: "12x36_diurno",
+                          postoBaseId: "",
+                          telefone: "",
+                          active: true,
+                        });
+                        setColDialog(true);
+                      }}
+                    >
+                      <Icon name="person_add" className="text-[18px]" />
+                      Novo colaborador
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {cadastroTab === "postos" ? (
+                <div className="flex flex-col gap-sm rounded-xl border border-outline-variant bg-surface-container-lowest p-md sm:flex-row sm:flex-wrap sm:items-end">
+                  <label className="block min-w-[14rem] flex-1 space-y-xs">
+                    <span className="text-label-md text-primary">Buscar posto</span>
+                    <div className="relative">
+                      <Icon
+                        name="search"
+                        className="pointer-events-none absolute left-sm top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant"
+                      />
+                      <input
+                        value={postFilterQuery}
+                        onChange={(e) => setPostFilterQuery(e.target.value)}
+                        placeholder="Nome, cidade ou endereço..."
+                        className="w-full rounded-lg border border-outline-variant bg-surface py-sm pl-[40px] pr-sm text-body-md"
+                      />
+                    </div>
+                  </label>
+                  <label className="block space-y-xs">
+                    <span className="text-label-md text-primary">Status</span>
+                    <select
+                      value={postFilterStatus}
+                      onChange={(e) =>
+                        setPostFilterStatus(e.target.value as "all" | "active" | "inactive")
+                      }
+                      className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-40"
+                    >
+                      <option value="all">Todos</option>
+                      <option value="active">Ativos</option>
+                      <option value="inactive">Inativos</option>
+                    </select>
+                  </label>
+                  <PageSizeSelect value={cadPageSize} onChange={setCadPageSize} />
+                </div>
+              ) : (
+                <div className="space-y-sm rounded-xl border border-outline-variant bg-surface-container-lowest p-md">
+                  <div className="flex flex-col gap-sm sm:flex-row sm:flex-wrap sm:items-end">
+                    <label className="block min-w-[14rem] flex-1 space-y-xs">
+                      <span className="text-label-md text-primary">Buscar colaborador</span>
+                      <div className="relative">
+                        <Icon
+                          name="search"
+                          className="pointer-events-none absolute left-sm top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant"
+                        />
+                        <input
+                          value={colFilterQuery}
+                          onChange={(e) => setColFilterQuery(e.target.value)}
+                          placeholder="Nome, telefone, posto..."
+                          className="w-full rounded-lg border border-outline-variant bg-surface py-sm pl-[40px] pr-sm text-body-md"
+                        />
+                      </div>
+                    </label>
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Empresa</span>
+                      <select
+                        value={colFilterEmpresa}
+                        onChange={(e) =>
+                          setColFilterEmpresa(e.target.value as "" | FacilitiesEmpresaId)
+                        }
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-36"
+                      >
+                        <option value="">Todas</option>
+                        {data.catalogs.empresas.map((e) => (
+                          <option key={e.id} value={e.id}>
+                            {e.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Função</span>
+                      <select
+                        value={colFilterFuncao}
+                        onChange={(e) =>
+                          setColFilterFuncao(e.target.value as "" | FacilitiesFuncaoId)
+                        }
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-40"
+                      >
+                        <option value="">Todas</option>
+                        {data.catalogs.funcoes.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Escala</span>
+                      <select
+                        value={colFilterEscala}
+                        onChange={(e) =>
+                          setColFilterEscala(e.target.value as "" | FacilitiesEscalaId)
+                        }
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-44"
+                      >
+                        <option value="">Todas</option>
+                        {data.catalogs.escalas.map((esc) => (
+                          <option key={esc.id} value={esc.id}>
+                            {esc.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-xs">
+                      <span className="text-label-md text-primary">Status</span>
+                      <select
+                        value={colFilterStatus}
+                        onChange={(e) =>
+                          setColFilterStatus(e.target.value as "all" | "active" | "inactive")
+                        }
+                        className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm text-body-md sm:w-36"
+                      >
+                        <option value="all">Todos</option>
+                        <option value="active">Ativos</option>
+                        <option value="inactive">Inativos</option>
+                      </select>
+                    </label>
+                    <PageSizeSelect value={cadPageSize} onChange={setCadPageSize} />
+                  </div>
+                  <div className="w-full max-w-[28rem]">
+                    <SearchablePick
+                      label="Posto base"
+                      value={colFilterPostoId}
+                      options={colPostoFilterOptions}
+                      placeholder="Filtrar por posto base..."
+                      allowClear
+                      clearLabel="Todos os postos"
+                      onChange={setColFilterPostoId}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {cadastroTab === "postos" ? (
+                <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                  <div className="space-y-sm p-md md:hidden">
+                    {filteredPosts.length === 0 ? (
+                      <p className="py-lg text-center text-body-md text-on-surface-variant">
+                        {data.posts.length === 0
+                          ? "Nenhum posto cadastrado."
+                          : "Nenhum posto neste filtro."}
+                      </p>
+                    ) : (
+                      pagedPosts.items.map((post) => (
+                        <article
+                          key={post.id}
+                          className="rounded-xl border border-outline-variant bg-surface p-md"
+                        >
+                          <div className="flex items-start justify-between gap-sm">
+                            <div className="min-w-0">
+                              <p className="font-medium text-primary">{post.nome}</p>
+                              <p className="text-label-md text-on-surface-variant">
+                                {post.cidade ?? "Sem cidade"}
+                                {post.endereco ? ` · ${post.endereco}` : ""}
+                              </p>
+                            </div>
+                            <span
+                              className={cn(
+                                "shrink-0 text-label-md",
+                                post.active ? "text-secondary" : "text-on-surface-variant",
+                              )}
+                            >
+                              {post.active ? "Ativo" : "Inativo"}
+                            </span>
+                          </div>
+                          <div className="mt-sm flex gap-md">
+                            <button
+                              type="button"
+                              className="text-label-md font-semibold text-primary"
+                              onClick={() => {
+                                setPostForm({
+                                  id: post.id,
+                                  nome: post.nome,
+                                  endereco: post.endereco ?? "",
+                                  cidade: post.cidade ?? "",
+                                  observacao: post.observacao ?? "",
+                                  active: post.active,
+                                });
+                                setPostDialog(true);
+                              }}
+                            >
+                              Editar
+                            </button>
+                            {post.active ? (
+                              <button
+                                type="button"
+                                className="text-label-md font-semibold text-error"
+                                onClick={async () => {
+                                  if (!confirm(`Desativar posto ${post.nome}?`)) return;
+                                  setPending(true);
+                                  try {
+                                    await deactivateFacilitiesPostFn({ data: { id: post.id } });
+                                    await router.invalidate();
+                                  } finally {
+                                    setPending(false);
+                                  }
+                                }}
+                              >
+                                Desativar
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                  <div className="hidden overflow-x-auto md:block">
+                  <table className="min-w-full text-left text-body-md">
+                    <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                      <tr>
+                        <th className="px-md py-sm">Posto</th>
+                        <th className="px-md py-sm">Cidade</th>
+                        <th className="px-md py-sm">Status</th>
+                        <th className="px-md py-sm" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredPosts.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="px-md py-xl text-center text-on-surface-variant">
+                            {data.posts.length === 0
+                              ? "Nenhum posto cadastrado."
+                              : "Nenhum posto neste filtro."}
+                          </td>
+                        </tr>
+                      ) : (
+                        pagedPosts.items.map((post) => (
+                          <tr key={post.id} className="border-t border-outline-variant/60">
+                            <td className="px-md py-sm">
+                              <div className="font-medium text-primary">{post.nome}</div>
+                              {post.endereco ? (
+                                <div className="text-label-md text-on-surface-variant">
+                                  {post.endereco}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-md py-sm">{post.cidade ?? "—"}</td>
+                            <td className="px-md py-sm">
+                              {post.active ? (
+                                <span className="text-secondary">Ativo</span>
+                              ) : (
+                                <span className="text-on-surface-variant">Inativo</span>
+                              )}
+                            </td>
+                            <td className="px-md py-sm text-right">
+                              <button
+                                type="button"
+                                className="mr-sm text-label-md text-primary hover:underline"
+                                onClick={() => {
+                                  setPostForm({
+                                    id: post.id,
+                                    nome: post.nome,
+                                    endereco: post.endereco ?? "",
+                                    cidade: post.cidade ?? "",
+                                    observacao: post.observacao ?? "",
+                                    active: post.active,
+                                  });
+                                  setPostDialog(true);
+                                }}
+                              >
+                                Editar
+                              </button>
+                              {post.active ? (
+                                <button
+                                  type="button"
+                                  className="text-label-md text-error hover:underline"
+                                  onClick={async () => {
+                                    if (!confirm(`Desativar posto ${post.nome}?`)) return;
+                                    setPending(true);
+                                    try {
+                                      await deactivateFacilitiesPostFn({ data: { id: post.id } });
+                                      await router.invalidate();
+                                    } finally {
+                                      setPending(false);
+                                    }
+                                  }}
+                                >
+                                  Desativar
+                                </button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                  </div>
+                  <TablePager
+                    page={pagedPosts.page}
+                    totalPages={pagedPosts.totalPages}
+                    totalItems={pagedPosts.totalItems}
+                    pageSize={cadPageSize}
+                    onPageChange={setCadPage}
+                  />
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                  <div className="space-y-sm p-md md:hidden">
+                    {filteredCollaborators.length === 0 ? (
+                      <p className="py-lg text-center text-body-md text-on-surface-variant">
+                        {data.collaborators.length === 0
+                          ? "Nenhum colaborador cadastrado."
+                          : "Nenhum colaborador neste filtro."}
+                      </p>
+                    ) : (
+                      pagedCollaborators.items.map((col) => (
+                        <article
+                          key={col.id}
+                          className="rounded-xl border border-outline-variant bg-surface p-md"
+                        >
+                          <div className="flex items-start justify-between gap-sm">
+                            <div className="min-w-0">
+                              <p className="font-medium text-primary">{col.nome}</p>
+                              <p className="text-label-md text-on-surface-variant">
+                                {col.funcaoLabel} · {col.escalaLabel}
+                              </p>
+                              <p className="text-label-md text-on-surface-variant">
+                                {col.postoBaseNome ?? "Sem posto base"}
+                              </p>
+                            </div>
+                            <EmpresaBadge id={col.empresa} label={col.empresaLabel} />
+                          </div>
+                          {!col.active ? (
+                            <p className="mt-xs text-label-md text-on-surface-variant">Inativo</p>
+                          ) : null}
+                          <div className="mt-sm flex gap-md">
+                            <button
+                              type="button"
+                              className="text-label-md font-semibold text-primary"
+                              onClick={() => {
+                                setColForm({
+                                  id: col.id,
+                                  nome: col.nome,
+                                  empresa: col.empresa,
+                                  funcao: col.funcao,
+                                  escala: col.escala,
+                                  postoBaseId: col.postoBaseId ? String(col.postoBaseId) : "",
+                                  telefone: col.telefone ?? "",
+                                  active: col.active,
+                                });
+                                setColDialog(true);
+                              }}
+                            >
+                              Editar
+                            </button>
+                            {col.active ? (
+                              <button
+                                type="button"
+                                className="text-label-md font-semibold text-error"
+                                onClick={async () => {
+                                  if (!confirm(`Desativar ${col.nome}?`)) return;
+                                  setPending(true);
+                                  try {
+                                    await deactivateFacilitiesCollaboratorFn({
+                                      data: { id: col.id },
+                                    });
+                                    await router.invalidate();
+                                  } finally {
+                                    setPending(false);
+                                  }
+                                }}
+                              >
+                                Desativar
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                  <div className="hidden overflow-x-auto md:block">
+                  <table className="min-w-full text-left text-body-md">
+                    <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                      <tr>
+                        <th className="px-md py-sm">Nome</th>
+                        <th className="px-md py-sm">Empresa</th>
+                        <th className="px-md py-sm">Função / Escala</th>
+                        <th className="px-md py-sm">Posto base</th>
+                        <th className="px-md py-sm" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCollaborators.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-md py-xl text-center text-on-surface-variant">
+                            {data.collaborators.length === 0
+                              ? "Nenhum colaborador cadastrado."
+                              : "Nenhum colaborador neste filtro."}
+                          </td>
+                        </tr>
+                      ) : (
+                        pagedCollaborators.items.map((col) => (
+                          <tr key={col.id} className="border-t border-outline-variant/60">
+                            <td className="px-md py-sm">
+                              <div className="font-medium text-primary">{col.nome}</div>
+                              {!col.active ? (
+                                <div className="text-label-md text-on-surface-variant">Inativo</div>
+                              ) : null}
+                            </td>
+                            <td className="px-md py-sm">
+                              <EmpresaBadge id={col.empresa} label={col.empresaLabel} />
+                            </td>
+                            <td className="px-md py-sm">
+                              <div>{col.funcaoLabel}</div>
+                              <div className="text-label-md text-on-surface-variant">
+                                {col.escalaLabel} · {col.defaultHours}h
+                              </div>
+                            </td>
+                            <td className="px-md py-sm">{col.postoBaseNome ?? "—"}</td>
+                            <td className="px-md py-sm text-right">
+                              <button
+                                type="button"
+                                className="mr-sm text-label-md text-primary hover:underline"
+                                onClick={() => {
+                                  setColForm({
+                                    id: col.id,
+                                    nome: col.nome,
+                                    empresa: col.empresa,
+                                    funcao: col.funcao,
+                                    escala: col.escala,
+                                    postoBaseId: col.postoBaseId ? String(col.postoBaseId) : "",
+                                    telefone: col.telefone ?? "",
+                                    active: col.active,
+                                  });
+                                  setColDialog(true);
+                                }}
+                              >
+                                Editar
+                              </button>
+                              {col.active ? (
+                                <button
+                                  type="button"
+                                  className="text-label-md text-error hover:underline"
+                                  onClick={async () => {
+                                    if (!confirm(`Desativar ${col.nome}?`)) return;
+                                    setPending(true);
+                                    try {
+                                      await deactivateFacilitiesCollaboratorFn({
+                                        data: { id: col.id },
+                                      });
+                                      await router.invalidate();
+                                    } finally {
+                                      setPending(false);
+                                    }
+                                  }}
+                                >
+                                  Desativar
+                                </button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                  </div>
+                  <TablePager
+                    page={pagedCollaborators.page}
+                    totalPages={pagedCollaborators.totalPages}
+                    totalItems={pagedCollaborators.totalItems}
+                    pageSize={cadPageSize}
+                    onPageChange={setCadPage}
+                  />
+                </div>
+              )}
+            </section>
+          )}
+
+          {search.tab === "valores" && (
+            <section className="mx-auto w-full max-w-[64rem] space-y-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
+              <div>
+                <h3 className="text-title-lg text-primary">Valores das horas</h3>
+                <p className="mt-xs text-body-md text-on-surface-variant">
+                  Tabela global por função: pagamento (diurna/noturna/extra) e desconto no ausente.
+                  O lançamento grava o valor (snapshot) — alterações futuras não mudam o histórico.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-body-md">
+                  <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                    <tr>
+                      <th className="px-md py-sm">Função</th>
+                      <th className="px-md py-sm">Pgto diurna</th>
+                      <th className="px-md py-sm">Pgto noturna</th>
+                      <th className="px-md py-sm">Extra diurna</th>
+                      <th className="px-md py-sm">Extra noturna</th>
+                      <th className="px-md py-sm">Desc. diurna</th>
+                      <th className="px-md py-sm">Desc. noturna</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ratesForm.map((rate, index) => (
+                      <tr key={rate.funcao} className="border-t border-outline-variant/60">
+                        <td className="px-md py-sm font-medium text-primary">
+                          {facilitiesFuncaoLabel(rate.funcao)}
+                        </td>
+                        {(
+                          [
+                            ["valorDiurna", rate.valorDiurna],
+                            ["valorNoturna", rate.valorNoturna],
+                            ["valorExtraDiurna", rate.valorExtraDiurna],
+                            ["valorExtraNoturna", rate.valorExtraNoturna],
+                            ["valorDescontoDiurna", rate.valorDescontoDiurna],
+                            ["valorDescontoNoturna", rate.valorDescontoNoturna],
+                          ] as const
+                        ).map(([key, value]) => (
+                          <td key={key} className="px-md py-sm">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={value}
+                              onChange={(e) => {
+                                const n = Number(e.target.value);
+                                setRatesForm((prev) =>
+                                  prev.map((row, i) =>
+                                    i === index
+                                      ? { ...row, [key]: Number.isFinite(n) ? n : 0 }
+                                      : row,
+                                  ),
+                                );
+                              }}
+                              className="w-24 rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => void saveHourRates()}
+                className="inline-flex items-center gap-xs rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary disabled:opacity-60"
+              >
+                <Icon name="save" className="text-[18px]" />
+                {pending ? "Salvando..." : "Salvar valores"}
+              </button>
+            </section>
+          )}
+
+          {search.tab === "fechamento" && (
+            <section className="space-y-md">
+              <div className="rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
+                <div className="flex flex-col gap-sm sm:flex-row sm:items-center sm:justify-between">
+                  <h3 className="text-title-lg text-primary">
+                    Fechamento — {monthLabel(data.monthKey)}
+                  </h3>
+                  <div className="flex flex-wrap gap-sm">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          downloadFacilitiesFechamentoExcel(buildFechamentoExport());
+                          flash("Excel do fechamento baixado.");
+                        } catch (err) {
+                          flash(
+                            null,
+                            err instanceof Error ? err.message : "Falha ao exportar Excel.",
+                          );
+                        }
+                      }}
+                      className="inline-flex items-center justify-center gap-xs rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+                    >
+                      <Icon name="download" className="text-[18px]" />
+                      Excel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        void (async () => {
+                          setPending(true);
+                          try {
+                            await downloadFacilitiesFechamentoPdf(buildFechamentoExport());
+                            flash("PDF do fechamento baixado.");
+                          } catch (err) {
+                            flash(
+                              null,
+                              err instanceof Error ? err.message : "Falha ao exportar PDF.",
+                            );
+                          } finally {
+                            setPending(false);
+                          }
+                        })();
+                      }}
+                      className="inline-flex items-center justify-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary disabled:opacity-60"
+                    >
+                      <Icon name="picture_as_pdf" className="text-[18px]" />
+                      {pending ? "PDF..." : "PDF"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void copyPayment()}
+                      className="inline-flex items-center justify-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm text-label-md font-semibold text-primary"
+                    >
+                      <Icon name="content_copy" className="text-[18px]" />
+                      {copied ? "Copiado!" : "Copiar"}
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-sm text-body-md text-on-surface-variant">
+                  Resumo completo: pagamento por substituto, desconto por ausente, postos, motivos,
+                  lançamentos detalhados e férias. Excel/PDF trazem todas as colunas.
+                </p>
+
+                <div className="mt-md grid grid-cols-2 gap-sm lg:grid-cols-3 xl:grid-cols-6">
+                  {[
+                    {
+                      label: "Horas a pagar",
+                      value: formatHours(data.summary.horas),
+                      hint: `${Math.max(0, data.summary.trocas - data.summary.permutas)} cobertura(s)`,
+                      tone: "bg-amber-50 text-amber-950 border-amber-200",
+                    },
+                    {
+                      label: "Pagamento",
+                      value: formatMoneyBr(data.summary.pagamento ?? 0),
+                      hint: (data.summary.horasExtra ?? 0) > 0
+                        ? `+ HE ${formatHours(data.summary.horasExtra ?? 0)}`
+                        : "substitutos",
+                      tone: "bg-emerald-50 text-emerald-950 border-emerald-200",
+                    },
+                    {
+                      label: "Desconto",
+                      value: formatMoneyBr(data.summary.desconto ?? 0),
+                      hint: "ausentes",
+                      tone: "bg-rose-50 text-rose-950 border-rose-200",
+                    },
+                    {
+                      label: "Almoço",
+                      value: formatMoneyBr(data.summary.almoco ?? 0),
+                      hint: (data.summary.almoco ?? 0) > 0 ? "somado no mês" : "sem almoço",
+                      tone: "bg-surface border-outline-variant text-on-surface",
+                    },
+                    {
+                      label: "Permutas",
+                      value: String(data.summary.permutas),
+                      hint: "sem horas a pagar",
+                      tone: "bg-surface border-outline-variant text-on-surface",
+                    },
+                    {
+                      label: "Férias",
+                      value: `${data.summary.feriasDias ?? 0}d`,
+                      hint: formatHours(data.summary.feriasHoras ?? 0),
+                      tone: "bg-sky-50 text-sky-950 border-sky-200",
+                    },
+                  ].map((card) => (
+                    <div
+                      key={card.label}
+                      className={cn("rounded-xl border px-md py-sm", card.tone)}
+                    >
+                      <p className="text-label-sm uppercase tracking-wide opacity-80">{card.label}</p>
+                      <p className="mt-xs text-title-lg font-semibold">{card.value}</p>
+                      <p className="mt-2xs text-label-md opacity-80">{card.hint}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-sm">
+                <div className="flex flex-wrap gap-xs rounded-xl border border-outline-variant bg-surface p-xs">
+                  {(
+                    [
+                      {
+                        id: "pagamento" as const,
+                        label: "Pagamento",
+                        icon: "payments",
+                        count: data.summary.bySubstituto.length,
+                      },
+                      {
+                        id: "lancamentos" as const,
+                        label: "Lançamentos",
+                        icon: "list_alt",
+                        count: data.substitutions.length,
+                      },
+                      {
+                        id: "ferias" as const,
+                        label: "Férias",
+                        icon: "beach_access",
+                        count: data.summary.ferias ?? 0,
+                      },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setFechPanel(item.id)}
+                      className={cn(
+                        "inline-flex items-center gap-xs rounded-lg px-sm py-xs text-label-md font-semibold transition-colors",
+                        fechPanel === item.id
+                          ? "bg-neutral-900 text-white"
+                          : "text-on-surface-variant hover:bg-surface-container",
+                      )}
+                    >
+                      <Icon name={item.icon} className="text-[16px]" />
+                      {item.label}
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[0.65rem] font-bold",
+                          fechPanel === item.id
+                            ? "bg-white/20 text-white"
+                            : "bg-surface-container-high text-on-surface",
+                        )}
+                      >
+                        {item.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <PageSizeSelect value={fechPageSize} onChange={setFechPageSize} />
+              </div>
+
+              {fechPanel === "pagamento" ? (
+                <div className="space-y-md">
+                  <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                    <div className="border-b border-outline-variant px-md py-sm">
+                      <h4 className="text-title-md text-primary">Pagamento por substituto</h4>
+                      <p className="text-label-md text-on-surface-variant">
+                        Horas, hora extra, almoço e valor a pagar de quem cobriu.
+                      </p>
+                    </div>
+                    <div className="space-y-sm p-md md:hidden">
+                      {pagedFechColaboradores.totalItems === 0 ? (
+                        <p className="py-lg text-center text-body-md text-on-surface-variant">
+                          Sem horas a pagar neste mês.
+                        </p>
+                      ) : (
+                        pagedFechColaboradores.items.map((row, index) => (
+                          <article
+                            key={row.id}
+                            className="rounded-xl border border-outline-variant bg-surface p-md"
+                          >
+                            <div className="flex items-start justify-between gap-sm">
+                              <div className="min-w-0">
+                                <p className="text-label-md text-on-surface-variant">
+                                  #{(pagedFechColaboradores.page - 1) * fechPageSize + index + 1}
+                                </p>
+                                <p className="font-medium text-primary">{row.nome}</p>
+                                <p className="text-label-md text-on-surface-variant">
+                                  {row.empresa} · {row.escala} · {row.trocas} cobertura(s)
+                                </p>
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <p className="text-title-md font-semibold text-primary">
+                                  {formatMoneyBr(row.pagamento ?? 0)}
+                                </p>
+                                <p className="text-label-md text-on-surface-variant">
+                                  {formatHours(row.horas)}
+                                  {(row.horasExtra ?? 0) > 0
+                                    ? ` + HE ${formatHours(row.horasExtra ?? 0)}`
+                                    : ""}
+                                </p>
+                              </div>
+                            </div>
+                            {(row.almoco ?? 0) > 0 ? (
+                              <p className="mt-sm text-label-md text-secondary">
+                                Almoço {formatMoneyBr(row.almoco ?? 0)}
+                              </p>
+                            ) : null}
+                          </article>
+                        ))
+                      )}
+                    </div>
+                    <div className="hidden overflow-x-auto md:block">
+                      <table className="min-w-full text-left text-body-md">
+                        <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                          <tr>
+                            <th className="px-md py-sm">#</th>
+                            <th className="px-md py-sm">Colaborador</th>
+                            <th className="px-md py-sm">Empresa</th>
+                            <th className="px-md py-sm">Escala</th>
+                            <th className="px-md py-sm">Coberturas</th>
+                            <th className="px-md py-sm">Horas</th>
+                            <th className="px-md py-sm">HE</th>
+                            <th className="px-md py-sm">Almoço</th>
+                            <th className="px-md py-sm">Pagamento</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pagedFechColaboradores.totalItems === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={9}
+                                className="px-md py-xl text-center text-on-surface-variant"
+                              >
+                                Sem horas a pagar neste mês.
+                              </td>
+                            </tr>
+                          ) : (
+                            pagedFechColaboradores.items.map((row, index) => (
+                              <tr key={row.id} className="border-t border-outline-variant/60">
+                                <td className="px-md py-sm text-on-surface-variant">
+                                  {(pagedFechColaboradores.page - 1) * fechPageSize + index + 1}
+                                </td>
+                                <td className="px-md py-sm font-medium text-primary">{row.nome}</td>
+                                <td className="px-md py-sm">{row.empresa}</td>
+                                <td className="px-md py-sm text-on-surface-variant">{row.escala}</td>
+                                <td className="px-md py-sm">{row.trocas}</td>
+                                <td className="px-md py-sm font-semibold">{formatHours(row.horas)}</td>
+                                <td className="px-md py-sm">
+                                  {(row.horasExtra ?? 0) > 0
+                                    ? formatHours(row.horasExtra ?? 0)
+                                    : "—"}
+                                </td>
+                                <td className="px-md py-sm">
+                                  {(row.almoco ?? 0) > 0
+                                    ? formatMoneyBr(row.almoco ?? 0)
+                                    : "—"}
+                                </td>
+                                <td className="px-md py-sm text-title-md font-semibold text-primary">
+                                  {formatMoneyBr(row.pagamento ?? 0)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <TablePager
+                      page={pagedFechColaboradores.page}
+                      totalPages={pagedFechColaboradores.totalPages}
+                      totalItems={pagedFechColaboradores.totalItems}
+                      pageSize={fechPageSize}
+                      onPageChange={setFechColPage}
+                    />
+                  </div>
+
+                  <div className="grid gap-md lg:grid-cols-2">
+                    <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                      <div className="border-b border-outline-variant px-md py-sm">
+                        <h4 className="text-title-md text-primary">Desconto por ausente</h4>
+                        <p className="text-label-md text-on-surface-variant">
+                          Quem teve desconto de horas no mês.
+                        </p>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-left text-body-md">
+                          <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                            <tr>
+                              <th className="px-md py-sm">Ausente</th>
+                              <th className="px-md py-sm">Empresa</th>
+                              <th className="px-md py-sm">Lanç.</th>
+                              <th className="px-md py-sm">Horas</th>
+                              <th className="px-md py-sm">Desconto</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(data.summary.byAusente ?? []).length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={5}
+                                  className="px-md py-xl text-center text-on-surface-variant"
+                                >
+                                  Nenhum desconto neste mês.
+                                </td>
+                              </tr>
+                            ) : (
+                              (data.summary.byAusente ?? []).map((row) => (
+                                <tr key={row.id} className="border-t border-outline-variant/60">
+                                  <td className="px-md py-sm font-medium text-primary">{row.nome}</td>
+                                  <td className="px-md py-sm">{row.empresa}</td>
+                                  <td className="px-md py-sm">{row.lancamentos}</td>
+                                  <td className="px-md py-sm">{formatHours(row.horas)}</td>
+                                  <td className="px-md py-sm font-semibold text-rose-800">
+                                    {formatMoneyBr(row.desconto)}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                      <div className="border-b border-outline-variant px-md py-sm">
+                        <h4 className="text-title-md text-primary">Por posto</h4>
+                        <p className="text-label-md text-on-surface-variant">
+                          Horas, pagamento, desconto e almoço por posto.
+                        </p>
+                      </div>
+                      <div className="space-y-sm p-md md:hidden">
+                        {pagedFechPostos.totalItems === 0 ? (
+                          <p className="py-lg text-center text-body-md text-on-surface-variant">
+                            Sem lançamentos neste mês.
+                          </p>
+                        ) : (
+                          pagedFechPostos.items.map((row) => (
+                            <article
+                              key={row.id}
+                              className="rounded-xl border border-outline-variant bg-surface px-md py-sm"
+                            >
+                              <p className="font-medium text-primary">{row.nome}</p>
+                              <p className="text-label-md text-on-surface-variant">
+                                {row.trocas} lanç. · {formatHours(row.horas)}
+                                {(row.horasExtra ?? 0) > 0
+                                  ? ` + HE ${formatHours(row.horasExtra ?? 0)}`
+                                  : ""}
+                              </p>
+                              <p className="mt-xs text-label-md">
+                                Pgto {formatMoneyBr(row.pagamento ?? 0)} · Desc.{" "}
+                                {formatMoneyBr(row.desconto ?? 0)}
+                              </p>
+                            </article>
+                          ))
+                        )}
+                      </div>
+                      <div className="hidden overflow-x-auto md:block">
+                        <table className="min-w-full text-left text-body-md">
+                          <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                            <tr>
+                              <th className="px-md py-sm">Posto</th>
+                              <th className="px-md py-sm">Lanç.</th>
+                              <th className="px-md py-sm">Horas</th>
+                              <th className="px-md py-sm">HE</th>
+                              <th className="px-md py-sm">Pagamento</th>
+                              <th className="px-md py-sm">Desconto</th>
+                              <th className="px-md py-sm">Almoço</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagedFechPostos.totalItems === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={7}
+                                  className="px-md py-xl text-center text-on-surface-variant"
+                                >
+                                  Sem lançamentos neste mês.
+                                </td>
+                              </tr>
+                            ) : (
+                              pagedFechPostos.items.map((row) => (
+                                <tr key={row.id} className="border-t border-outline-variant/60">
+                                  <td className="px-md py-sm font-medium text-primary">{row.nome}</td>
+                                  <td className="px-md py-sm">{row.trocas}</td>
+                                  <td className="px-md py-sm">{formatHours(row.horas)}</td>
+                                  <td className="px-md py-sm">
+                                    {(row.horasExtra ?? 0) > 0
+                                      ? formatHours(row.horasExtra ?? 0)
+                                      : "—"}
+                                  </td>
+                                  <td className="px-md py-sm font-semibold">
+                                    {formatMoneyBr(row.pagamento ?? 0)}
+                                  </td>
+                                  <td className="px-md py-sm">{formatMoneyBr(row.desconto ?? 0)}</td>
+                                  <td className="px-md py-sm">
+                                    {(row.almoco ?? 0) > 0
+                                      ? formatMoneyBr(row.almoco ?? 0)
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <TablePager
+                        page={pagedFechPostos.page}
+                        totalPages={pagedFechPostos.totalPages}
+                        totalItems={pagedFechPostos.totalItems}
+                        pageSize={fechPageSize}
+                        onPageChange={setFechPostoPage}
+                      />
+                    </div>
+                  </div>
+
+                  {(data.summary.byMotivo ?? []).length > 0 ? (
+                    <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                      <div className="border-b border-outline-variant px-md py-sm">
+                        <h4 className="text-title-md text-primary">Por motivo</h4>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-left text-body-md">
+                          <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                            <tr>
+                              <th className="px-md py-sm">Motivo</th>
+                              <th className="px-md py-sm">Lançamentos</th>
+                              <th className="px-md py-sm">Horas</th>
+                              <th className="px-md py-sm">Pagamento</th>
+                              <th className="px-md py-sm">Desconto</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(data.summary.byMotivo ?? []).map((row) => (
+                              <tr key={row.motivo} className="border-t border-outline-variant/60">
+                                <td className="px-md py-sm font-medium text-primary">
+                                  {row.motivoLabel}
+                                  {!row.pagaHoras ? (
+                                    <span className="ml-xs text-label-md text-on-surface-variant">
+                                      (sem pgto)
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="px-md py-sm">{row.trocas}</td>
+                                <td className="px-md py-sm">{formatHours(row.horas)}</td>
+                                <td className="px-md py-sm">{formatMoneyBr(row.pagamento ?? 0)}</td>
+                                <td className="px-md py-sm">{formatMoneyBr(row.desconto ?? 0)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {fechPanel === "lancamentos" ? (
+                <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                  <div className="border-b border-outline-variant px-md py-sm">
+                    <h4 className="text-title-md text-primary">Lançamentos do mês</h4>
+                    <p className="text-label-md text-on-surface-variant">
+                      Todas as trocas do mês, inclusive permutas sem pagamento.
+                    </p>
+                  </div>
+                  <div className="space-y-sm p-md md:hidden">
+                    {pagedFechLancamentos.totalItems === 0 ? (
+                      <p className="py-lg text-center text-body-md text-on-surface-variant">
+                        Nenhum lançamento neste mês.
+                      </p>
+                    ) : (
+                      pagedFechLancamentos.items.map((row) => (
+                        <article
+                          key={row.id}
+                          className="rounded-xl border border-outline-variant bg-surface p-md"
+                        >
+                          <div className="flex items-start justify-between gap-sm">
+                            <div>
+                              <p className="text-label-md text-on-surface-variant">
+                                {formatDateBr(row.data)} · {row.postoNome}
+                              </p>
+                              <p className="mt-xs text-title-md text-primary">
+                                {row.substitutoNome}{" "}
+                                <span className="font-normal text-on-surface-variant">cobriu</span>{" "}
+                                {row.ausenteNome || "—"}
+                              </p>
+                              <p className="mt-2xs text-label-md text-on-surface-variant">
+                                {row.motivoLabel} · {row.periodoLabel}
+                                {row.horasExtra > 0
+                                  ? ` · HE ${formatHours(row.horasExtra)}${row.periodoExtraLabel ? ` (${row.periodoExtraLabel})` : ""}`
+                                  : ""}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <span
+                                className={cn(
+                                  "inline-flex rounded-full px-sm py-2xs text-[10px] font-bold uppercase tracking-wide",
+                                  row.pagaHoras
+                                    ? "bg-amber-100 text-amber-950"
+                                    : "bg-neutral-200 text-neutral-700",
+                                )}
+                              >
+                                {row.pagaHoras ? formatHours(row.horas) : "Sem pgto"}
+                              </span>
+                              <p className="mt-xs text-label-md font-semibold text-primary">
+                                {formatMoneyBr(row.valorPagamento)}
+                              </p>
+                              {(row.valorDesconto ?? 0) > 0 ? (
+                                <p className="text-label-md text-rose-800">
+                                  Desc. {formatMoneyBr(row.valorDesconto)}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="mt-sm grid gap-2xs text-label-md text-on-surface-variant">
+                            <p>
+                              Tarifa {formatMoneyBr(row.tarifaHora)}/h
+                              {row.horasExtra > 0
+                                ? ` · Extra ${formatMoneyBr(row.tarifaExtra)}/h`
+                                : ""}
+                              {row.aplicaDesconto
+                                ? ` · Desc. ${formatMoneyBr(row.tarifaDesconto)}/h`
+                                : ""}
+                            </p>
+                            <p>
+                              Desconto no ausente: {row.aplicaDesconto ? "Sim" : "Não"}
+                              {row.foraDoPostoBase ? " · Fora do posto base" : ""}
+                            </p>
+                            {row.createdByName ? <p>Registrado por: {row.createdByName}</p> : null}
+                          </div>
+                          {almocoLabel(row) ? (
+                            <p className="mt-sm text-label-md text-secondary">{almocoLabel(row)}</p>
+                          ) : null}
+                          <div className="mt-sm flex flex-wrap gap-sm">
+                            {row.hasAtestado ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-xs rounded-lg border border-outline-variant px-sm py-xs text-label-md font-semibold text-primary"
+                                  disabled={pending}
+                                  onClick={() => void downloadAtestado(row.id)}
+                                >
+                                  <Icon name="attach_file" className="text-[16px]" />
+                                  Atestado
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-xs rounded-lg border border-outline-variant px-sm py-xs text-label-md font-semibold text-error"
+                                  disabled={pending}
+                                  onClick={() => void removeAtestado(row.id)}
+                                >
+                                  Apagar anexo
+                                </button>
+                              </>
+                            ) : null}
+                            {hasObservacao(row.observacao) ? (
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-xs rounded-lg border border-outline-variant px-sm py-xs text-label-md font-semibold text-primary"
+                                onClick={() => setObsDialog(row)}
+                              >
+                                <Icon name="notes" className="text-[16px]" />
+                                Ver observação
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="min-w-full text-left text-body-md">
+                      <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                        <tr>
+                          <th className="px-md py-sm">Data</th>
+                          <th className="px-md py-sm">Posto</th>
+                          <th className="px-md py-sm">Ausente</th>
+                          <th className="px-md py-sm">Substituto</th>
+                          <th className="px-md py-sm">Motivo</th>
+                          <th className="px-md py-sm">Período</th>
+                          <th className="px-md py-sm">Horas</th>
+                          <th className="px-md py-sm">HE</th>
+                          <th className="px-md py-sm">Tarifa</th>
+                          <th className="px-md py-sm">Pagamento</th>
+                          <th className="px-md py-sm">Desc.?</th>
+                          <th className="px-md py-sm">Desconto</th>
+                          <th className="px-md py-sm">Almoço</th>
+                          <th className="px-md py-sm">Por</th>
+                          <th className="px-md py-sm">Anexos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pagedFechLancamentos.totalItems === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={15}
+                              className="px-md py-xl text-center text-on-surface-variant"
+                            >
+                              Nenhum lançamento neste mês.
+                            </td>
+                          </tr>
+                        ) : (
+                          pagedFechLancamentos.items.map((row) => (
+                            <tr key={row.id} className="border-t border-outline-variant/60">
+                              <td className="whitespace-nowrap px-md py-sm">
+                                {formatDateBr(row.data)}
+                              </td>
+                              <td className="px-md py-sm text-primary">
+                                {row.postoNome}
+                                {row.foraDoPostoBase ? (
+                                  <span className="mt-2xs block text-label-md text-secondary">
+                                    Fora do posto base
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="px-md py-sm">
+                                <div className="font-medium">{row.ausenteNome || "—"}</div>
+                                <div className="text-label-md text-on-surface-variant">
+                                  {row.ausenteEmpresa || ""}
+                                </div>
+                              </td>
+                              <td className="px-md py-sm">
+                                <div className="font-medium">{row.substitutoNome}</div>
+                                <div className="text-label-md text-on-surface-variant">
+                                  {row.substitutoEmpresa} · {row.substitutoEscala}
+                                </div>
+                              </td>
+                              <td className="px-md py-sm">{row.motivoLabel}</td>
+                              <td className="px-md py-sm">{row.periodoLabel}</td>
+                              <td className="px-md py-sm">
+                                <span
+                                  className={cn(
+                                    "inline-flex rounded-full px-sm py-2xs text-[10px] font-bold uppercase tracking-wide",
+                                    row.pagaHoras
+                                      ? "bg-amber-100 text-amber-950"
+                                      : "bg-neutral-200 text-neutral-700",
+                                  )}
+                                >
+                                  {row.pagaHoras ? formatHours(row.horas) : "Sem pgto"}
+                                </span>
+                              </td>
+                              <td className="px-md py-sm">
+                                {row.horasExtra > 0 ? (
+                                  <>
+                                    {formatHours(row.horasExtra)}
+                                    {row.periodoExtraLabel ? (
+                                      <div className="text-label-md text-on-surface-variant">
+                                        {row.periodoExtraLabel}
+                                      </div>
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td className="px-md py-sm text-label-md">
+                                {formatMoneyBr(row.tarifaHora)}/h
+                                {row.horasExtra > 0 ? (
+                                  <div className="text-on-surface-variant">
+                                    HE {formatMoneyBr(row.tarifaExtra)}/h
+                                  </div>
+                                ) : null}
+                                {row.aplicaDesconto ? (
+                                  <div className="text-on-surface-variant">
+                                    Desc. {formatMoneyBr(row.tarifaDesconto)}/h
+                                  </div>
+                                ) : null}
+                              </td>
+                              <td className="px-md py-sm font-semibold">
+                                {formatMoneyBr(row.valorPagamento ?? 0)}
+                              </td>
+                              <td className="px-md py-sm">{row.aplicaDesconto ? "Sim" : "Não"}</td>
+                              <td className="px-md py-sm">
+                                {formatMoneyBr(row.valorDesconto ?? 0)}
+                              </td>
+                              <td className="px-md py-sm text-secondary">
+                                {almocoLabel(row) ?? "—"}
+                              </td>
+                              <td className="px-md py-sm text-on-surface-variant">
+                                {row.createdByName ?? "—"}
+                              </td>
+                              <td className="px-md py-sm">
+                                <div className="inline-flex flex-wrap items-center gap-sm">
+                                  {row.hasAtestado ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="inline-flex items-center gap-xs text-label-md font-semibold text-primary hover:underline"
+                                        disabled={pending}
+                                        onClick={() => void downloadAtestado(row.id)}
+                                      >
+                                        <Icon name="attach_file" className="text-[16px]" />
+                                        Atestado
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="text-label-md font-semibold text-error hover:underline"
+                                        disabled={pending}
+                                        onClick={() => void removeAtestado(row.id)}
+                                      >
+                                        Apagar
+                                      </button>
+                                    </>
+                                  ) : null}
+                                  {hasObservacao(row.observacao) ? (
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center gap-xs text-label-md font-semibold text-primary hover:underline"
+                                      onClick={() => setObsDialog(row)}
+                                      title={row.observacao ?? undefined}
+                                    >
+                                      <Icon name="notes" className="text-[16px]" />
+                                      Obs.
+                                    </button>
+                                  ) : !row.hasAtestado ? (
+                                    <span className="text-on-surface-variant">—</span>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <TablePager
+                    page={pagedFechLancamentos.page}
+                    totalPages={pagedFechLancamentos.totalPages}
+                    totalItems={pagedFechLancamentos.totalItems}
+                    pageSize={fechPageSize}
+                    onPageChange={setFechLancPage}
+                  />
+                </div>
+              ) : null}
+
+              {fechPanel === "ferias" ? (
+                <div className="space-y-md">
+                  <div className="overflow-hidden rounded-xl border border-sky-200 bg-sky-50/40">
+                    <div className="border-b border-sky-200 px-md py-sm">
+                      <h4 className="text-title-md text-sky-950">Férias no mês</h4>
+                      <p className="text-label-md text-sky-900/80">
+                        {data.summary.ferias ?? 0} período(s) · {data.summary.feriasDias ?? 0} dia(s)
+                        · {formatHours(data.summary.feriasHoras ?? 0)}
+                        {(data.summary.feriasCoberturaPropria ?? 0) > 0
+                          ? ` · ${data.summary.feriasCoberturaPropria} cobertura(s) própria(s)`
+                          : ""}
+                      </p>
+                    </div>
+                    <div className="space-y-sm p-md md:hidden">
+                      {(data.vacations ?? []).length === 0 ? (
+                        <p className="py-lg text-center text-body-md text-on-surface-variant">
+                          Sem férias neste mês.
+                        </p>
+                      ) : (
+                        (data.vacations ?? []).map((row) => (
+                          <article
+                            key={row.id}
+                            className="rounded-xl border border-sky-200 bg-white p-md"
+                          >
+                            <p className="font-medium text-primary">{row.colaboradorNome}</p>
+                            <p className="text-label-md text-on-surface-variant">
+                              {formatDateBr(row.dataInicio)} → {formatDateBr(row.dataFim)} ·{" "}
+                              {row.dias} dia(s) · {formatHours(row.horas)}
+                            </p>
+                            <p className="mt-2xs text-label-md text-on-surface-variant">
+                              Cobertura: {row.coberturaNome}
+                              {row.coberturaPropria ? " (própria)" : ""} · {row.postoNome}
+                            </p>
+                          </article>
+                        ))
+                      )}
+                    </div>
+                    <div className="hidden overflow-x-auto md:block">
+                      <table className="min-w-full text-left text-body-md">
+                        <thead className="bg-sky-900 text-label-md font-semibold uppercase tracking-wide text-white">
+                          <tr>
+                            <th className="px-md py-sm">Período</th>
+                            <th className="px-md py-sm">Em férias</th>
+                            <th className="px-md py-sm">Cobertura</th>
+                            <th className="px-md py-sm">Posto</th>
+                            <th className="px-md py-sm">Dias</th>
+                            <th className="px-md py-sm">Horas</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(data.vacations ?? []).length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={6}
+                                className="px-md py-xl text-center text-on-surface-variant"
+                              >
+                                Sem férias neste mês.
+                              </td>
+                            </tr>
+                          ) : (
+                            (data.vacations ?? []).map((row) => (
+                              <tr key={row.id} className="border-t border-sky-100 bg-white">
+                                <td className="whitespace-nowrap px-md py-sm">
+                                  {formatDateBr(row.dataInicio)} → {formatDateBr(row.dataFim)}
+                                </td>
+                                <td className="px-md py-sm font-medium text-primary">
+                                  {row.colaboradorNome}
+                                </td>
+                                <td className="px-md py-sm">
+                                  {row.coberturaNome}
+                                  {row.coberturaPropria ? (
+                                    <span className="ml-xs rounded-full bg-sky-100 px-xs py-2xs text-[10px] font-bold uppercase text-sky-900">
+                                      Própria
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="px-md py-sm">{row.postoNome}</td>
+                                <td className="px-md py-sm">{row.dias}</td>
+                                <td className="px-md py-sm font-semibold">
+                                  {formatHours(row.horas)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {(data.summary.byCoberturaFerias ?? []).length > 0 ? (
+                    <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
+                      <div className="border-b border-outline-variant px-md py-sm">
+                        <h4 className="text-title-md text-primary">Resumo por quem cobriu</h4>
+                      </div>
+                      <div className="hidden overflow-x-auto md:block">
+                        <table className="min-w-full text-left text-body-md">
+                          <thead className="bg-primary text-label-md font-semibold uppercase tracking-wide text-on-primary">
+                            <tr>
+                              <th className="px-md py-sm">Cobertura</th>
+                              <th className="px-md py-sm">Empresa</th>
+                              <th className="px-md py-sm">Períodos</th>
+                              <th className="px-md py-sm">Dias</th>
+                              <th className="px-md py-sm">Horas</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagedFechFerias.items.map((row) => (
+                              <tr key={row.id} className="border-t border-outline-variant/60">
+                                <td className="px-md py-sm font-medium text-primary">{row.nome}</td>
+                                <td className="px-md py-sm">{row.empresa}</td>
+                                <td className="px-md py-sm">{row.ferias}</td>
+                                <td className="px-md py-sm">{row.dias}</td>
+                                <td className="px-md py-sm font-semibold">
+                                  {formatHours(row.horas)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="space-y-sm p-md md:hidden">
+                        {pagedFechFerias.items.map((row) => (
+                          <article
+                            key={row.id}
+                            className="flex items-center justify-between gap-sm rounded-xl border border-outline-variant bg-surface p-md"
+                          >
+                            <div className="min-w-0">
+                              <p className="font-medium text-primary">{row.nome}</p>
+                              <p className="text-label-md text-on-surface-variant">
+                                {row.empresa} · {row.dias} dia(s)
+                              </p>
+                            </div>
+                            <p className="shrink-0 font-semibold text-primary">
+                              {formatHours(row.horas)}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                      <TablePager
+                        page={pagedFechFerias.page}
+                        totalPages={pagedFechFerias.totalPages}
+                        totalItems={pagedFechFerias.totalItems}
+                        pageSize={fechPageSize}
+                        onPageChange={setFechFeriasPage}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          )}
+        </div>
+
+        {search.tab === "painel" ? (
+          <button
+            type="button"
+            onClick={() => {
+              resetSubFormAfterSave();
+              setTab("lancar");
+            }}
+            className="fixed bottom-[calc(6.5rem+env(safe-area-inset-bottom,0px))] right-margin-mobile z-40 inline-flex items-center gap-xs rounded-full bg-secondary-container px-md py-sm text-label-md font-semibold text-primary shadow-lg md:hidden"
+          >
+            <Icon name="add" className="text-[20px]" />
+            Nova troca
+          </button>
+        ) : null}
+      </main>
+
+      <Dialog open={postDialog} onOpenChange={setPostDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{postForm.id ? "Editar posto" : "Novo posto de serviço"}</DialogTitle>
+            <DialogDescription>Local onde a equipe faz a jornada.</DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-md"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setPending(true);
+              flash(null);
+              try {
+                const payload = {
+                  nome: postForm.nome,
+                  endereco: postForm.endereco.trim() || null,
+                  cidade: postForm.cidade.trim() || null,
+                  observacao: postForm.observacao.trim() || null,
+                  active: postForm.active,
+                };
+                const result = postForm.id
+                  ? await updateFacilitiesPostFn({ data: { id: postForm.id, ...payload } })
+                  : await createFacilitiesPostFn({ data: payload });
+                if (!result.ok) {
+                  flash(null, result.error);
+                  return;
+                }
+                setPostDialog(false);
+                flash(postForm.id ? "Posto atualizado." : "Posto cadastrado.");
+                await router.invalidate();
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            <label className="block space-y-xs">
+              <span className="text-label-md">Nome</span>
+              <input
+                required
+                value={postForm.nome}
+                onChange={(e) => setPostForm((p) => ({ ...p, nome: e.target.value }))}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+              />
+            </label>
+            <div className="grid gap-md sm:grid-cols-2">
+              <label className="block space-y-xs">
+                <span className="text-label-md">Cidade</span>
+                <input
+                  value={postForm.cidade}
+                  onChange={(e) => setPostForm((p) => ({ ...p, cidade: e.target.value }))}
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                />
+              </label>
+              <label className="block space-y-xs">
+                <span className="text-label-md">Endereço</span>
+                <input
+                  value={postForm.endereco}
+                  onChange={(e) => setPostForm((p) => ({ ...p, endereco: e.target.value }))}
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                />
+              </label>
+            </div>
+            <label className="block space-y-xs">
+              <span className="text-label-md">Observação</span>
+              <textarea
+                rows={2}
+                value={postForm.observacao}
+                onChange={(e) => setPostForm((p) => ({ ...p, observacao: e.target.value }))}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+              />
+            </label>
+            {postForm.id > 0 && (
+              <label className="flex items-center gap-sm text-body-md">
+                <input
+                  type="checkbox"
+                  checked={postForm.active}
+                  onChange={(e) => setPostForm((p) => ({ ...p, active: e.target.checked }))}
+                />
+                Ativo
+              </label>
+            )}
+            <DialogFooter>
+              <button
+                type="button"
+                className="rounded-lg px-md py-sm text-label-md"
+                onClick={() => setPostDialog(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={pending}
+                className="rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+              >
+                {pending ? "Salvando..." : "Salvar"}
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={colDialog} onOpenChange={setColDialog}>
+        <DialogContent className="max-w-[36rem]">
+          <DialogHeader>
+            <DialogTitle>
+              {colForm.id ? "Editar colaborador" : "Novo colaborador"}
+            </DialogTitle>
+            <DialogDescription>
+              Empresa (Angela, Âncora ou Belfer), função, escala e posto base.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-md"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setPending(true);
+              flash(null);
+              try {
+                const payload = {
+                  nome: colForm.nome,
+                  empresa: colForm.empresa,
+                  funcao: colForm.funcao,
+                  escala: colForm.escala,
+                  postoBaseId: colForm.postoBaseId ? Number(colForm.postoBaseId) : null,
+                  telefone: colForm.telefone.trim() || null,
+                  active: colForm.active,
+                };
+                const result = colForm.id
+                  ? await updateFacilitiesCollaboratorFn({
+                      data: { id: colForm.id, ...payload },
+                    })
+                  : await createFacilitiesCollaboratorFn({ data: payload });
+                if (!result.ok) {
+                  flash(null, result.error);
+                  return;
+                }
+                setColDialog(false);
+                flash(colForm.id ? "Colaborador atualizado." : "Colaborador cadastrado.");
+                await router.invalidate();
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            <label className="block space-y-xs">
+              <span className="text-label-md">Nome</span>
+              <input
+                required
+                value={colForm.nome}
+                onChange={(e) => setColForm((p) => ({ ...p, nome: e.target.value }))}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+              />
+            </label>
+            <div className="grid gap-md sm:grid-cols-3">
+              <label className="block space-y-xs">
+                <span className="text-label-md">Empresa</span>
+                <select
+                  value={colForm.empresa}
+                  onChange={(e) =>
+                    setColForm((p) => ({
+                      ...p,
+                      empresa: e.target.value as FacilitiesEmpresaId,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                >
+                  {data.catalogs.empresas.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-xs">
+                <span className="text-label-md">Função</span>
+                <select
+                  value={colForm.funcao}
+                  onChange={(e) => {
+                    const funcao = e.target.value as FacilitiesFuncaoId;
+                    setColForm((p) => ({
+                      ...p,
+                      funcao,
+                      escala:
+                        funcao === "recepcionista" && p.escala !== "comercial"
+                          ? "comercial"
+                          : funcao !== "recepcionista" && p.escala === "comercial"
+                            ? "12x36_diurno"
+                            : p.escala,
+                    }));
+                  }}
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                >
+                  {data.catalogs.funcoes.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-xs">
+                <span className="text-label-md">Escala</span>
+                <select
+                  value={colForm.escala}
+                  onChange={(e) =>
+                    setColForm((p) => ({
+                      ...p,
+                      escala: e.target.value as FacilitiesEscalaId,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                >
+                  {data.catalogs.escalas.map((esc) => (
+                    <option key={esc.id} value={esc.id}>
+                      {esc.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="grid gap-md sm:grid-cols-2">
+              <label className="block space-y-xs">
+                <span className="text-label-md">Posto base</span>
+                <select
+                  value={colForm.postoBaseId}
+                  onChange={(e) => setColForm((p) => ({ ...p, postoBaseId: e.target.value }))}
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                >
+                  <option value="">Sem posto fixo</option>
+                  {activePosts.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-xs">
+                <span className="text-label-md">Telefone</span>
+                <input
+                  value={colForm.telefone}
+                  onChange={(e) => setColForm((p) => ({ ...p, telefone: e.target.value }))}
+                  className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                />
+              </label>
+            </div>
+            {colForm.id > 0 && (
+              <label className="flex items-center gap-sm text-body-md">
+                <input
+                  type="checkbox"
+                  checked={colForm.active}
+                  onChange={(e) => setColForm((p) => ({ ...p, active: e.target.checked }))}
+                />
+                Ativo
+              </label>
+            )}
+            <DialogFooter>
+              <button
+                type="button"
+                className="rounded-lg px-md py-sm text-label-md"
+                onClick={() => setColDialog(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={pending}
+                className="rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+              >
+                {pending ? "Salvando..." : "Salvar"}
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(obsDialog)} onOpenChange={(open) => !open && setObsDialog(null)}>
+        <DialogContent className="max-w-[32rem]">
+          <DialogHeader>
+            <DialogTitle>Observação do lançamento</DialogTitle>
+            <DialogDescription>
+              {obsDialog
+                ? `${formatDateBr(obsDialog.data)} · ${obsDialog.postoNome} · ${obsDialog.motivoLabel}`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          {obsDialog ? (
+            <div className="space-y-md">
+              <div className="grid gap-xs text-body-md">
+                <p>
+                  <span className="text-on-surface-variant">Ausente: </span>
+                  {obsDialog.ausenteNome}
+                </p>
+                <p>
+                  <span className="text-on-surface-variant">Substituto: </span>
+                  {obsDialog.substitutoNome}
+                </p>
+                <p>
+                  <span className="text-on-surface-variant">Horas: </span>
+                  {obsDialog.pagaHoras ? formatHours(obsDialog.horas) : "Sem pagamento"}
+                  {almocoLabel(obsDialog) ? ` · ${almocoLabel(obsDialog)}` : ""}
+                </p>
+              </div>
+              <div className="rounded-lg border border-outline-variant bg-surface-container-low px-md py-sm">
+                <p className="text-label-md text-on-surface-variant">Observação</p>
+                <p className="mt-xs whitespace-pre-wrap text-body-md text-primary">
+                  {obsDialog.observacao?.trim() || "—"}
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <button
+              type="button"
+              className="rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary"
+              onClick={() => setObsDialog(null)}
+            >
+              Fechar
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(almocoDialog)}
+        onOpenChange={(open) => {
+          if (!open) setAlmocoDialog(null);
+        }}
+      >
+        <DialogContent className="max-w-[28rem]">
+          <form onSubmit={(e) => void saveAlmocoEdit(e)}>
+            <DialogHeader>
+              <DialogTitle>Editar almoço</DialogTitle>
+              <DialogDescription>
+                {almocoDialog
+                  ? `${formatDateBr(almocoDialog.data)} · ${almocoDialog.postoNome} · ${almocoDialog.motivoLabel}`
+                  : "Somente lançamentos do mês atual."}
+              </DialogDescription>
+            </DialogHeader>
+            {almocoDialog ? (
+              <div className="mt-md space-y-md">
+                <p className="text-body-md text-on-surface">
+                  {almocoDialog.substitutoNome} cobriu {almocoDialog.ausenteNome}
+                </p>
+                <label className="flex items-center gap-sm rounded-lg border border-outline-variant bg-surface px-md py-sm text-body-md">
+                  <input
+                    type="checkbox"
+                    checked={almocoForm.pagaAlmoco}
+                    onChange={(e) =>
+                      setAlmocoForm((p) => ({
+                        ...p,
+                        pagaAlmoco: e.target.checked,
+                        valorAlmoco: e.target.checked ? p.valorAlmoco : "",
+                      }))
+                    }
+                  />
+                  <span className="text-primary">Pagará almoço?</span>
+                </label>
+                {almocoForm.pagaAlmoco ? (
+                  <label className="block space-y-xs">
+                    <span className="text-label-md text-primary">Valor do almoço (R$)</span>
+                    <input
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      required
+                      value={almocoForm.valorAlmoco}
+                      onChange={(e) =>
+                        setAlmocoForm((p) => ({ ...p, valorAlmoco: e.target.value }))
+                      }
+                      placeholder="Ex.: 25.00"
+                      className="w-full rounded-lg border border-outline-variant bg-surface px-sm py-sm"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+            <DialogFooter className="mt-md">
+              <button
+                type="button"
+                className="rounded-lg px-md py-sm text-label-md"
+                onClick={() => setAlmocoDialog(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={pending}
+                className="rounded-lg bg-secondary-container px-md py-sm text-label-md font-semibold text-primary disabled:opacity-60"
+              >
+                {pending ? "Salvando..." : "Salvar"}
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </AppShell>
+  );
+}

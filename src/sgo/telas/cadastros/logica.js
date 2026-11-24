@@ -1,0 +1,259 @@
+/* Lógica original da tela do SGO (executada pelo motor de telas isoladas: src/sgo/lib/tela-isolada.ts). */
+
+"use strict";
+var $ = function (s) { return document.querySelector(s); };
+var Q = new URLSearchParams(location.search);
+var S = { tipo: Q.get("tipo") === "produtos" ? "produtos" : Q.get("tipo") === "servicos" ? "servicos" : Q.get("tipo") === "maoobra" ? "maoobra" : "parceiros", q: "", sit: "Ativo", tags: [], est: false, pag: 1, dados: null, aberto: null, todasTags: [] };
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+function brl(n) { return n == null || n === "" ? "—" : Number(n).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function num(n) { return Number(n || 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 }); }
+function doc(d) { d = String(d || ""); if (d.length === 14) return d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5"); if (d.length === 11) return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4"); return d; }
+function cid(c) { return String(c || "").replace(/\s*\([A-Z]{2}\)\s*$/, ""); }
+function dataBR(ms) { if (!ms) return ""; var d = new Date(ms); return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }); }
+function toast(t) { var e = $("#toast"); e.textContent = t; e.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(function () { e.classList.remove("on"); }, 3200); }
+function api(m, u, b) {
+  return fetch(u, { method: m, credentials: "same-origin", headers: { "content-type": "application/json", "x-sgo": "1" }, body: b ? JSON.stringify(b) : undefined }).then(function (r) {
+    if (r.status === 401) { (window.top || window).location.href = "/login"; throw new Error("Sessão expirada"); }
+    return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) { var e = new Error(d.erro || "Erro " + r.status); e.status = r.status; throw e; } return d; });
+  });
+}
+function avisarShell() { try { window.parent.postMessage({ sgo: "alterou" }, location.origin); } catch (e) {} }
+function tagCls(t) { return t === "Cliente" ? "t-cli" : t === "Fornecedor" ? "t-for" : "t-out"; }
+function tagsHTML(ts) { return (ts || []).map(function (t) { return '<span class="pill ' + tagCls(t) + '">' + esc(t) + "</span>"; }).join(""); }
+
+function carregar() {
+  var p = new URLSearchParams({ q: S.q, situacao: S.sit, pagina: S.pag });
+  if (S.tipo === "parceiros" && S.tags.length) p.set("tags", S.tags.join(","));
+  if (S.tipo === "produtos" && S.est) p.set("estoque", "1");
+  $("#tb").innerHTML = '<tr><td colspan="9" class="vazio">Carregando…</td></tr>';
+  api("GET", "/api/cadastros/" + S.tipo + "?" + p).then(function (d) { S.dados = d; if (d.tags) S.todasTags = d.tags; desenhar(); }).catch(function (e) { $("#tb").innerHTML = '<tr><td colspan="9" class="vazio">' + esc(e.message) + "</td></tr>"; });
+}
+function desenhar() {
+  document.querySelectorAll(".seg button").forEach(function (b) { b.classList.toggle("on", b.dataset.tipo === S.tipo); b.setAttribute("aria-pressed", b.dataset.tipo === S.tipo); });
+  $("#q").placeholder = S.tipo === "parceiros" ? "Buscar por nome, fantasia, CNPJ/CPF, contato, cidade…" : S.tipo === "servicos" || S.tipo === "maoobra" ? "Buscar por código, descrição ou categoria…" : "Buscar por código, descrição, marca, modelo, EAN…";
+  $("#b-imp").style.display = S.tipo === "servicos" || S.tipo === "maoobra" ? "none" : "";
+  var bSync = $("#b-sync-omie");
+  if (bSync) bSync.style.display = S.tipo === "parceiros" || S.tipo === "produtos" ? "" : "none";
+  $("#b-novo").textContent = S.tipo === "servicos" ? "+ Novo serviço" : S.tipo === "maoobra" ? "+ Nova mão de obra" : "+ Novo";
+  $("#l-est").style.display = S.tipo === "produtos" ? "inline-flex" : "none";
+  $("#tags").style.display = S.tipo === "parceiros" ? "flex" : "none";
+  $("#tags").innerHTML = S.tipo === "parceiros" ? S.todasTags.map(function (t) { var on = S.tags.indexOf(t.tag) >= 0; return '<button type="button" class="chip' + (on ? " on" : "") + '" aria-pressed="' + on + '" data-tag="' + esc(t.tag) + '">' + esc(t.tag) + " <em>" + t.n + "</em></button>"; }).join("") : "";
+  var d = S.dados || { itens: [], total: 0, por: 50, pagina: 1 };
+  if (S.tipo === "parceiros") {
+    $("#th").innerHTML = "<tr><th>Nome</th><th>Tags</th><th>CNPJ / CPF</th><th>Contato</th><th>Telefone</th><th>E-mail</th><th>Cidade</th></tr>";
+    $("#tb").innerHTML = d.itens.map(function (p) {
+      var nome = p.fantasia || p.razao;
+      return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td><div style="font-weight:600">' + esc(nome) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + "</div>" + (p.razao !== nome ? '<div class="sub">' + esc(p.razao) + "</div>" : "") + "</td><td>" + tagsHTML(p.tags) + "</td><td style=\"white-space:nowrap\">" + esc(doc(p.documento)) + "</td><td>" + esc(p.contato || "") + "</td><td style=\"white-space:nowrap\">" + esc(p.telefone || "") + '</td><td class="sub" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">' + esc(p.email || "") + "</td><td>" + esc(cid(p.cidade)) + (p.uf ? " · " + esc(p.uf) : "") + "</td></tr>";
+    }).join("") || '<tr><td colspan="7" class="vazio">Nenhum cadastro encontrado.</td></tr>';
+  } else if (S.tipo === "maoobra") {
+    $("#th").innerHTML = '<tr><th>Código</th><th>Mão de obra</th><th>Unidade</th><th style="text-align:right">Valor de venda</th><th style="text-align:right">Custo</th><th style="text-align:right">Margem</th></tr>';
+    $("#tb").innerHTML = d.itens.map(function (p) {
+      var mg = p.preco_venda && p.custo != null ? Math.round(((p.preco_venda - p.custo) / p.preco_venda) * 1000) / 10 : null;
+      return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + '</td><td><div style="font-weight:500">' + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.categoria, p.obs].filter(Boolean).join(" · ").slice(0, 140)) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + (p.preco_venda == null ? '<span class="sub">a definir</span>' : brl(p.preco_venda)) + '</td><td class="num">' + (p.custo == null ? '<span class="sub">a definir</span>' : brl(p.custo)) + '</td><td class="num">' + (mg == null ? "—" : String(mg).replace(".", ",") + "%") + "</td></tr>";
+    }).join("") || '<tr><td colspan="6" class="vazio">Nenhuma mão de obra cadastrada.</td></tr>';
+  } else if (S.tipo === "servicos") {
+    $("#th").innerHTML = '<tr><th>Código</th><th>Serviço</th><th>Un.</th><th style="text-align:right">Valor de venda mensal</th><th style="text-align:right">Custo mensal</th><th style="text-align:right">Margem</th></tr>';
+    $("#tb").innerHTML = d.itens.map(function (p) {
+      var mg = p.preco_venda && p.custo != null ? Math.round(((p.preco_venda - p.custo) / p.preco_venda) * 1000) / 10 : null;
+      return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + '</td><td><div style="font-weight:500">' + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.categoria, p.obs].filter(Boolean).join(" · ").slice(0, 140)) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + (p.preco_venda == null ? '<span class="sub">a definir</span>' : brl(p.preco_venda)) + '</td><td class="num">' + (p.custo == null ? '<span class="sub">a definir</span>' : brl(p.custo)) + '</td><td class="num">' + (mg == null ? "—" : String(mg).replace(".", ",") + "%") + "</td></tr>";
+    }).join("") || '<tr><td colspan="6" class="vazio">Nenhum serviço mensal encontrado.</td></tr>';
+  } else {
+    $("#th").innerHTML = '<tr><th>Código</th><th>Descrição</th><th>Un.</th><th style="text-align:right">Estoque</th><th style="text-align:right">Preço de venda</th><th style="text-align:right">Custo</th><th style="text-align:right">Última compra</th></tr>';
+    $("#tb").innerHTML = d.itens.map(function (p) {
+      return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + "</td><td><div style=\"font-weight:500\">" + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.familia, p.marca, p.modelo, p.ncm ? "NCM " + p.ncm : ""].filter(Boolean).join(" · ")) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + num(p.estoque) + '</td><td class="num">' + brl(p.preco_venda) + '</td><td class="num">' + brl(p.custo) + '</td><td class="num">' + (p.ultima ? brl(p.ultima.preco) + '<div class="sub">' + esc(p.ultima.fornecedor || "") + " · " + esc(String(p.ultima.data).split("-").reverse().join("/")) + "</div>" : '<span class="sub">sem compra no SGO</span>') + "</td></tr>";
+    }).join("") || '<tr><td colspan="7" class="vazio">Nenhum produto encontrado.</td></tr>';
+  }
+  var ini = d.total ? (d.pagina - 1) * d.por + 1 : 0, fim = Math.min(d.total, d.pagina * d.por);
+  $("#tot").textContent = d.total ? ini + "–" + fim + " de " + d.total + (S.tipo === "parceiros" ? " cadastros" : S.tipo === "servicos" ? " serviços" : S.tipo === "maoobra" ? " itens de mão de obra" : " produtos") : "";
+  $("#ant").disabled = d.pagina <= 1; $("#prox").disabled = fim >= d.total;
+}
+
+// ---------- formulário ----------
+var CAMPOS = {
+  parceiros: [
+    ["sec", "Identificação"], ["razao", "Razão social / nome completo *", "full"], ["fantasia", "Nome fantasia / abreviado", "full"], ["documento", "CNPJ / CPF"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]],
+    ["sec", "Contato"], ["contato", "Contato"], ["telefone", "Telefone"], ["email", "E-mail", "full"],
+    ["sec", "Endereço"], ["endereco", "Endereço", "full"], ["bairro", "Bairro"], ["cep", "CEP"], ["cidade", "Cidade"], ["uf", "UF"],
+    ["sec", "Fiscal"], ["ie", "Inscrição estadual"], ["im", "Inscrição municipal"], ["obs", "Observação", "full", "area"],
+  ],
+  produtos: [
+    ["sec", "Produto"], ["codigo", "Código *"], ["unidade", "Unidade (sigla)"], ["descricao", "Descrição *", "full"], ["familia", "Família"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]], ["marca", "Marca"], ["modelo", "Modelo"],
+    ["sec", "Valores e estoque"], ["preco_venda", "Preço de venda (R$)", "", "dec"], ["custo", "Custo médio (R$)", "", "dec"], ["estoque", "Estoque disponível", "", "dec"], ["garantia_dias", "Garantia (dias)", "", "dec"],
+    ["sec", "Fiscal"], ["ncm", "NCM"], ["cest", "CEST"], ["ean", "EAN (código de barras)"], ["tipo_item", "Tipo do item"], ["caracteristicas", "Características", "full", "area"],
+  ],
+  servicos: [
+    ["sec", "Serviço mensal"], ["codigo", "Código (em branco = automático)"], ["unidade", "Unidade"], ["descricao", "Descrição *", "full"], ["categoria", "Categoria (ex.: Monitoramento)"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]],
+    ["sec", "Valores mensais"], ["preco_venda", "Valor de venda mensal (R$)", "", "dec"], ["custo", "Custo mensal (R$)", "", "dec"],
+    ["obs", "O que está incluso / observação", "full", "area"],
+  ],
+  maoobra: [
+    ["sec", "Mão de obra"], ["codigo", "Código (em branco = automático)"], ["unidade", "Unidade", "", "sel", ["HORA", "MEIO DIA", "DIA", "VISITA", "OUTRO"]], ["descricao", "Descrição *", "full"], ["categoria", "Tipo (ex.: Técnico, Auxiliar)"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]],
+    ["sec", "Valores"], ["preco_venda", "Valor de venda (R$)", "", "dec"], ["custo", "Custo (R$)", "", "dec"],
+    ["obs", "Observação (ex.: horário comercial, deslocamento à parte)", "full", "area"],
+  ],
+};
+function valIn(v, dec) { if (v == null) return ""; if (dec && typeof v === "number") return String(v).replace(".", ","); return String(v); }
+function abrir(item) {
+  S.aberto = item || {};
+  var novo = !item || !item.id, t = S.tipo;
+  $("#g-kick").textContent = t === "parceiros" ? "Cliente / fornecedor" : t === "servicos" ? "Serviço mensal" : t === "maoobra" ? "Mão de obra" : "Produto";
+  $("#g-tit").textContent = novo ? (t === "parceiros" ? "Novo cadastro" : t === "servicos" ? "Novo serviço mensal" : t === "maoobra" ? "Nova mão de obra" : "Novo produto") : (t === "parceiros" ? item.fantasia || item.razao : item.codigo + " · " + item.descricao);
+  var h = "";
+  if (t === "parceiros") {
+    var tagsSel = (item && item.tags) || ["Cliente"];
+    var todas = S.todasTags.map(function (x) { return x.tag; });
+    tagsSel.forEach(function (x) { if (todas.indexOf(x) < 0) todas.push(x); });
+    h += '<div class="f full"><span class="flabel">Tags * — o que este cadastro é</span><div class="chips" id="f-tags">' + todas.map(function (x) { var on = tagsSel.indexOf(x) >= 0; return '<button type="button" class="chip' + (on ? " on" : "") + '" aria-pressed="' + on + '" data-t="' + esc(x) + '">' + (on ? "✓ " : "") + esc(x) + "</button>"; }).join("") + '</div><div style="display:flex;gap:6px;margin-top:4px"><input class="field" id="f-novatag" placeholder="Nova tag (ex.: Prestador de serviço)" style="max-width:280px"><button class="btn ghost sm" type="button" id="f-addtag">Adicionar</button></div></div>';
+  }
+  CAMPOS[t].forEach(function (c) {
+    if (c[0] === "sec") { h += '<div class="sec">' + c[1] + "</div>"; return; }
+    var v = item ? item[c[0]] : c[0] === "situacao" ? "Ativo" : c[0] === "unidade" && t === "servicos" ? "MÊS" : c[0] === "unidade" && t === "maoobra" ? "HORA" : "";
+    if (c[0] === "documento") v = doc(v);
+    var id = "f-" + c[0], cls = "f" + (c[2] === "full" ? " full" : ""), inp;
+    if (c[3] === "sel") inp = '<select class="field" id="' + id + '">' + c[4].map(function (o) { return "<option" + (o === v ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select>";
+    else if (c[3] === "area") inp = '<textarea class="field" id="' + id + '">' + esc(v || "") + "</textarea>";
+    else inp = '<input class="field" id="' + id + '" value="' + esc(valIn(v, c[3] === "dec")) + '"' + (c[3] === "dec" ? ' inputmode="decimal"' : "") + ">";
+    h += '<div class="' + cls + '"><label class="flabel" for="' + id + '">' + c[1] + "</label>" + inp + "</div>";
+  });
+  if (t === "produtos" && item && item.id) h += '<div class="info">Última compra pelo SGO: <b>' + (item.ultima ? brl(item.ultima.preco) + " · " + esc(item.ultima.fornecedor || "") : "nenhuma ainda") + "</b>. O custo médio não vem na exportação do Omie: preencha aqui para o comparativo da cotação.</div>";
+  if (t === "maoobra") h += '<div class="info">A mão de obra aparece na <b>Tabela de preços</b> (Comercial) junto com os serviços mensais, para o vendedor consultar. O custo e a margem só o administrador vê lá.</div>';
+  if (t === "servicos") h += '<div class="info">Estes serviços aparecem nos orçamentos ao marcar <b>Incluir serviço mensal</b>. O valor de venda vem sugerido no orçamento e pode ser ajustado lá.</div>';
+  h += '<p class="erro" id="f-erro"></p>';
+  $("#form").innerHTML = h;
+  $("#g-meta").textContent = item && item.id ? (t === "servicos" || t === "maoobra" ? "" : "Origem: " + (item.origem === "omie" ? "Omie" : "SGO") + " · ") + "alterado " + dataBR(item.atualizado_em) + " por " + (item.atualizado_por || "") : "";
+  if (t === "parceiros") {
+    $("#f-tags").onclick = function (e) { var b = e.target.closest("[data-t]"); if (!b) return; var on = !b.classList.contains("on"); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); b.textContent = (on ? "✓ " : "") + b.dataset.t; };
+    $("#f-addtag").onclick = function () { var v = $("#f-novatag").value.trim(); if (!v) return; var b = document.createElement("button"); b.type = "button"; b.className = "chip on"; b.dataset.t = v; b.setAttribute("aria-pressed", "true"); b.textContent = "✓ " + v; $("#f-tags").appendChild(b); $("#f-novatag").value = ""; };
+  }
+  $("#gav").classList.add("on"); $("#fundo").classList.add("on");
+  setTimeout(function () { var p = $("#form .field"); if (p && novo) p.focus(); }, 60);
+}
+function fechar() { $("#gav").classList.remove("on"); $("#fundo").classList.remove("on"); S.aberto = null; }
+function salvar() {
+  var t = S.tipo, it = S.aberto || {}, d = { versao: it.versao };
+  CAMPOS[t].forEach(function (c) { if (c[0] !== "sec") d[c[0]] = $("#f-" + c[0]).value; });
+  if (t === "parceiros") d.tags = Array.prototype.map.call(document.querySelectorAll("#f-tags .chip.on"), function (b) { return b.dataset.t; });
+  var b = $("#g-salvar"); b.disabled = true;
+  api(it.id ? "PUT" : "POST", "/api/cadastros/" + t + (it.id ? "/" + it.id : ""), d).then(function () {
+    fechar(); toast(it.id ? "Cadastro atualizado." : "Cadastro criado."); carregar();
+  }).catch(function (e) { var er = $("#f-erro"); er.textContent = e.message; er.style.display = "block"; }).finally(function () { b.disabled = false; });
+}
+
+// ---------- importação do Omie ----------
+function lerCSV(txt) {
+  txt = txt.replace(/^﻿/, "");
+  var linhas = [], campo = "", lin = [], aspas = false;
+  var sep = (txt.split("\n")[0].match(/;/g) || []).length >= (txt.split("\n")[0].match(/,/g) || []).length ? ";" : ",";
+  for (var i = 0; i < txt.length; i++) {
+    var c = txt[i];
+    if (aspas) { if (c === '"') { if (txt[i + 1] === '"') { campo += '"'; i++; } else aspas = false; } else campo += c; }
+    else if (c === '"') aspas = true;
+    else if (c === sep) { lin.push(campo); campo = ""; }
+    else if (c === "\n") { lin.push(campo.replace(/\r$/, "")); linhas.push(lin); lin = []; campo = ""; }
+    else campo += c;
+  }
+  if (campo || lin.length) { lin.push(campo); linhas.push(lin); }
+  var h = linhas.shift() || [];
+  return linhas.filter(function (l) { return l.some(function (x) { return x.trim(); }); }).map(function (l) { var o = {}; h.forEach(function (k, i) { o[k.trim()] = (l[i] || "").trim(); }); return o; });
+}
+function mapParceiro(r) {
+  return {
+    documento: r["CNPJ / CPF"], razao: r["Razão Social / Nome Completo"], fantasia: r["Nome Fantasia / Nome Abreviado"], tags: r["Tags"], situacao: r["Situação"] === "Inativo" ? "Inativo" : "Ativo",
+    telefone: r["Telefone"], contato: r["Contato"], email: r["E-mail"], cidade: cid(r["Cidade"]), uf: r["Estado"], endereco: r["Endereço"], bairro: r["Bairro"], cep: r["CEP"], ie: r["Inscrição Estadual"], im: r["Inscrição Municipal"],
+    extra: { banco: r["Banco"] || undefined, agencia: r["Agência"] || undefined, conta: r["Conta Corrente"] || undefined, contribuinte_icms: r["Contribuinte do ICMS"], tipo_atividade: r["Tipo de Atividade"] || undefined, vendedor_padrao: r["Vendedor (padrão)"] || undefined, inclusao_omie: r["Inclusão"], alteracao_omie: r["Última Alteração"] },
+  };
+}
+function mapProduto(r) {
+  var u = r["Unidade"] || "", m = u.match(/\(([^)]+)\)\s*$/);
+  return {
+    codigo: r["Código"], descricao: r["Descrição"], familia: r["Família de Produto"], unidade: m ? m[1] : u, ncm: r["Código NCM"], cest: r["CEST"], ean: r["Código EAN (GTIN)"], preco_venda: r["Preço Unitário de Venda"], estoque: r["Estoque Disponível"],
+    marca: r["Marca"], modelo: r["Modelo"], garantia_dias: r["Dias de Garantia"], tipo_item: r["Tipo do Item (Bloco K)"], caracteristicas: r["Características"], situacao: r["Situação"] === "Inativo" ? "Inativo" : "Ativo",
+    extra: { unidade_nome: u.replace(/\s*\([^)]*\)\s*$/, ""), origem_mercadoria: r["Origem da Mercadoria"] || undefined, inclusao_omie: r["Inclusão"], alteracao_omie: r["Última Alteração"] },
+  };
+}
+var IMP = { arquivos: [] };
+function abrirImp() {
+  IMP = { arquivos: [] };
+  $("#mi-corpo").innerHTML = '<label class="drop"><input type="file" id="mi-f" accept=".csv,text/csv" multiple style="position:absolute;width:1px;height:1px;opacity:0"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#141414" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg><b>Escolha os arquivos CSV exportados do Omie</b><span class="sub">Clientes, Fornecedores e/ou Produtos — pode escolher os três de uma vez</span></label><div class="info" style="margin:0">O sistema reconhece o tipo de cada arquivo pelas colunas. Clientes e fornecedores vão para o mesmo cadastro: quem estiver nos dois arquivos fica com as duas tags. Ninguém é apagado e nenhuma tag é retirada; quem já existe é atualizado (o custo digitado no SGO é mantido).</div><div id="mi-res"></div>';
+  $("#mi-f").onchange = function (e) { lerArquivos(e.target.files); };
+  $("#mimp").classList.add("on");
+}
+function lerArquivos(files) {
+  var tarefas = Array.prototype.map.call(files, function (f) {
+    return f.text().then(function (txt) {
+      var rows = lerCSV(txt), h = rows[0] || {};
+      var tipo = "Razão Social / Nome Completo" in h ? "parceiros" : "Código NCM" in h || "Família de Produto" in h ? "produtos" : null;
+      return { nome: f.name, tipo: tipo, linhas: tipo === "parceiros" ? rows.map(mapParceiro) : tipo === "produtos" ? rows.map(mapProduto) : [] };
+    });
+  });
+  Promise.all(tarefas).then(function (arqs) {
+    IMP.arquivos = arqs;
+    var ok = arqs.filter(function (a) { return a.tipo; });
+    $("#mi-res").innerHTML = '<div class="card" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px">' + arqs.map(function (a) { return "<div><b>" + esc(a.nome) + "</b> — " + (a.tipo ? a.linhas.length + (a.tipo === "parceiros" ? " clientes/fornecedores" : " produtos") : '<span style="color:#8E1B1B">formato não reconhecido</span>') + "</div>"; }).join("") + '</div><div id="mi-prog" style="display:none;margin-top:10px"><div class="barra"><i id="mi-bar"></i></div><div class="sub" id="mi-ptxt" style="margin-top:6px"></div></div><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn ghost" type="button" id="mi-c">Cancelar</button><button class="btn adv" type="button" id="mi-ok"' + (ok.length ? "" : " disabled") + ">Importar " + ok.reduce(function (s, a) { return s + a.linhas.length; }, 0) + " registros</button></div>";
+    $("#mi-c").onclick = fecharImp; $("#mi-ok").onclick = importar;
+  });
+}
+function importar() {
+  var lotes = [];
+  // parceiros primeiro (clientes e fornecedores se juntam pela chave documento + endereço)
+  IMP.arquivos.filter(function (a) { return a.tipo; }).sort(function (a, b) { return a.tipo === b.tipo ? 0 : a.tipo === "parceiros" ? -1 : 1; }).forEach(function (a) {
+    for (var i = 0; i < a.linhas.length; i += 200) lotes.push({ tipo: a.tipo, linhas: a.linhas.slice(i, i + 200) });
+  });
+  var tot = { parceiros: { novos: 0, atualizados: 0, ignorados: 0 }, produtos: { novos: 0, atualizados: 0, ignorados: 0 } }, feito = 0;
+  $("#mi-ok").disabled = true; $("#mi-prog").style.display = "block";
+  var cadeia = Promise.resolve();
+  lotes.forEach(function (l) {
+    cadeia = cadeia.then(function () {
+      $("#mi-ptxt").textContent = "Enviando lote " + (feito + 1) + " de " + lotes.length + "…";
+      return api("POST", "/api/cadastros/importar", l).then(function (r) { ["novos", "atualizados", "ignorados"].forEach(function (k) { tot[l.tipo][k] += r[k] || 0; }); feito++; $("#mi-bar").style.width = Math.round((feito / lotes.length) * 100) + "%"; });
+    });
+  });
+  cadeia.then(function () {
+    var f = function (k, n) { var t = tot[k]; return t.novos + t.atualizados + t.ignorados ? "<div><b>" + n + ":</b> " + t.novos + " novos · " + t.atualizados + " atualizados" + (t.ignorados ? " · " + t.ignorados + " ignorados (sem nome/código)" : "") + "</div>" : ""; };
+    $("#mi-ptxt").innerHTML = '<div style="color:#1E5A2D;font-weight:700;margin-bottom:4px">Importação concluída.</div>' + f("parceiros", "Clientes e fornecedores") + f("produtos", "Produtos");
+    $("#mi-c").textContent = "Fechar";
+    carregar(); avisarShell();
+  }).catch(function (e) { $("#mi-ptxt").innerHTML = '<span style="color:#8E1B1B;font-weight:600">Parou no lote ' + (feito + 1) + ": " + esc(e.message) + ". O que já foi enviado ficou salvo; pode importar de novo sem duplicar.</span>"; $("#mi-ok").disabled = false; });
+}
+function fecharImp() { $("#mimp").classList.remove("on"); }
+
+// ---------- eventos ----------
+document.querySelectorAll(".seg button").forEach(function (b) { b.onclick = function () { if (S.tipo === b.dataset.tipo) return; S.tipo = b.dataset.tipo; S.pag = 1; S.tags = []; history.replaceState(null, "", "?tipo=" + S.tipo); try { window.parent.postMessage({ sgo: "rota", url: S.tipo === "produtos" ? "/cadastros/produtos" : S.tipo === "servicos" ? "/cadastros/servicos" : S.tipo === "maoobra" ? "/cadastros/maoobra" : "/cadastros/parceiros" }, location.origin); } catch (e) {} carregar(); }; });
+var tq; $("#q").oninput = function () { clearTimeout(tq); tq = setTimeout(function () { S.q = $("#q").value.trim(); S.pag = 1; carregar(); }, 250); };
+$("#sit").onchange = function () { S.sit = $("#sit").value; S.pag = 1; carregar(); };
+$("#est").onchange = function () { S.est = $("#est").checked; S.pag = 1; carregar(); };
+$("#tags").onclick = function (e) { var b = e.target.closest("[data-tag]"); if (!b) return; var t = b.dataset.tag, i = S.tags.indexOf(t); if (i >= 0) S.tags.splice(i, 1); else S.tags.push(t); S.pag = 1; carregar(); };
+$("#ant").onclick = function () { S.pag--; carregar(); };
+$("#prox").onclick = function () { S.pag++; carregar(); };
+$("#tb").onclick = function (e) { var tr = e.target.closest("tr[data-id]"); if (!tr) return; var it = S.dados.itens.find(function (x) { return String(x.id) === tr.dataset.id; }); abrir(it); };
+$("#tb").onkeydown = function (e) { if (e.key === "Enter") $("#tb").onclick(e); };
+$("#b-novo").onclick = function () { abrir(null); };
+$("#b-imp").onclick = abrirImp;
+var bSyncOmie = $("#b-sync-omie");
+if (bSyncOmie) bSyncOmie.onclick = function () {
+  if (bSyncOmie.disabled) return;
+  if (S.tipo !== "parceiros" && S.tipo !== "produtos") return;
+  var tipo = S.tipo === "produtos" ? "produtos" : "clientes";
+  var rotulo = bSyncOmie.textContent;
+  bSyncOmie.disabled = true;
+  bSyncOmie.textContent = "Sincronizando…";
+  api("POST", "/api/cadastros/sync-omie", { tipo: tipo }).then(function (d) {
+    var bloco = tipo === "produtos" ? d.produtos : d.clientes;
+    var msg = (bloco ? bloco.total : 0) + (tipo === "produtos" ? " produto(s)" : " cliente(s)") +
+      " · " + (bloco ? bloco.novos : 0) + " novos · " + (bloco ? bloco.atualizados : 0) + " atualizados";
+    if (d.erros && d.erros.length) toast("Sync parcial: " + msg);
+    else toast("Sincronizado: " + msg);
+    carregar();
+    avisarShell();
+  }).catch(function (e) {
+    toast(e.message);
+  }).then(function () {
+    bSyncOmie.disabled = false;
+    bSyncOmie.textContent = rotulo;
+  });
+};
+$("#g-x").onclick = fechar; $("#g-cancel").onclick = fechar; $("#fundo").onclick = fechar; $("#g-salvar").onclick = salvar;
+$("#mi-x").onclick = fecharImp;
+document.addEventListener("keydown", function (e) { if (e.key === "Escape") { if ($("#mimp").classList.contains("on")) fecharImp(); else if (S.aberto) fechar(); } });
+desenhar(); carregar();
+

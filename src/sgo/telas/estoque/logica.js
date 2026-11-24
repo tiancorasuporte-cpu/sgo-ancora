@@ -1,0 +1,237 @@
+/* Lógica original da tela do SGO (executada pelo motor de telas isoladas: src/sgo/lib/tela-isolada.ts). */
+
+(function () {
+  "use strict";
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function api(m, u, b) {
+    return fetch(u, { method: m, credentials: "same-origin", headers: { "content-type": "application/json", "x-sgo": "1" }, body: b ? JSON.stringify(b) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.erro || "Falha (" + r.status + ")"); return j; }); });
+  }
+  function nf(v) { var n = Number(v) || 0; return n.toLocaleString("pt-BR", { maximumFractionDigits: 3 }); }
+  function num(v) { var n = parseFloat(String(v == null ? "" : v).replace(/\./g, "").replace(",", ".")); return isFinite(n) ? n : NaN; }
+  function dh(ms) { try { return new Date(ms).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } }
+  function toast(t) { var d = document.createElement("div"); d.className = "toast"; d.setAttribute("role", "status"); d.textContent = t; document.body.appendChild(d); setTimeout(function () { d.remove(); }, 3800); }
+  var IC = {
+    busca: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+    info: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>'
+  };
+  var TAB0 = (new URLSearchParams(location.search).get("tab") || "emp");
+  var S = { tab: ["emp", "tec", "mov"].indexOf(TAB0) >= 0 ? TAB0 : "emp", locais: [], emp: { q: "", todos: false, itens: [], cont: null }, tec: { eq: null, itens: [], docs: [] }, mov: { f: { local: "", tipo: "", q: "", os: "", de: "", ate: "", produto: "", produtoNome: "" }, itens: [], tipos: {}, nomes: {} } };
+  var ST = { aguardando: ["Aguardando", "c-agu"], confirmada: ["Confirmada pelo técnico", "c-ok"], conferida: ["Conferida", "c-ok"], divergencia: ["Divergência", "c-div"], cancelada: ["Cancelada", "c-can"] };
+  var timer = null;
+
+  function topo() {
+    return '<div class="barra"><div class="seg" role="tablist" aria-label="Estoque">' +
+      [["emp", "Estoque da empresa"], ["tec", "Estoque dos técnicos"], ["mov", "Movimentações"]].map(function (t) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '"' + (S.tab === t[0] ? ' class="on"' : "") + ">" + t[1] + "</button>"; }).join("") + "</div></div>";
+  }
+  function render() {
+    var h = topo();
+    if (S.tab === "emp") h += viewEmp(); else if (S.tab === "tec") h += viewTec(); else h += viewMov();
+    var ae = document.activeElement, id = ae && ae.id, pos = null; try { pos = ae.selectionStart; } catch (e) {}
+    $("#pag").innerHTML = h;
+    if (id && $("#" + id)) { var el = $("#" + id); el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch (e) {} }
+  }
+
+  /* ---------- estoque da empresa ---------- */
+  function carregarEmp() {
+    return api("GET", "/api/estoque/saldo?local=empresa" + (S.emp.q ? "&q=" + encodeURIComponent(S.emp.q) : "") + (S.emp.todos ? "&todos=1" : "")).then(function (j) { S.emp.itens = j.itens; render(); }).catch(function (e) { S.emp.erro = e.message; render(); });
+  }
+  function viewEmp() {
+    var it = S.emp.itens, cont = S.emp.cont;
+    var com = it.filter(function (i) { return i.saldo > 0; }).length, neg = it.filter(function (i) { return i.saldo < 0; }).length, eqs = it.reduce(function (t, i) { return t + (i.em_equipes > 0 ? i.em_equipes : 0); }, 0);
+    var h = '<div class="kpis"><div class="kpi"><b>' + com + '</b><span>produtos com saldo' + (S.emp.q || S.emp.todos ? " (na busca)" : "") + '</span></div><div class="kpi"><b>' + nf(eqs) + '</b><span>unidades com as equipes técnicas</span></div><div class="kpi' + (neg ? " alerta" : "") + '"><b>' + neg + "</b><span>saldos negativos (conferir na contagem)</span></div></div>";
+    h += '<div class="info">' + IC.info + "<div>O saldo é a soma das movimentações: contagem, compras entregues, retiradas e devoluções dos técnicos, e o material das OS. " + (cont ? "<b>Contagem aberta:</b> digite a quantidade contada só dos produtos que conferiu; o sistema lança a diferença como ajuste." : "Quando for colocar em operação, use <b>Contagem de estoque</b> para acertar o saldo.") + "</div></div>";
+    h += '<div class="card"><div class="card-h"><span class="card-t">Estoque da empresa</span><div class="busca">' + IC.busca + '<input id="e-q" type="search" placeholder="Buscar por produto ou código" aria-label="Buscar produto" value="' + esc(S.emp.q) + '"></div>' +
+      '<label class="dica" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="e-todos"' + (S.emp.todos ? " checked" : "") + "> Mostrar todos os produtos</label><span class=\"sp\"></span>" +
+      (cont ? '<button type="button" class="btn" data-ac="cont-sair">Cancelar contagem</button><button type="button" class="btn btn-y" data-ac="cont-salvar"' + (Object.keys(cont).length ? "" : " disabled") + ">Salvar contagem (" + Object.keys(cont).length + ")</button>" : '<button type="button" class="btn btn-d" data-ac="cont">Contagem de estoque</button>') + "</div>";
+    if (S.emp.erro) h += '<div class="vazio">' + esc(S.emp.erro) + "</div>";
+    else if (!it.length) h += '<div class="vazio">' + (S.emp.q ? "Nenhum produto encontrado." : "Nenhuma movimentação ainda. Busque um produto ou marque “Mostrar todos os produtos” para lançar a contagem.") + "</div>";
+    else {
+      h += '<div class="tw"><table><thead><tr><th>Código</th><th>Produto</th><th>Un.</th><th class="n">Saldo na empresa</th><th class="n">Com as equipes</th>' + (cont ? '<th class="n">Contado</th>' : "") + "<th></th></tr></thead><tbody>" + it.map(function (i) {
+        var c = cont && cont[i.produto_id] != null ? cont[i.produto_id] : "";
+        return '<tr><td class="cod">' + esc(i.codigo) + "</td><td>" + esc(i.descricao) + "</td><td>" + esc(i.unidade) + '</td><td class="n ' + (i.saldo < 0 ? "neg" : i.saldo ? "" : "zero") + '">' + nf(i.saldo) + '</td><td class="n ' + (i.em_equipes ? "" : "zero") + '">' + nf(i.em_equipes) + "</td>" +
+          (cont ? '<td class="n"><input class="qin' + (c !== "" ? " mud" : "") + '" id="ct-' + i.produto_id + '" data-ct="' + i.produto_id + '" inputmode="decimal" value="' + esc(c) + '" placeholder="' + esc(nf(i.saldo)) + '" aria-label="Quantidade contada de ' + esc(i.descricao) + '"></td>' : "") +
+          '<td class="n"><button type="button" class="lnk" data-extrato="' + i.produto_id + '" data-nome="' + esc(i.descricao) + '">Extrato</button></td></tr>';
+      }).join("") + "</tbody></table></div>";
+    }
+    return h + "</div>";
+  }
+
+  /* ---------- estoque dos técnicos ---------- */
+  function equipes() { return S.locais.filter(function (l) { return l.tipo === "equipe"; }); }
+  function carregarTec() {
+    var eq = S.tec.eq; if (!eq) { render(); return Promise.resolve(); }
+    return Promise.all([api("GET", "/api/estoque/saldo?local=eq:" + eq), api("GET", "/api/estoque/docs?equipe=" + eq)])
+      .then(function (r) { S.tec.itens = r[0].itens; S.tec.docs = r[1].itens; S.tec.erro = null; render(); })
+      .catch(function (e) { S.tec.erro = e.message; render(); });
+  }
+  function chip(st) { var c = ST[st] || [st, "c-can"]; return '<span class="chip ' + c[1] + '">' + esc(c[0]) + "</span>"; }
+  function viewTec() {
+    var eqs = equipes(), eq = eqs.filter(function (e) { return e.equipe_id === S.tec.eq; })[0];
+    var h = '<div class="info">' + IC.info + "<div><b>Retirada:</b> o Estoque lança o que o técnico levou e ele confirma no App do Técnico; só então o material sai da empresa e entra no estoque da equipe. <b>Devolução:</b> o técnico marca no app o que está devolvendo e o Estoque confere aqui o que chegou. Material usado em OS sai do estoque da equipe quando a OS é executada.</div></div>";
+    if (!eqs.length) return h + '<div class="card"><div class="vazio">Nenhuma equipe técnica cadastrada. Crie em Assistência Técnica › Equipes técnicas.</div></div>';
+    h += '<div class="grade">' + eqs.map(function (e) {
+      var a = e.aguardando || {};
+      return '<button type="button" class="eqc' + (e.equipe_id === S.tec.eq ? " on" : "") + '" data-eq="' + e.equipe_id + '" aria-pressed="' + (e.equipe_id === S.tec.eq) + '"><b>' + esc(e.nome) + "</b><small>Principal: " + esc(e.principal || "—") + (e.ativo ? "" : " · inativa") + '</small><span class="ln">' + (a.retirada ? '<span class="chip c-agu">' + a.retirada + " retirada" + (a.retirada > 1 ? "s" : "") + " p/ confirmar</span>" : "") + (a.devolucao ? '<span class="chip c-blu">' + a.devolucao + " devolu" + (a.devolucao > 1 ? "ções" : "ção") + " p/ conferir</span>" : "") + "</span></button>";
+    }).join("") + "</div>";
+    if (!eq) return h + '<div class="card"><div class="vazio">Escolha uma equipe para ver o estoque dela.</div></div>';
+    if (S.tec.erro) return h + '<div class="card"><div class="vazio">' + esc(S.tec.erro) + "</div></div>";
+    var it = S.tec.itens;
+    h += '<div class="card"><div class="card-h"><span class="card-t">Estoque · ' + esc(eq.nome) + '</span><span class="sp"></span><button type="button" class="btn btn-y" data-ac="ret">+ Nova retirada</button></div>';
+    h += !it.length ? '<div class="vazio">Esta equipe não tem material com ela.</div>' :
+      '<div class="tw"><table><thead><tr><th>Código</th><th>Produto</th><th>Un.</th><th class="n">Com a equipe</th><th class="n">Já usado em OS (sai na execução)</th><th class="n">Disponível</th><th></th></tr></thead><tbody>' + it.map(function (i) {
+        var disp = i.saldo - (i.reservado || 0);
+        return '<tr><td class="cod">' + esc(i.codigo) + "</td><td>" + esc(i.descricao) + "</td><td>" + esc(i.unidade) + '</td><td class="n ' + (i.saldo < 0 ? "neg" : "") + '">' + nf(i.saldo) + '</td><td class="n ' + (i.reservado ? "" : "zero") + '">' + nf(i.reservado) + (i.reservado_os && i.reservado_os.length ? ' <span class="dica">(OS ' + esc(i.reservado_os.join(", ")) + ")</span>" : "") + '</td><td class="n ' + (disp < 0 ? "neg" : "") + '"><b>' + nf(disp) + '</b></td><td class="n"><button type="button" class="lnk" data-extrato="' + i.produto_id + '" data-nome="' + esc(i.descricao) + '" data-local="eq:' + eq.equipe_id + '">Extrato</button></td></tr>';
+      }).join("") + "</tbody></table></div>";
+    h += "</div>";
+    var docs = S.tec.docs;
+    h += '<div class="card"><div class="card-h"><span class="card-t">Retiradas e devoluções</span></div><div class="docs">' + (!docs.length ? '<div class="vazio">Nenhuma retirada ou devolução desta equipe.</div>' : docs.map(function (d) {
+      var tot = d.itens.reduce(function (t, i) { return t + i.qtd; }, 0);
+      var acoes = "";
+      if (d.tipo === "devolucao" && d.status === "aguardando") acoes = '<button type="button" class="btn btn-y sm" data-conf="' + d.id + '">Conferir o que chegou</button>';
+      if (d.tipo === "retirada" && (d.status === "aguardando" || d.status === "divergencia")) acoes = '<button type="button" class="btn btn-r sm" data-canc="' + d.id + '">Cancelar retirada</button>';
+      return '<div class="doc"><div class="t"><b>' + esc(d.num) + " · " + (d.tipo === "retirada" ? "Retirada (empresa → equipe)" : "Devolução (equipe → empresa)") + "</b> " + chip(d.status) + "<p>" + d.itens.map(function (i) { return nf(i.recebido != null && d.status === "conferida" ? i.recebido : i.qtd) + " " + esc(String(i.unidade || "un").toLowerCase()) + " " + esc(i.descricao) + (i.recebido != null && i.recebido < i.qtd ? " (de " + nf(i.qtd) + ")" : ""); }).join(" · ") + '</p><p class="dica">' + esc(dh(d.criado_em)) + " · lançado por " + esc(d.criado_por || "—") + (d.fechado_em ? " · " + (d.status === "cancelada" ? "cancelada" : "fechada") + " por " + esc(d.fechado_por || "—") + " em " + esc(dh(d.fechado_em)) : "") + (d.obs ? " · " + esc(d.obs) : "") + " · " + nf(tot) + " un.</p>" + (d.divergencia ? '<div class="div">' + esc(d.divergencia) + "</div>" : "") + "</div>" + acoes + "</div>";
+    }).join("")) + "</div></div>";
+    return h;
+  }
+
+  /* ---------- movimentações ---------- */
+  function carregarMov() {
+    var f = S.mov.f, p = [];
+    ["local", "tipo", "q", "os", "de", "ate", "produto"].forEach(function (k) { if (f[k]) p.push(k + "=" + encodeURIComponent(f[k])); });
+    return api("GET", "/api/estoque/mov?" + p.join("&")).then(function (j) { S.mov.itens = j.itens; S.mov.tipos = j.tipos; S.mov.nomes = j.nomes; S.mov.erro = null; render(); }).catch(function (e) { S.mov.erro = e.message; render(); });
+  }
+  function nomeLocal(l) { return S.mov.nomes[l] || l; }
+  function viewMov() {
+    var f = S.mov.f, it = S.mov.itens;
+    var h = '<div class="card"><div class="card-h"><span class="card-t">Movimentações de estoque</span><span class="sp"></span><button type="button" class="btn" data-ac="csv"' + (it.length ? "" : " disabled") + ">Exportar CSV</button></div>";
+    h += '<div class="filtros"><label>Local<select class="field" id="m-local"><option value="">Todos</option>' + S.locais.map(function (l) { return '<option value="' + esc(l.id) + '"' + (f.local === l.id ? " selected" : "") + ">" + esc(l.nome) + "</option>"; }).join("") + '<option value="cliente"' + (f.local === "cliente" ? " selected" : "") + ">Cliente (aplicado em OS)</option></select></label>" +
+      '<label>Tipo<select class="field" id="m-tipo"><option value="">Todos</option>' + Object.keys(S.mov.tipos).map(function (k) { return '<option value="' + k + '"' + (f.tipo === k ? " selected" : "") + ">" + esc(S.mov.tipos[k]) + "</option>"; }).join("") + "</select></label>" +
+      '<label style="flex:1 1 220px">Produto ou observação<input class="field" id="m-q" type="search" value="' + esc(f.q) + '" placeholder="Ex.: bateria"></label>' +
+      '<label>Nº da OS<input class="field" id="m-os" value="' + esc(f.os) + '" placeholder="00009" style="width:110px"></label>' +
+      '<label>De<input class="field" id="m-de" type="date" value="' + esc(f.de) + '"></label><label>Até<input class="field" id="m-ate" type="date" value="' + esc(f.ate) + '"></label>' +
+      (f.produto ? '<span class="chip c-blu" style="align-self:center">Produto: ' + esc(f.produtoNome) + ' <button type="button" class="lnk" data-ac="tira-prod" aria-label="Tirar filtro de produto" style="text-decoration:none">×</button></span>' : "") + "</div>";
+    if (S.mov.erro) h += '<div class="vazio">' + esc(S.mov.erro) + "</div>";
+    else if (!it.length) h += '<div class="vazio">Nenhuma movimentação com estes filtros.</div>';
+    else h += '<div class="tw"><table><thead><tr><th>Data</th><th>Tipo</th><th>Produto</th><th class="n">Qtd.</th><th>De → Para</th><th>OS / documento</th><th>Por</th></tr></thead><tbody>' + it.map(function (m) {
+      return "<tr><td style=\"white-space:nowrap\">" + esc(dh(m.quando)) + "</td><td>" + esc(S.mov.tipos[m.tipo] || m.tipo) + '</td><td><span class="cod">' + esc(m.codigo || "") + "</span> " + esc(m.descricao || "Produto " + m.produto_id) + '</td><td class="n"><b>' + nf(m.qtd) + "</b></td><td>" + esc(nomeLocal(m.de)) + '<span class="seta">→</span>' + esc(nomeLocal(m.para)) + "</td><td>" + (m.os_num ? "OS " + esc(m.os_num) : "") + (m.obs && !m.os_num ? esc(m.obs) : m.obs && m.os_num ? ' <span class="dica">' + esc(String(m.obs).replace(/^OS \d+ · /, "")) + "</span>" : "") + "</td><td>" + esc(m.por) + "</td></tr>";
+    }).join("") + "</tbody></table></div>";
+    return h + "</div>";
+  }
+  function csv() {
+    var L = [["Data", "Tipo", "Código", "Produto", "Quantidade", "De", "Para", "OS", "Observação", "Por"]].concat(S.mov.itens.map(function (m) { return [dh(m.quando), S.mov.tipos[m.tipo] || m.tipo, m.codigo || "", m.descricao || "", String(m.qtd).replace(".", ","), nomeLocal(m.de), nomeLocal(m.para), m.os_num || "", m.obs || "", m.por]; }));
+    var t = "﻿" + L.map(function (r) { return r.map(function (c) { c = String(c == null ? "" : c); return /[;"\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(";"); }).join("\r\n");
+    var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([t], { type: "text/csv;charset=utf-8" })); a.download = "movimentacoes-estoque.csv"; document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  /* ---------- janelas ---------- */
+  function modal(k, titulo, corpo, acoes) {
+    $("#modal").innerHTML = '<div class="fundo"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-tt"><div class="m-top"><div><div class="k">' + esc(k) + '</div><h2 id="m-tt">' + esc(titulo) + '</h2></div><button type="button" class="m-x" aria-label="Fechar" data-fechar>×</button></div><div class="m-c" id="m-c">' + corpo + '</div><div class="m-a">' + acoes + "</div></div></div>";
+    var first = $("#modal input, #modal textarea, #modal button.btn-y"); if (first) first.focus();
+  }
+  function fecharModal() { $("#modal").innerHTML = ""; }
+  function erroModal(t) { var e = $("#m-c .erro"); if (!e) { e = document.createElement("div"); e.className = "erro"; e.setAttribute("role", "alert"); $("#m-c").prepend(e); } e.textContent = t; }
+  var R = null;
+  function abrirRetirada() {
+    var eq = equipes().filter(function (e) { return e.equipe_id === S.tec.eq; })[0];
+    R = { itens: [] };
+    modal("Retirada · " + eq.nome, "Material que o técnico está levando", '<p class="dica" style="margin:0">Ex.: os sensores, baterias e fontes que ele pega de manhã para as manutenções. O técnico confirma no app; só então sai do estoque da empresa.</p><label class="lbl" for="r-q">Adicionar produto</label><div class="busca" style="max-width:none">' + IC.busca + '<input id="r-q" type="search" autocomplete="off" placeholder="Digite o nome ou o código"></div><div class="res" id="r-res" hidden></div><div id="r-lin"></div><label class="lbl" for="r-obs">Observação (opcional)</label><input class="field" id="r-obs" maxlength="300">',
+      '<button type="button" class="btn" data-fechar>Cancelar</button><button type="button" class="btn btn-y" data-ac="ret-salvar">Lançar retirada</button>');
+    desenharLinhas();
+  }
+  function desenharLinhas() {
+    $("#r-lin").innerHTML = R.itens.length ? '<div class="lbl" style="margin-top:4px">Itens</div>' + R.itens.map(function (i, k) { return '<div class="lin"><span>' + esc(i.descricao) + ' <span class="dica">· ' + esc(i.codigo) + " · na empresa: " + nf(i.saldo) + '</span></span><input class="qin" style="width:100%" data-rq="' + k + '" inputmode="decimal" value="' + esc(i.qtd) + '" aria-label="Quantidade de ' + esc(i.descricao) + '"><button type="button" class="x" data-rx="' + k + '" aria-label="Tirar ' + esc(i.descricao) + '">×</button></div>'; }).join("") : '<p class="dica">Nenhum produto adicionado ainda.</p>';
+  }
+  var buscaT = null;
+  function buscarProduto(q) {
+    clearTimeout(buscaT);
+    if (q.trim().length < 2) { $("#r-res").hidden = true; return; }
+    buscaT = setTimeout(function () {
+      api("GET", "/api/estoque/produtos?q=" + encodeURIComponent(q)).then(function (j) {
+        var r = $("#r-res"); if (!r) return;
+        r.hidden = false;
+        R.res = j.itens;
+        r.innerHTML = j.itens.length ? j.itens.map(function (p, k) { return '<button type="button" data-rp="' + k + '"><span><b>' + esc(p.descricao) + "</b><br><small>" + esc(p.codigo) + " · " + esc(p.unidade) + '</small></span><small>na empresa: <b class="' + (p.saldo < 0 ? "neg" : "") + '">' + nf(p.saldo) + "</b></small></button>"; }).join("") : '<div class="vazio" style="padding:14px">Nenhum produto encontrado.</div>';
+      }).catch(function () {});
+    }, 220);
+  }
+  function abrirConferencia(id) {
+    var d = S.tec.docs.filter(function (x) { return x.id === id; })[0];
+    modal(d.num + " · " + d.equipe, "Conferir a devolução", '<p class="dica" style="margin:0">Confira o que chegou e ajuste se faltar algo. Só entra no estoque da empresa o que for confirmado; a diferença continua no estoque da equipe.</p><table><thead><tr><th>Produto</th><th class="n">Devolvendo</th><th class="n">Chegou</th></tr></thead><tbody>' + d.itens.map(function (i) { return "<tr><td>" + esc(i.descricao) + '</td><td class="n">' + nf(i.qtd) + '</td><td class="n"><input class="qin" data-cr="' + i.produto_id + '" inputmode="decimal" value="' + esc(nf(i.qtd)) + '" aria-label="Quantidade que chegou de ' + esc(i.descricao) + '"></td></tr>'; }).join("") + '</tbody></table><label class="lbl" for="c-obs">Observação (opcional)</label><input class="field" id="c-obs" maxlength="200">',
+      '<button type="button" class="btn" data-fechar>Cancelar</button><button type="button" class="btn btn-y" data-confok="' + d.id + '">Confirmar recebimento</button>');
+  }
+
+  /* ---------- eventos ---------- */
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) { if (e.target.classList.contains("fundo")) fecharModal(); return; }
+    if (b.dataset.tab) { S.tab = b.dataset.tab; history.replaceState(null, "", "?tab=" + S.tab); render(); (S.tab === "emp" ? carregarEmp() : S.tab === "tec" ? carregarTec() : carregarMov()); return; }
+    if (b.hasAttribute("data-fechar")) { fecharModal(); return; }
+    if (b.dataset.eq) { S.tec.eq = +b.dataset.eq; S.tec.itens = []; S.tec.docs = []; render(); carregarTec(); return; }
+    if (b.dataset.extrato) { S.mov.f = { local: b.dataset.local || "", tipo: "", q: "", os: "", de: "", ate: "", produto: b.dataset.extrato, produtoNome: b.dataset.nome }; S.tab = "mov"; history.replaceState(null, "", "?tab=mov"); render(); carregarMov(); return; }
+    var ac = b.dataset.ac;
+    if (ac === "cont") { S.emp.cont = {}; render(); return; }
+    if (ac === "cont-sair") { S.emp.cont = null; render(); return; }
+    if (ac === "cont-salvar") {
+      var lista = Object.keys(S.emp.cont).map(function (k) { return { produto_id: +k, contado: num(S.emp.cont[k]) }; });
+      if (lista.some(function (i) { return !isFinite(i.contado) || i.contado < 0; })) { toast("Confira as quantidades contadas."); return; }
+      b.disabled = true;
+      api("POST", "/api/estoque/contagem", { itens: lista }).then(function (j) { S.emp.cont = null; toast(j.ajustados ? j.ajustados + (j.ajustados === 1 ? " produto ajustado." : " produtos ajustados.") : "Contagem salva: nenhum saldo mudou."); carregarEmp(); }).catch(function (er) { b.disabled = false; toast(er.message); });
+      return;
+    }
+    if (ac === "tira-prod") { S.mov.f.produto = ""; S.mov.f.produtoNome = ""; carregarMov(); return; }
+    if (ac === "csv") { csv(); return; }
+    if (ac === "ret") { abrirRetirada(); return; }
+    if (b.dataset.rp != null) { var p = R.res[+b.dataset.rp], ex = R.itens.filter(function (i) { return i.produto_id === p.produto_id; })[0]; if (ex) ex.qtd = String((num(ex.qtd) || 0) + 1); else R.itens.push({ produto_id: p.produto_id, codigo: p.codigo, descricao: p.descricao, saldo: p.saldo, qtd: "1" }); $("#r-q").value = ""; $("#r-res").hidden = true; desenharLinhas(); var q = $('[data-rq="' + (R.itens.indexOf(ex || R.itens[R.itens.length - 1])) + '"]'); if (q) { q.focus(); q.select(); } return; }
+    if (b.dataset.rx != null) { R.itens.splice(+b.dataset.rx, 1); desenharLinhas(); return; }
+    if (ac === "ret-salvar") {
+      var its = R.itens.map(function (i) { return { produto_id: i.produto_id, qtd: num(i.qtd) }; });
+      if (!its.length) { erroModal("Adicione pelo menos um produto."); return; }
+      if (its.some(function (i) { return !(i.qtd > 0); })) { erroModal("Confira as quantidades."); return; }
+      b.disabled = true;
+      api("POST", "/api/estoque/retiradas", { equipe_id: S.tec.eq, itens: its, obs: $("#r-obs").value }).then(function (j) { fecharModal(); toast("Retirada " + j.num + " lançada. Aguardando o técnico confirmar no app."); carregarLocais().then(carregarTec); }).catch(function (er) { b.disabled = false; erroModal(er.message); });
+      return;
+    }
+    if (b.dataset.canc) {
+      if (!confirm("Cancelar esta retirada? Nada sai do estoque.")) return;
+      api("POST", "/api/estoque/docs/" + b.dataset.canc + "/cancelar", {}).then(function () { toast("Retirada cancelada."); carregarLocais().then(carregarTec); }).catch(function (er) { toast(er.message); });
+      return;
+    }
+    if (b.dataset.conf) { abrirConferencia(b.dataset.conf); return; }
+    if (b.dataset.confok) {
+      var itsc = $$("[data-cr]").map(function (i) { return { produto_id: +i.dataset.cr, recebido: num(i.value) }; });
+      if (itsc.some(function (i) { return !isFinite(i.recebido) || i.recebido < 0; })) { erroModal("Confira as quantidades que chegaram."); return; }
+      b.disabled = true;
+      api("POST", "/api/estoque/docs/" + b.dataset.confok + "/conferir", { itens: itsc, obs: $("#c-obs").value }).then(function (j) { fecharModal(); toast(j.divergencia ? "Devolução conferida com diferença." : "Devolução conferida. Material de volta ao estoque da empresa."); carregarLocais().then(carregarTec); }).catch(function (er) { b.disabled = false; erroModal(er.message); });
+      return;
+    }
+  });
+  document.addEventListener("input", function (e) {
+    var t = e.target;
+    if (t.id === "e-q") { S.emp.q = t.value; clearTimeout(timer); timer = setTimeout(carregarEmp, 300); return; }
+    if (t.dataset.ct) { if (t.value.trim() === "") delete S.emp.cont[t.dataset.ct]; else S.emp.cont[t.dataset.ct] = t.value; t.classList.toggle("mud", t.value.trim() !== ""); var sv = $('[data-ac="cont-salvar"]'); if (sv) { var n = Object.keys(S.emp.cont).length; sv.textContent = "Salvar contagem (" + n + ")"; sv.disabled = !n; } return; }
+    if (t.id === "r-q") { buscarProduto(t.value); return; }
+    if (t.dataset.rq != null) { R.itens[+t.dataset.rq].qtd = t.value; return; }
+    if (t.id === "m-q" || t.id === "m-os") { S.mov.f[t.id.slice(2)] = t.value; clearTimeout(timer); timer = setTimeout(carregarMov, 350); return; }
+  });
+  document.addEventListener("change", function (e) {
+    var t = e.target;
+    if (t.id === "e-todos") { S.emp.todos = t.checked; carregarEmp(); return; }
+    if (t.id === "m-local" || t.id === "m-tipo" || t.id === "m-de" || t.id === "m-ate") { S.mov.f[t.id.slice(2)] = t.value; carregarMov(); }
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && $("#modal").innerHTML) fecharModal(); });
+
+  function carregarLocais() {
+    return api("GET", "/api/estoque/locais").then(function (j) {
+      S.locais = j.locais;
+      var eqs = equipes();
+      if (!S.tec.eq && eqs.length) S.tec.eq = (eqs.filter(function (e) { return e.ativo; })[0] || eqs[0]).equipe_id;
+    });
+  }
+  carregarLocais().then(function () {
+    render();
+    return S.tab === "emp" ? carregarEmp() : S.tab === "tec" ? carregarTec() : carregarMov();
+  }).catch(function (e) { $("#pag").innerHTML = '<div class="card"><div class="vazio">Não foi possível abrir o estoque: ' + esc(e.message) + "</div></div>"; });
+})();
+

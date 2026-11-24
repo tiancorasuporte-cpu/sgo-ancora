@@ -1,0 +1,47 @@
+<header class="topo"><div class="topo-in">
+  <div class="seg" role="group" aria-label="Tipo de cadastro">
+    <button type="button" data-tipo="parceiros">Clientes e fornecedores</button>
+    <button type="button" data-tipo="produtos">Produtos</button>
+    <button type="button" data-tipo="servicos">Serviços mensais</button>
+    <button type="button" data-tipo="maoobra">Mão de obra</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn ghost" type="button" id="b-sync-omie">Sync Omie (API)</button>
+    <button class="btn ghost" type="button" id="b-imp">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg>Importar do Omie (CSV)</button>
+    <button class="btn adv" type="button" id="b-novo">+ Novo</button>
+  </div>
+</div></header>
+
+<main class="pagina">
+  <div class="filtros">
+    <div class="busca">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5A5A5A" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <label for="q" style="position:absolute;width:1px;height:1px;overflow:hidden">Buscar</label>
+      <input id="q" class="field" type="search" placeholder="Buscar…">
+    </div>
+    <select id="sit" class="field" style="width:auto" aria-label="Situação">
+      <option value="Ativo">Só ativos</option><option value="Inativo">Só inativos</option><option value="todos">Ativos e inativos</option>
+    </select>
+    <label id="l-est" style="display:none;gap:6px;align-items:center;font:500 13px Inter,sans-serif;cursor:pointer"><input type="checkbox" id="est" style="width:18px;height:18px;accent-color:#141414"> Só com estoque</label>
+  </div>
+  <div class="chips" id="tags" aria-label="Filtrar por tag"></div>
+  <section class="card">
+    <div class="tw"><table class="tbl"><thead id="th"></thead><tbody id="tb"></tbody></table></div>
+    <div class="rodape"><span id="tot"></span><span style="display:flex;gap:6px"><button class="btn ghost sm" id="ant" type="button">‹ Anterior</button><button class="btn ghost sm" id="prox" type="button">Próxima ›</button></span></div>
+  </section>
+</main>
+
+<div class="fundo" id="fundo"></div>
+<aside class="gaveta" id="gav" aria-labelledby="g-tit" role="dialog" aria-modal="true">
+  <div class="g-topo"><div><div class="kick" id="g-kick"></div><h2 id="g-tit"></h2></div><button class="x" id="g-x" type="button" aria-label="Fechar">×</button></div>
+  <form class="g-corpo" id="form" autocomplete="off"></form>
+  <div class="g-pe"><span class="sub" id="g-meta"></span><span style="display:flex;gap:8px"><button class="btn ghost" type="button" id="g-cancel">Cancelar</button><button class="btn adv" type="button" id="g-salvar">Salvar</button></span></div>
+</aside>
+
+<div class="modal" id="mimp"><section class="mbox" role="dialog" aria-modal="true" aria-labelledby="mi-t">
+  <div class="g-topo" style="border-radius:14px 14px 0 0"><div><div class="kick">Cadastros</div><h2 id="mi-t">Importar do Omie</h2></div><button class="x" type="button" id="mi-x" aria-label="Fechar">×</button></div>
+  <div class="m-corpo" id="mi-corpo"></div>
+</section></div>
+
+<div class="toast" id="toast" role="status"></div>
