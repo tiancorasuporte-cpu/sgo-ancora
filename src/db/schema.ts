@@ -149,6 +149,8 @@ async function columnExists(table: string, column: string) {
 
 async function migrateSchema() {
   const sql = getSql();
+  // Garante DDL em public mesmo se o role tiver schema homônimo (ex.: user "sgo").
+  await sql.unsafe("set search_path to public");
 
   // Fast path: schema já no ar — não revarre information_schema nem roda ALTER idempotente.
   // Se faltar tabela/coluna introduzida nesta versão, não pule (evita HMR/version bump sem DDL).
@@ -712,8 +714,8 @@ async function migrateSchema() {
   }
 
   if (!(await tableExists("quote_items"))) {
-    await sql`
-      create table quote_items (
+    await sql.unsafe(`
+      create table if not exists public.quote_items (
         id serial primary key,
         quote_id integer not null references quotes(id) on delete cascade,
         codigo_produto bigint not null,
@@ -723,12 +725,12 @@ async function migrateSchema() {
         valor_unitario numeric(15, 4) not null,
         ncm varchar(20)
       )
-    `;
+    `);
   }
 
   if (!(await tableExists("monthly_services"))) {
-    await sql`
-      create table monthly_services (
+    await sql.unsafe(`
+      create table if not exists public.monthly_services (
         id serial primary key,
         nome varchar(200) not null,
         valor numeric(15, 4) not null default 0,
@@ -737,23 +739,17 @@ async function migrateSchema() {
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       )
-    `;
+    `);
   }
-  if (!(await columnExists("monthly_services", "custo"))) {
-    await sql.unsafe(
-      "alter table monthly_services add column custo numeric(15, 4) not null default 0",
-    );
-  }
-  if (!(await columnExists("monthly_services", "descricao"))) {
-    await sql.unsafe(
-      "alter table monthly_services add column descricao text not null default ''",
-    );
-  }
-  if (!(await columnExists("monthly_services", "show_in_orcamento"))) {
-    await sql.unsafe(
-      "alter table monthly_services add column show_in_orcamento boolean not null default true",
-    );
-  }
+  await sql.unsafe(
+    "alter table public.monthly_services add column if not exists custo numeric(15, 4) not null default 0",
+  );
+  await sql.unsafe(
+    "alter table public.monthly_services add column if not exists descricao text not null default ''",
+  );
+  await sql.unsafe(
+    "alter table public.monthly_services add column if not exists show_in_orcamento boolean not null default true",
+  );
 
   if (!(await columnExists("quotes", "servico_mensal_id"))) {
     await sql.unsafe("alter table quotes add column servico_mensal_id integer");
