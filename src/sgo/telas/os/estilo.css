@@ -5,6 +5,7 @@
 @media (min-width:901px){
 .tela-os .z2h{justify-content:center!important;align-items:center!important}
 .tela-os aside.z2i{width:min(1180px,94vw)!important;max-width:none!important;height:min(90vh,940px)!important;border-radius:16px;overflow:hidden;box-shadow:0 30px 80px #00000066}
+.tela-os aside.z2i>.z2p{overflow-y:auto;min-height:0;flex:1}
 .tela-os aside.z2i>.z2j{padding-left:28px!important;padding-right:28px!important}
 .tela-os .z2p{display:grid!important;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-auto-flow:row dense;column-gap:36px;row-gap:22px;align-content:start;padding:22px 28px!important}
 .tela-os .z2p>*{min-width:0;margin:0!important}
@@ -13,4 +14,78 @@
 .tela-os .z2p>.z35:nth-of-type(3){grid-column:1}
 .tela-os .z2p>.z35:nth-of-type(4){grid-column:2}
 .tela-os .z2p>.z35:last-child{grid-column:1 / -1}
+.tela-os .z2p>.os-extra{grid-column:1 / -1}
 }
+.tela-os .os-extra{display:flex;flex-direction:column;gap:12px}
+.tela-os .os-pausa,.tela-os .os-check,.tela-os .os-bloco{display:flex;flex-direction:column;gap:8px}
+.tela-os .os-pausa{background:#FFF6CC;border:2px solid #141414;border-radius:10px;padding:12px 14px}
+.tela-os .os-check{border:1px solid #E0E0DA;border-radius:10px;padding:12px;background:#fff}
+.tela-os .os-bloco{border-top:1px solid #EEEEEA;padding-top:8px}
+.tela-os .os-head,.tela-os .os-row,.tela-os .os-linha{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tela-os .os-head{justify-content:space-between}
+.tela-os .os-linha{align-items:flex-end}
+.tela-os .os-linha .field{flex:1}
+.tela-os .os-mute{font:500 13px Inter,sans-serif;color:#5A5A5A}
+.tela-os .os-erro{font:600 13px Inter,sans-serif;color:#8E1B1B;background:#FDE2E1;border-radius:8px;padding:8px 10px}
+.tela-os .os-item{display:flex;flex-direction:column;gap:6px}
+.tela-os .os-pill{font:700 12px Inter,sans-serif;min-height:32px;padding:0 12px;border-radius:7px;border:1.5px solid #141414;background:#fff;cursor:pointer}
+.tela-os .os-on-ok{background:#E3F1E6}
+.tela-os .os-on-nok{background:#FDE2E1}
+.tela-os .os-mini{min-height:32px;padding:0 10px}
+.tela-os .os-danger{border-color:#B3261E;color:#B3261E}
+.tela-os .btn-exc{font:700 13px Inter,sans-serif;min-height:36px;padding:0 12px;border-radius:8px;border:0;background:#B3261E;color:#fff;cursor:pointer}
+.tela-os .btn-exc:hover{background:#8E1B1B}
+.tela-os .z2j .btn-exc-no{font:700 13px Inter,sans-serif;min-height:36px;padding:0 12px;border-radius:8px;border:1.5px solid #fff;background:transparent;color:#fff;cursor:pointer}
+.tela-os .os-editor{max-height:min(86vh,820px);overflow:auto}
+.tela-os .os-check select.field,.tela-os .os-obs{margin-top:4px}
+.tela-os .os-obs{min-height:72px;resize:vertical;width:100%}
+.tela-os .ck-pagina{padding:24px;display:flex;flex-direction:column;gap:16px}
+.tela-os .ck-topo{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}
+.tela-os .ck-topo h1{margin:0;font:800 28px Inter,sans-serif}
+.tela-os .ck-topo p,.tela-os .ck-kicker{margin:4px 0 0;color:#5A5A5A}
+.tela-os .ck-kicker{font:700 12px Inter,sans-serif;letter-spacing:.04em;text-transform:uppercase}
+.tela-os .ck-ok{background:#E3F1E6;color:#145C2E;border-radius:8px;padding:8px 10px;font:600 13px Inter,sans-serif}
+.tela-os .ck-grade{display:grid;grid-template-columns:minmax(280px,1fr) minmax(320px,1.2fr);gap:16px;align-items:start}
+.tela-os .ck-card{background:#fff;border:1px solid #E0E0DA;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.tela-os .ck-card h2,.tela-os .ck-card h3{margin:0;font:700 16px Inter,sans-serif}
+.tela-os .ck-linha{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tela-os .ck-linha .field{flex:1;min-width:160px}
+.tela-os .ck-item{display:flex;gap:8px;align-items:center;width:100%;text-align:left;background:#FAFAF7;border:1px solid #E0E0DA;border-radius:10px;padding:8px}
+.tela-os .ck-item-on{border-color:#141414;background:#FFF6CC}
+.tela-os .ck-nome{flex:1;display:flex;flex-direction:column;gap:2px;background:transparent;border:0;text-align:left;cursor:pointer;font:inherit;color:inherit}
+.tela-os .ck-subs{display:flex;flex-direction:column;gap:8px;padding-top:8px;border-top:1px solid #EEEEEA}
+.tela-os .ck-vinc,.tela-os .ck-busca,.tela-os .ck-lista{display:flex;flex-wrap:wrap;gap:8px}
+.tela-os .ck-lista{flex-direction:column}
+.tela-os .hist-busca{display:flex;flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap}
+.tela-os .hist-q{flex:1 1 280px;min-width:220px}
+.tela-os .hist-periodo{display:flex;align-items:center;gap:8px;flex:0 0 auto;background:#F6F6F2;border:1px solid #E0E0DA;border-radius:10px;padding:6px 10px}
+.tela-os .hist-periodo span{font:600 12px Inter,sans-serif;color:#3D3D3D;text-transform:uppercase;letter-spacing:.3px}
+.tela-os .hist-periodo input{width:158px;min-height:36px;flex:none;color-scheme:light}
+.tela-os .hist-atalhos{display:flex;flex-wrap:wrap;gap:8px;flex-basis:100%}
+.tela-os .hist-atalhos button{font:600 12px Inter,sans-serif;min-height:32px;padding:0 10px;border-radius:8px;border:1px solid #CFCFC8;background:#fff;cursor:pointer}
+.tela-os .hist-atalhos button:hover{border-color:#141414}
+.tela-os .hist-lista{display:flex;flex-direction:column;gap:8px}
+.tela-os .hist-linha{display:grid;grid-template-columns:110px minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr) 150px;gap:12px;align-items:center;width:100%;text-align:left;background:#fff;border:1px solid #E0E0DA;border-radius:10px;padding:12px 14px;cursor:pointer;font:inherit;color:inherit}
+.tela-os .hist-linha:hover,.tela-os .hist-linha-on{border-color:#141414;background:#FFF6CC}
+.tela-os .hist-linha strong{font:700 14px Inter,sans-serif}
+.tela-os .hist-linha strong,.tela-os .hist-linha span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tela-os .hist-modal{position:fixed;inset:0;z-index:40;background:rgba(20,20,20,.55);display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto}
+.tela-os .hist-janela{width:min(860px,100%);background:#fff;border-radius:16px;box-shadow:0 24px 60px rgba(0,0,0,.35);display:flex;flex-direction:column;max-height:calc(100vh - 48px)}
+.tela-os .hist-topo{background:#141414;color:#fff;border-bottom:4px solid #FFD200;border-radius:16px 16px 0 0;padding:16px 18px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.tela-os .hist-topo h2{margin:0;font:800 22px 'Barlow Semi Condensed',sans-serif;text-transform:uppercase;color:#FFD200}
+.tela-os .hist-topo .x-btn{color:#fff}
+.tela-os .hist-topo p{margin:4px 0 0;color:#fff}
+.tela-os .hist-corpo{padding:18px;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+.tela-os .hist-fatos{display:flex;flex-wrap:wrap;gap:8px 16px;font:500 13px Inter,sans-serif}
+@media (max-width:800px){
+  .tela-os .hist-linha{grid-template-columns:1fr 1fr}
+  .tela-os .hist-periodo{width:100%}
+  .tela-os .hist-periodo input{flex:1;width:auto}
+}
+.tela-os .hist-fotos{display:flex;flex-wrap:wrap;gap:8px}
+.tela-os .hist-fotos img,.tela-os .hist-assin img{width:120px;height:90px;object-fit:cover;border-radius:8px;border:1px solid #CFCFC8;background:#EEE}
+.tela-os .hist-assin{display:flex;flex-direction:column;gap:4px;width:180px;font:500 12px Inter,sans-serif;color:#5A5A5A}
+.tela-os .hist-assin img{width:180px;height:80px;object-fit:contain;background:#fff}
+.tela-os .hist-ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.tela-os .ck-card h3{margin:8px 0 0;font:700 15px Inter,sans-serif}
+@media (max-width:900px){.tela-os .ck-grade{grid-template-columns:1fr}}

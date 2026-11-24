@@ -3,7 +3,7 @@
 // @ts-nocheck
 if (typeof window !== "undefined") {
 
-/* Via do cliente da OS · montagem, PDF e página pública · v25
+/* Via do cliente da OS · montagem, PDF e página pública · v26
    Usado na tela de OS (botões da via) e na página pública /v/<link> que o cliente abre.
    Mostra só o que o cliente precisa: atendimento, tempo no local, produtos, valor fechado,
    resolução, fotos e assinatura. Não mostra histórico interno nem motivo de ajuste. */
@@ -31,10 +31,28 @@ if (typeof window !== "undefined") {
     if (!v.length && c.ci) v = [{ ci: c.ci, co: c.co }];
     return v.map(function (x) { return { ci: x.ci, co: x.co, min: x.min != null ? x.min : (x.co ? (x.co - x.ci) / 6e4 : 0) }; });
   }
+  function chave(s) { return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+  function qtdNum(q) { var n = parseFloat(String(q == null ? "" : q).replace(",", ".").replace(/x$/i, "")); return isFinite(n) ? n : 0; }
+  function acharPreco(tabela, nome) {
+    var k = chave(nome);
+    if (!k) return null;
+    if (tabela[k]) return tabela[k];
+    var keys = Object.keys(tabela), i, hit = null;
+    for (i = 0; i < keys.length; i++) {
+      if (keys[i] === k || keys[i].indexOf(k + " ") === 0 || k.indexOf(keys[i] + " ") === 0) { if (hit) return null; hit = tabela[keys[i]]; }
+    }
+    return hit;
+  }
   function produtos(c) {
+    var tabela = {};
+    (c.produtosVia || c.produtosOrc || []).forEach(function (p) { if (p && p.nome) tabela[chave(p.nome)] = p; });
     return (c.itens || []).map(function (t) {
       var q = t.st === "aplicado" && t.usado != null && t.usado !== "" ? t.usado : t.qtd;
-      return { qtd: qtdTxt(q), nome: t.nome };
+      var qn = qtdNum(q);
+      var via = acharPreco(tabela, t.nome);
+      var unit = t.preco != null && t.preco !== "" ? Number(t.preco) : via && via.preco != null ? Number(via.preco) : null;
+      var total = unit != null && isFinite(unit) ? Math.round(qn * unit * 100) / 100 : null;
+      return { qtd: qtdTxt(q), nome: t.nome, preco: unit != null && isFinite(unit) ? unit : null, total: total };
     }).filter(function (t) { return t.nome && String(t.qtd) !== "0"; });
   }
 
@@ -95,8 +113,11 @@ if (typeof window !== "undefined") {
     }
     h += '<div class="tempo"><span>Tempo total no local</span><span>' + (minutos > 0 ? durTxt(minutos) : "—") + "</span></div></section>";
     h += '<section><h2>O que foi feito</h2><div class="rel">' + (rel.texto ? esc(rel.texto) : '<span class="vazio">Sem descrição registrada.</span>') + "</div></section>";
+    var comPreco = P.some(function (t) { return t.total != null; });
     h += '<section class="quebra"><h2>Produtos utilizados</h2>' + (P.length
-      ? '<table><tr><th>Qtd</th><th>Produto</th></tr>' + P.map(function (t) { return '<tr><td class="q">' + esc(t.qtd) + "</td><td>" + esc(t.nome) + "</td></tr>"; }).join("") + "</table>"
+      ? '<table><tr><th>Qtd</th><th>Produto</th>' + (comPreco ? '<th class="n">Valor unit.</th><th class="n">Total</th>' : "") + "</tr>" + P.map(function (t) {
+        return '<tr><td class="q">' + esc(t.qtd) + "</td><td>" + esc(t.nome) + "</td>" + (comPreco ? '<td class="n">' + (t.preco != null ? brl(t.preco) : "—") + '</td><td class="n">' + (t.total != null ? brl(t.total) : "—") + "</td>" : "") + "</tr>";
+      }).join("") + "</table>"
       : '<div class="vazio">Nenhum produto utilizado neste atendimento.</div>') + "</section>";
     h += '<section><h2>Valor do atendimento</h2>';
     if (mo.length) {
@@ -104,13 +125,24 @@ if (typeof window !== "undefined") {
         return "<tr><td>" + esc(x.descricao) + '</td><td class="n">' + esc(x.qtd) + " " + esc(String(x.unidade || "").toLowerCase()) + '</td><td class="n">' + brl(x.preco) + '</td><td class="n">' + brl(x.qtd * (x.preco || 0)) + "</td></tr>";
       }).join("") + (valor != null && Math.abs(valor - somaMO) > 0.009 ? '<tr><td colspan="3">Ajuste no fechamento</td><td class="n">' + brl(valor - somaMO) + "</td></tr>" : "") + "</table>";
     }
-    var mat = (f.mat || []).filter(function (x) { return x && x.qtd > 0; });
+    var matTodos = (f.mat || []).filter(function (x) { return x && x.qtd > 0; });
+    var nomesProd = {};
+    if (comPreco) P.forEach(function (t) { if (t.total != null) nomesProd[chave(t.nome)] = 1; });
+    var mat = comPreco ? matTodos.filter(function (x) { return !nomesProd[chave(x.descricao)]; }) : matTodos;
     if (mat.length) {
       h += '<table style="margin-top:6px"><tr><th>Material</th><th class="n">Qtd</th><th class="n">Valor unit.</th><th class="n">Total</th></tr>' + mat.map(function (x) {
         return "<tr><td>" + esc(x.descricao) + '</td><td class="n">' + esc(x.qtd) + '</td><td class="n">' + brl(x.preco) + '</td><td class="n">' + brl(x.qtd * (x.preco || 0)) + "</td></tr>";
       }).join("") + "</table>";
     }
-    var total = f.valorTotal != null ? f.valorTotal : valor != null ? valor + mat.reduce(function (t, x) { return t + x.qtd * (x.preco || 0); }, 0) : null;
+    var somaProd = P.reduce(function (s, t) { return s + (t.total || 0); }, 0);
+    var descProd = comPreco ? Math.min(somaProd, Math.max(0, Number(c.descontoProd) || 0)) : 0;
+    var somaMat = mat.reduce(function (t, x) { return t + x.qtd * (x.preco || 0); }, 0);
+    var baseMO = valor != null ? valor : mo.length ? somaMO : null;
+    if (comPreco) {
+      h += '<div class="tempo"><span>Produtos</span><span>' + brl(somaProd) + "</span></div>";
+      if (descProd > 0.009) h += '<div class="tempo"><span>Desconto do orçamento</span><span>− ' + brl(descProd) + "</span></div>";
+    }
+    var total = comPreco ? Math.round(((baseMO || 0) + somaProd - descProd + somaMat) * 100) / 100 : f.valorTotal != null ? f.valorTotal : valor != null ? valor + somaMat : null;
     h += total != null ? '<div class="tot"><span>Valor fechado do atendimento</span><b>' + brl(total) + "</b></div>" : '<div class="vazio">Valor não informado no fechamento.</div>';
     h += "</section>";
     if (fotos.length) h += '<section class="quebra"><h2>Fotos do local</h2><div class="fotos">' + fotos.map(function (u, i) { return '<img src="' + esc(u) + '" alt="Foto ' + (i + 1) + '">'; }).join("") + "</div></section>";

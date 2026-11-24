@@ -27,19 +27,50 @@ if (typeof window !== "undefined") {
   function esperaImagens(doc) {
     return Promise.all([].slice.call(doc.images).map(function (im) { return im.complete ? 0 : new Promise(function (ok) { im.onload = im.onerror = ok; setTimeout(ok, 6000); }); }));
   }
+  /* preços do orçamento: a OS guarda só nome e quantidade; o valor do produto está no orçamento */
+  function precosDe(d) {
+    var itens = d && Array.isArray(d.itens) ? d.itens : [], prodSub = 0, allSub = 0, lista = [];
+    itens.forEach(function (i) {
+      if (!i) return;
+      var linha = Number(i.total) || 0;
+      allSub += linha;
+      if (i.tipo === "servico") return;
+      prodSub += linha;
+      var qtd = Number(i.qtd) || 1;
+      lista.push({ nome: (String(i.descricao || "") + (i.obs ? " (" + i.obs + ")" : "")).slice(0, 120), qtd: qtd, preco: Math.round((linha / qtd) * 100) / 100, total: linha });
+    });
+    var desc = Math.min(allSub, Math.max(0, Number(d && d.desconto) || 0));
+    return { itens: lista, desconto: allSub > 0 ? Math.round(desc * (prodSub / allSub) * 100) / 100 : 0 };
+  }
+  function comPrecos(c) {
+    if ((c.produtosOrc && c.produtosOrc.length) || (c.produtosVia && c.produtosVia.length)) return Promise.resolve(c);
+    var id = c.orcamento && c.orcamento.id, num = (c.orcamento && c.orcamento.num) || c.orc;
+    if (!id && !num) return Promise.resolve(c);
+    return fetch("/api/orcamento-ver/" + encodeURIComponent(id || num), { credentials: "same-origin", headers: { "x-sgo": "1" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        var d = j && j.item && j.item.dados;
+        if (!d) return c;
+        var pack = precosDe(d);
+        return Object.assign({}, c, { produtosVia: pack.itens, descontoProd: pack.desconto });
+      })
+      .catch(function () { return c; });
+  }
   function imprimir(c) {
-    var fr = frame(c);
-    esperaImagens(fr.contentWindow.document).then(function () {
-      setTimeout(function () {
-        try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { alert("Não foi possível abrir a impressão neste navegador."); }
-      }, 150);
+    comPrecos(c).then(function (k) {
+      var fr = frame(k);
+      esperaImagens(fr.contentWindow.document).then(function () {
+        setTimeout(function () {
+          try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { alert("Não foi possível abrir a impressão neste navegador."); }
+        }, 150);
+      });
     });
   }
   function salvarPdf(c, bt) {
     var txt = bt.innerHTML;
     bt.disabled = true; bt.lastChild.textContent = "Gerando PDF…";
     var nome = window.sgoVia.nomeArquivo(c);
-    window.sgoVia.baixarPdf(c)
+    comPrecos(c).then(function (k) { return window.sgoVia.baixarPdf(k); })
       .then(function () { aviso("PDF salvo: " + nome); })
       .catch(function (e) { alert("Não foi possível gerar o PDF: " + e.message + ". Use “Imprimir” e escolha “Salvar como PDF”."); })
       .then(function () { bt.disabled = false; bt.innerHTML = txt; });

@@ -66,7 +66,11 @@ async function carregarAppTecnico() {
   appCarregado = true;
 }
 
-/** Busca de clientes para tickets/OS: Omie (cache + API) no formato do SGOBusca. */
+function normBusca(s: string) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Busca de clientes do orçamento, da OS e dos tickets no cadastro já sincronizado (parceiros). */
 async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/cadastros/busca" || request.method !== "GET") return null;
@@ -83,43 +87,32 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
     const eu = await usuarioSgo(request);
     if (!eu) return Response.json({ erro: "Faça login para continuar." }, { status: 401 });
 
-    const { listOmieApps, requireOrcamentosOmieApp } = await import("@/server/omie/client");
-    const { searchOmieClients } = await import("@/server/omie/quotes");
-    let app;
-    try {
-      app = requireOrcamentosOmieApp();
-    } catch {
-      app = listOmieApps()[0];
-    }
-    if (!app) return null; // deixa o worker buscar em parceiros
-
-    const found = await searchOmieClients(app, q);
-    const itens = found.slice(0, lim).map((c) => {
-      const nome = String(c.nome || "").trim();
-      const cidade = [c.cidade, c.estado ? `(${c.estado})` : ""].filter(Boolean).join(" ").trim();
-      return {
-        id: `omie:${c.codigo}`,
-        documento: c.cnpjCpf || null,
-        tipo_pessoa: null,
-        razao: nome,
-        fantasia: nome,
-        tags: ["Cliente", "Omie"],
-        telefone: null,
-        contato: c.contato || null,
-        email: null,
-        cidade: cidade || null,
-        uf: c.estado || null,
-        endereco: c.endereco || null,
-        bairro: null,
-        situacao: "Ativo",
-        origem: "omie",
-        extra: { omie_codigo: c.codigo, omie_app: app.id, cep: c.cep || null },
-      };
+    const { sgoSql } = await import("./d1");
+    const sql = sgoSql();
+    const pal = normBusca(q).split(" ").filter(Boolean).slice(0, 6);
+    const dig = q.replace(/\D+/g, "");
+    const nome = pal.length
+      ? pal.map((p) => sql`t.busca ilike ${"%" + p + "%"}`).reduce((a, b) => sql`${a} and ${b}`)
+      : sql`false`;
+    const doc = dig.length >= 4 ? sql`regexp_replace(coalesce(t.documento, ''), '\\D', '', 'g') like ${"%" + dig + "%"}` : sql`false`;
+    const rows = await sql<Record<string, unknown>[]>`
+      select t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao
+      from parceiros t
+      where t.situacao = 'Ativo'
+        and coalesce(t.tags, '[]')::jsonb @> '["Cliente"]'::jsonb
+        and (${nome} or ${doc})
+      order by coalesce(t.fantasia, t.razao)
+      limit ${lim}
+    `;
+    const itens = rows.map((r) => {
+      let tags: string[] = [];
+      try { tags = JSON.parse(String(r.tags || "[]")) as string[]; } catch { tags = []; }
+      return { ...r, tags };
     });
-    return Response.json({ itens, origem: "omie" });
+    return Response.json({ itens });
   } catch (e) {
-    console.error("[sgo] busca clientes Omie", e);
-    return null; // fallback no worker (parceiros)
+    console.error("[sgo] busca clientes", e);
+    return null;
   }
 }
 

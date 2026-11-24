@@ -7,6 +7,8 @@
 import { Fragment } from "react";
 
 import { E, a, arr, chave, css, fn, s, t } from "@/sgo/lib/dc";
+import { GeoLinha } from "@/sgo/telas/os/GeoLinha";
+import { ExcluirOs, OsCampo } from "@/sgo/telas/os/OsCampo";
 
 export function QuadroOsView({ v }: { v: any }) {
   return (
@@ -28,6 +30,12 @@ export function QuadroOsView({ v }: { v: any }) {
                 </label>
                 <input id={"busca"} className={"search"} type={"search"} placeholder={"Buscar OS, cliente ou cidade"} onChange={fn(v["onSearch"])} />
               </div>
+              <a className={"btn-ghost"} href={"/assistencia/historico"}>
+                {"Histórico"}
+              </a>
+              <a className={"btn-ghost"} href={"/assistencia/checklists"}>
+                {"Checklists"}
+              </a>
               <span className={"z8"}>
                 {"Gravando no banco de teste"}
               </span>
@@ -280,6 +288,16 @@ export function QuadroOsView({ v }: { v: any }) {
                                                 {t((" " + s(_card7?.["siteChip"]) + " "))}
                                               </div>
                                             </>
+                                          ) : null}
+                                          {E(_card7?.["pausa"]) ? (
+                                            <div className={"chip chip-warn z1h"}>
+                                              {"Pausada"}
+                                            </div>
+                                          ) : null}
+                                          {Array.isArray(_card7?.["checks"]) && _card7["checks"].some((ch: any) => (ch?.itens || []).some((it: any) => it?.obrigatorio !== false && it?.resultado !== "ok" && it?.resultado !== "nok")) ? (
+                                            <div className={"chip chip-warn z1h"}>
+                                              {"Checklist pendente"}
+                                            </div>
                                           ) : null}
                                           {E(_card7?.["hasApp"]) ? (
                                             <>
@@ -667,11 +685,14 @@ export function QuadroOsView({ v }: { v: any }) {
                     <span className={"z2l"}>
                       {t(("OS " + s(v["open"]?.["num"])))}
                     </span>
-                    <button className={"x-btn z2m"} onClick={fn(v["closeOpen"])} aria-label={"Fechar detalhes"}>
+                    <span className={"os-row"}>
+                      <ExcluirOs acao={v["excluir"]} num={s(v["open"]?.["num"])} stage={Number(v["open"]?.["stage"])} />
+                      <button className={"x-btn z2m"} onClick={fn(v["closeOpen"])} aria-label={"Fechar detalhes"}>
                       <svg aria-hidden={"true"} width={"20"} height={"20"} viewBox={"0 0 24 24"} fill={"none"} stroke={"currentColor"} strokeWidth={"2"} strokeLinecap={"round"}>
                         <path d={"M6 6l12 12M18 6L6 18"} />
                       </svg>
-                    </button>
+                      </button>
+                    </span>
                   </div>
                   <div className={"z2n"}>
                     {t(v["open"]?.["cliente"])}
@@ -679,6 +700,7 @@ export function QuadroOsView({ v }: { v: any }) {
                   <div className={"z2o"}>
                     {t((s(v["open"]?.["cidade"]) + " · " + s(v["open"]?.["servico"])))}
                   </div>
+                  <GeoLinha osId={s(v["open"]?.["id"])} />
                 </div>
                 <div className={"z2p"}>
                   <div className={"z2q"}>
@@ -904,6 +926,25 @@ export function QuadroOsView({ v }: { v: any }) {
                         ) : null}
                       </span>
                     </div>
+                    {E(v["open"]?.["hasAutorizacao"]) ? (
+                      <div className={"z33"}>
+                        <span className={"flabel"}>
+                          {"Autorizado por"}
+                        </span>
+                        <span className={"z34"}>
+                          {t(v["open"]?.["autorizou"])}
+                          {E(v["open"]?.["docAutorizacao"]) ? (
+                            <>
+                              {" · "}
+                              <a href={a(v["open"]?.["docAutorizacao"])} target={"_blank"} rel={"noopener"} style={css("font-weight:700;color:#141414;text-decoration:underline")}>
+                                {"📎 "}
+                                {t(v["open"]?.["docNome"]) || "Documento"}
+                              </a>
+                            </>
+                          ) : null}
+                        </span>
+                      </div>
+                    ) : null}
                     <div className={"z33"}>
                       <span className={"flabel"}>
                         {"Agendamento"}
@@ -1125,6 +1166,7 @@ export function QuadroOsView({ v }: { v: any }) {
                       ))}
                     </div>
                   </div>
+                  <OsCampo os={{ ...(v["open"] || {}), pausarCom: v["pausarCom"], retomar: v["retomar"], definirSub: v["definirSub"], anexarCheck: v["anexarCheck"], obsDoCheck: v["obsDoCheck"], tirarCheck: v["tirarCheck"], marcarCheck: v["marcarCheck"] }} />
                   <div className={"z35"}>
                     {E(v["open"]?.["canLev"]) ? (
                       <>
@@ -1318,6 +1360,7 @@ export function QuadroOsView({ v }: { v: any }) {
                   <div className={"z43"}>
                     {t((s(v["sched"]?.["cliente"]) + " · " + s(v["sched"]?.["cidade"])))}
                   </div>
+                  <GeoLinha osId={s(v["sched"]?.["id"])} />
                   <div className={"z4e"}>
                     <div className={"z44"}>
                       <label className={"flabel"} htmlFor={"sc-data"}>
@@ -1450,6 +1493,7 @@ export function QuadroOsView({ v }: { v: any }) {
                   <div className={"z43"}>
                     {t((s(v["exec"]?.["cliente"]) + " · " + s(v["exec"]?.["cidade"]) + " · agendado " + s(v["exec"]?.["agenda"])))}
                   </div>
+                  <GeoLinha osId={s(v["exec"]?.["id"])} />
                   {E(v["exec"]?.["hasPre"]) ? (
                     <>
                       <div className={"z4h"}>

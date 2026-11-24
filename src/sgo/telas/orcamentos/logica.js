@@ -52,7 +52,7 @@ function desenharLista(){
   h+='<section class="card"><div class="tw"><table class="tbl"><thead><tr><th>Nº</th><th>Cliente</th><th>Usuário</th><th class="r">Total</th><th>Status</th><th>Cotação</th><th>Quando</th><th class="c">Ações</th></tr></thead><tbody>';
   if(!its.length)h+='<tr><td colspan="8" class="vazio">'+(S.lista.length?"Nenhum orçamento encontrado com esse filtro.":"Nenhum orçamento ainda. Clique em “+ Novo orçamento” ou converta um levantamento técnico.")+"</td></tr>";
   its.forEach(function(o){var st=ST[o.status]||ST.salvo;
-    h+='<tr class="h" data-abrir="'+esc(o.id)+'"><td style="white-space:nowrap"><b>'+esc(o.num)+"</b>"+(o.lt_num?' <span class="lt-bdg" title="Veio do levantamento técnico">L.T. '+esc(o.lt_num)+"</span>":"")+(o.op_cod?' <span class="op-bdg" title="Oportunidade do CRM">'+esc(o.op_cod)+"</span>":"")+'</td><td><b>'+esc(o.cliente)+'</b><div class="sub">'+esc([doc(o.documento),cidade(o.cidade)].filter(Boolean).join(" · "))+"</div></td><td>"+esc(o.criado_nome||o.criado_por||"")+'</td><td class="r" style="white-space:nowrap">'+(o.n_itens||!o.mensal?brl(o.total):"—")+(o.mensal?'<div class="sub" style="font-weight:600;color:#141414">+ '+brl(o.mensal)+"/mês</div>":"")+'</td><td><span class="pill '+st[1]+'">'+st[0]+"</span></td><td>"+(o.os_num?'<span class="os-bdg">Enviado ao pedido · OS '+esc(o.os_num)+"</span>":"—")+'</td><td style="white-space:nowrap">'+dataHora(o.criado_em)+'</td><td class="c"><div class="menu-wrap"><button class="ico" type="button" data-menu="'+esc(o.id)+'" aria-label="Ações do '+esc(o.num)+'" aria-haspopup="true">⋮</button></div></td></tr>'});
+    h+='<tr class="h" data-abrir="'+esc(o.id)+'"><td style="white-space:nowrap"><b>'+esc(o.num)+"</b>"+(o.lt_num?' <span class="lt-bdg" title="Veio do levantamento técnico">L.T. '+esc(o.lt_num)+"</span>":"")+(o.op_cod?' <span class="op-bdg" title="Oportunidade do CRM">'+esc(o.op_cod)+"</span>":"")+'</td><td><b>'+esc(o.cliente)+'</b><div class="sub">'+esc([doc(o.documento),cidade(o.cidade)].filter(Boolean).join(" · "))+"</div></td><td>"+esc(o.criado_nome||o.criado_por||"")+'</td><td class="r" style="white-space:nowrap">'+(o.n_itens||!o.mensal?brl(o.total):"—")+(o.mensal?'<div class="sub" style="font-weight:600;color:#141414">+ '+brl(o.mensal)+"/mês</div>":"")+'</td><td><span class="pill '+st[1]+'">'+st[0]+"</span></td><td>"+(o.os_num?'<span class="os-bdg">Enviado ao pedido · OS '+esc(o.os_num)+"</span>"+(o.autorizou?'<div class="sub">Autorizado por '+esc(o.autorizou)+"</div>":""):"—")+'</td><td style="white-space:nowrap">'+dataHora(o.criado_em)+'</td><td class="c"><div class="menu-wrap"><button class="ico" type="button" data-menu="'+esc(o.id)+'" aria-label="Ações do '+esc(o.num)+'" aria-haspopup="true">⋮</button></div></td></tr>'});
   h+="</tbody></table></div></section>";
   $("#pag").innerHTML=h;
   var fq=$("#f-q");fq.oninput=function(){S.q=fq.value;var p=fq.selectionStart;desenharLista();var n=$("#f-q");n.focus();n.setSelectionRange(p,p)};
@@ -96,8 +96,26 @@ function enviarOportunidade(o){
     api("POST","/api/orcamentos/"+o.id+"/oportunidade",{vendedor:vend}).then(function(d){fechar();toast("Oportunidade "+d.op.cod+" criada"+(vend?" para "+vend:" sem vendedor (visível para todos)")+".",6000);if(S.E&&S.E.id===o.id){var n=edDe(d.item);n.base=snap(n);S.E=n}return carregar()})
     .catch(function(e){$("#op-err").textContent=e.message;b.disabled=false})}}
 function enviarPedido(o){
-  if(!confirm("Enviar o orçamento "+o.num+" ao pedido?\n\nSerá aberta uma OS “Pedido aprovado · instalação” no Quadro de OS com os itens do orçamento, e o orçamento fica como Aprovado (não poderá mais ser alterado; para mudar, duplique)."))return;
-  return api("POST","/api/orcamentos/"+o.id+"/pedido").then(function(d){toast("Pedido enviado: OS "+d.os.num+" aberta no Quadro de OS.",6000);if(S.E&&S.E.id===o.id)S.E=edDe(d.item);return carregar()}).catch(function(e){toast(e.message,6000)})}
+  var ov=document.createElement("div");ov.className="ov";ov.setAttribute("role","dialog");ov.setAttribute("aria-label","Enviar ao pedido");
+  var html=[];
+  html.push('<div class="card" style="max-width:560px;margin:60px auto"><div class="card-h"><span class="card-t">Enviar ao pedido</span></div><div class="card-b" style="display:flex;flex-direction:column;gap:12px">');
+  html.push("<div>O orçamento <b>"+esc(o.num)+"</b> ("+esc(o.cliente||"")+") vira uma OS de pedido aprovado no Quadro de OS. Depois disso ele fica aprovado e não pode mais ser alterado.</div>");
+  html.push('<div class="f"><label class="flabel" for="ped-quem">Quem autorizou</label><input class="field" id="ped-quem" maxlength="120" placeholder="Nome de quem autorizou" autocomplete="off"><span class="dica">Obrigatório. Esse nome vai na OS.</span></div>');
+  html.push('<div class="f"><label class="flabel" for="ped-doc">Documento da autorização</label><input class="field" id="ped-doc" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,application/pdf,image/*"><span class="dica">Opcional. PDF, imagem ou Word, até 8 MB. Fica vinculado à OS.</span></div>');
+  html.push('<div class="erro" id="ped-err"></div><div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn ghost" type="button" id="ped-c">Cancelar</button><button class="btn adv" type="button" id="ped-ok">Enviar e abrir OS</button></div></div></div>');
+  ov.innerHTML=html.join("");
+  document.body.appendChild(ov);
+  var fechar=function(){ov.remove()};$("#ped-c").onclick=fechar;ov.addEventListener("click",function(e){if(e.target===ov)fechar()});$("#ped-quem").focus();
+  $("#ped-ok").onclick=function(){var b=this,quem=$("#ped-quem").value.replace(/\s+/g," ").trim(),arq=$("#ped-doc").files&&$("#ped-doc").files[0];
+    if(quem.length<2){$("#ped-err").textContent="Informe quem autorizou.";$("#ped-quem").focus();return}
+    if(arq&&arq.size>8*1024*1024){$("#ped-err").textContent="O documento passa de 8 MB.";return}
+    b.disabled=true;$("#ped-err").textContent="";
+    var seguir=function(doc){api("POST","/api/orcamentos/"+o.id+"/pedido",{autorizou:quem,documento:doc}).then(function(d){fechar();toast("Pedido enviado: OS "+d.os.num+" aberta no Quadro de OS.",6000);if(S.E&&S.E.id===o.id){var n=edDe(d.item);n.base=snap(n);S.E=n}return carregar()}).catch(function(e){$("#ped-err").textContent=e.message;b.disabled=false})};
+    if(!arq)return seguir(null);
+    var rd=new FileReader();
+    rd.onload=function(){var s=String(rd.result||""),i=s.indexOf(",");seguir({nome:arq.name,tipo:arq.type||"application/octet-stream",base64:s.slice(i+1)})};
+    rd.onerror=function(){$("#ped-err").textContent="Não foi possível ler o documento.";b.disabled=false};
+    rd.readAsDataURL(arq)}}
 
 /* ===================== LEVANTAMENTOS ===================== */
 function desenharLTs(){
@@ -140,6 +158,7 @@ function edDe(it){var D=it.dados||{},c=D.cliente||{};
     lt:it.lt_num?{id:it.lt_id,num:it.lt_num}:null,cliSug:[],op:it.op_id?{id:it.op_id,cod:it.op_cod||""}:null,
     cli:{id:it.parceiro_id,razao:c.razao,fantasia:c.fantasia,documento:c.documento,endereco:c.endereco,bairro:c.bairro,cidade:c.cidade,uf:c.uf,cep:c.cep,telefone:c.telefone,email:c.email,contato:c.contato,ie:c.ie},
     itens:(D.itens||[]).map(function(i){return{tipo:i.tipo==="servico"?"servico":undefined,mo_id:i.mo_id,produto_id:i.produto_id,codigo:i.codigo,descricao:i.descricao,unidade:i.unidade,qtd:i.qtd,preco:i.preco,desc:i.desc||0,obs:i.obs||"",lt_nome:i.lt_nome}}),
+    autorizacao:D.autorizacao&&D.autorizacao.por?D.autorizacao:null,
     desconto:D.desconto||0,validade:D.validade||"",pagamento:D.pagamento||"",prazo:D.prazo||"",garantia:D.garantia||"",obs:D.obs||"",ref:D.ref||"",ocultarItens:!!D.ocultarItens,ocultarTotal:!!D.ocultarTotal,
     mensal:D.mensal&&D.mensal.ativo?{ativo:true,itens:(D.mensal.itens||[]).map(function(i){return{servico_id:i.servico_id,codigo:i.codigo,descricao:i.descricao,unidade:i.unidade,qtd:i.qtd,preco:i.preco,desc:i.desc||0,obs:i.obs||""}}),prazo_meses:D.mensal.prazo_meses||"",inicio:D.mensal.inicio||""}:novoM(),base:""}}
 function snap(E){return JSON.stringify({c:E.cli&&E.cli.id,i:E.itens.map(function(i){return[i.tipo==="servico"?"s"+i.mo_id:i.produto_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),d:r2(num(E.desconto)),v:E.validade,p:E.pagamento,z:E.prazo,g:E.garantia,o:E.obs,r:E.ref,oi:E.ocultarItens,ot:E.ocultarTotal,m:E.mensal.ativo?[E.mensal.itens.map(function(i){return[i.servico_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),String(E.mensal.prazo_meses||""),E.mensal.inicio]:0})}
@@ -161,7 +180,7 @@ function travado(){return!!(S.E&&S.E.os_num)}
 function desenharEditor(){
   var E=S.E,tv=travado(),st=ST[E.status]||ST.salvo,c=E.cli;
   var h='<div class="ed-top"><div class="ed-tit"><button class="voltar" type="button" id="ed-voltar">← Orçamentos</button><span class="ed-num">'+(E.num?esc(E.num):"Novo orçamento")+"</span>"+(E.num?'<span class="pill '+st[1]+'">'+st[0]+"</span>":"")+(E.lt?'<span class="lt-bdg">L.T. '+esc(E.lt.num)+"</span>":"")+(E.op?'<span class="op-bdg">Oportunidade '+esc(E.op.cod||"")+"</span>":"")+(E.os_num?'<span class="os-bdg">Enviado ao pedido · OS '+esc(E.os_num)+"</span>":"")+'</div><span class="dica">'+(E.num?"Criado por "+esc(E.criado_nome||"")+" em "+dataHora(E.criado_em):"O número ORC-AAAA-00000 é gerado ao salvar.")+"</span></div>";
-  if(tv)h+='<div class="aviso ok">Este orçamento já foi enviado ao pedido (OS '+esc(E.os_num)+') e não pode mais ser alterado. Para fazer outra versão, use <b>Duplicar</b>.</div>';
+  if(tv)h+='<div class="aviso ok">Este orçamento já foi enviado ao pedido (OS '+esc(E.os_num)+')'+(E.autorizacao?' · autorizado por <b>'+esc(E.autorizacao.por)+'</b>':'')+(E.autorizacao&&E.autorizacao.doc?' · <a href="'+esc(E.autorizacao.doc.url)+'" target="_blank" rel="noopener">ver documento</a>':'')+' e não pode mais ser alterado. Para fazer outra versão, use <b>Duplicar</b>.</div>';
   if(E.op&&!tv)h+='<div class="aviso azul" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between"><span>Este orçamento é da oportunidade <b>'+esc(E.op.cod||"")+'</b> do CRM. Ao salvar, o número e os valores vão para a oportunidade. A OS de instalação é aberta quando a oportunidade for finalizada como <b>Fechado</b>.</span><button class="mini" type="button" id="bt-op">Abrir oportunidade</button></div>';
   if(E.lt&&E.lt.os_num)h+='<div class="aviso">Levantamento técnico <b>L.T. '+esc(E.lt.num)+"</b> · OS "+esc(E.lt.os_num)+" · técnico "+esc(E.lt.tecnico||"")+(E.lt.data?" · visita em "+dataBR(E.lt.data):"")+(E.lt.obs?'<div style="margin-top:6px"><b>Observação do técnico:</b> '+esc(E.lt.obs)+"</div>":"")+'<div class="sub" style="margin-top:6px">As linhas em amarelo ainda não têm produto do cadastro: escolha o produto em cada uma (obrigatório para salvar). O sistema guarda a escolha e reconhece sozinho na próxima vez.</div></div>';
   var dis=tv?" disabled":"",dis0=dis;

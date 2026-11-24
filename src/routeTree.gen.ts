@@ -29,7 +29,9 @@ import { Route as UsuariosRouteImport } from './routes/usuarios'
 import { Route as VencimentosRouteImport } from './routes/vencimentos'
 import { Route as VoipRouteImport } from './routes/voip'
 import { Route as AssistenciaAgendaRouteImport } from './routes/assistencia.agenda'
+import { Route as AssistenciaChecklistsRouteImport } from './routes/assistencia.checklists'
 import { Route as AssistenciaEquipesRouteImport } from './routes/assistencia.equipes'
+import { Route as AssistenciaHistoricoRouteImport } from './routes/assistencia.historico'
 import { Route as AssistenciaOsRouteImport } from './routes/assistencia.os'
 import { Route as AssistenciaRelatoriosRouteImport } from './routes/assistencia.relatorios'
 import { Route as CadastrosMaoobraRouteImport } from './routes/cadastros.maoobra'
@@ -180,9 +182,19 @@ const AssistenciaAgendaRoute = AssistenciaAgendaRouteImport.update({
   path: '/assistencia/agenda',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AssistenciaChecklistsRoute = AssistenciaChecklistsRouteImport.update({
+  id: '/assistencia/checklists',
+  path: '/assistencia/checklists',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AssistenciaEquipesRoute = AssistenciaEquipesRouteImport.update({
   id: '/assistencia/equipes',
   path: '/assistencia/equipes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AssistenciaHistoricoRoute = AssistenciaHistoricoRouteImport.update({
+  id: '/assistencia/historico',
+  path: '/assistencia/historico',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AssistenciaOsRoute = AssistenciaOsRouteImport.update({
@@ -459,7 +471,9 @@ export interface FileRoutesByFullPath {
   '/vencimentos': typeof VencimentosRoute
   '/voip': typeof VoipRoute
   '/assistencia/agenda': typeof AssistenciaAgendaRoute
+  '/assistencia/checklists': typeof AssistenciaChecklistsRoute
   '/assistencia/equipes': typeof AssistenciaEquipesRoute
+  '/assistencia/historico': typeof AssistenciaHistoricoRoute
   '/assistencia/os': typeof AssistenciaOsRoute
   '/assistencia/relatorios': typeof AssistenciaRelatoriosRoute
   '/cadastros/maoobra': typeof CadastrosMaoobraRoute
@@ -531,7 +545,9 @@ export interface FileRoutesByTo {
   '/vencimentos': typeof VencimentosRoute
   '/voip': typeof VoipRoute
   '/assistencia/agenda': typeof AssistenciaAgendaRoute
+  '/assistencia/checklists': typeof AssistenciaChecklistsRoute
   '/assistencia/equipes': typeof AssistenciaEquipesRoute
+  '/assistencia/historico': typeof AssistenciaHistoricoRoute
   '/assistencia/os': typeof AssistenciaOsRoute
   '/assistencia/relatorios': typeof AssistenciaRelatoriosRoute
   '/cadastros/maoobra': typeof CadastrosMaoobraRoute
@@ -604,7 +620,9 @@ export interface FileRoutesById {
   '/vencimentos': typeof VencimentosRoute
   '/voip': typeof VoipRoute
   '/assistencia/agenda': typeof AssistenciaAgendaRoute
+  '/assistencia/checklists': typeof AssistenciaChecklistsRoute
   '/assistencia/equipes': typeof AssistenciaEquipesRoute
+  '/assistencia/historico': typeof AssistenciaHistoricoRoute
   '/assistencia/os': typeof AssistenciaOsRoute
   '/assistencia/relatorios': typeof AssistenciaRelatoriosRoute
   '/cadastros/maoobra': typeof CadastrosMaoobraRoute
@@ -678,7 +696,9 @@ export interface FileRouteTypes {
     | '/vencimentos'
     | '/voip'
     | '/assistencia/agenda'
+    | '/assistencia/checklists'
     | '/assistencia/equipes'
+    | '/assistencia/historico'
     | '/assistencia/os'
     | '/assistencia/relatorios'
     | '/cadastros/maoobra'
@@ -750,7 +770,9 @@ export interface FileRouteTypes {
     | '/vencimentos'
     | '/voip'
     | '/assistencia/agenda'
+    | '/assistencia/checklists'
     | '/assistencia/equipes'
+    | '/assistencia/historico'
     | '/assistencia/os'
     | '/assistencia/relatorios'
     | '/cadastros/maoobra'
@@ -822,7 +844,9 @@ export interface FileRouteTypes {
     | '/vencimentos'
     | '/voip'
     | '/assistencia/agenda'
+    | '/assistencia/checklists'
     | '/assistencia/equipes'
+    | '/assistencia/historico'
     | '/assistencia/os'
     | '/assistencia/relatorios'
     | '/cadastros/maoobra'
@@ -895,7 +919,9 @@ export interface RootRouteChildren {
   VencimentosRoute: typeof VencimentosRoute
   VoipRoute: typeof VoipRoute
   AssistenciaAgendaRoute: typeof AssistenciaAgendaRoute
+  AssistenciaChecklistsRoute: typeof AssistenciaChecklistsRoute
   AssistenciaEquipesRoute: typeof AssistenciaEquipesRoute
+  AssistenciaHistoricoRoute: typeof AssistenciaHistoricoRoute
   AssistenciaOsRoute: typeof AssistenciaOsRoute
   AssistenciaRelatoriosRoute: typeof AssistenciaRelatoriosRoute
   CadastrosMaoobraRoute: typeof CadastrosMaoobraRoute
@@ -1089,11 +1115,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AssistenciaAgendaRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/assistencia/checklists': {
+      id: '/assistencia/checklists'
+      path: '/assistencia/checklists'
+      fullPath: '/assistencia/checklists'
+      preLoaderRoute: typeof AssistenciaChecklistsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/assistencia/equipes': {
       id: '/assistencia/equipes'
       path: '/assistencia/equipes'
       fullPath: '/assistencia/equipes'
       preLoaderRoute: typeof AssistenciaEquipesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/assistencia/historico': {
+      id: '/assistencia/historico'
+      path: '/assistencia/historico'
+      fullPath: '/assistencia/historico'
+      preLoaderRoute: typeof AssistenciaHistoricoRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/assistencia/os': {
@@ -1463,7 +1503,9 @@ const rootRouteChildren: RootRouteChildren = {
   VencimentosRoute: VencimentosRoute,
   VoipRoute: VoipRoute,
   AssistenciaAgendaRoute: AssistenciaAgendaRoute,
+  AssistenciaChecklistsRoute: AssistenciaChecklistsRoute,
   AssistenciaEquipesRoute: AssistenciaEquipesRoute,
+  AssistenciaHistoricoRoute: AssistenciaHistoricoRoute,
   AssistenciaOsRoute: AssistenciaOsRoute,
   AssistenciaRelatoriosRoute: AssistenciaRelatoriosRoute,
   CadastrosMaoobraRoute: CadastrosMaoobraRoute,

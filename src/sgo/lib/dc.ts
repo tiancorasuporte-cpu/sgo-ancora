@@ -266,6 +266,8 @@ export function useTelaDc(montar: Montar, eu: SgoEu | null): Estado {
         if (vivo) render();
       });
     };
+    const pintar = () => pedirRender();
+    window.addEventListener("sgo:pintar", pintar);
     const aviso = (k: string, m: string) => ref.current.n?.showToast?.(k, m);
 
     function mesclar(docs: Obj[]) {
@@ -414,6 +416,7 @@ export function useTelaDc(montar: Montar, eu: SgoEu | null): Estado {
       vivo = false;
       if (timer) clearInterval(timer);
       document.removeEventListener("visibilitychange", sincronizar);
+      window.removeEventListener("sgo:pintar", pintar);
       ref.current.n?.componentWillUnmount?.();
       ref.current = {};
     };

@@ -510,6 +510,24 @@ async function salvarDoc(env, request, col, id, email) {
     const doc = await env.DB.prepare(`SELECT id, versao, dados FROM ${c.tabela} WHERE id = ?`).bind(id).first();
     return json({ erro: "conflito", atual: { id: doc.id, versao: doc.versao, dados: JSON.parse(doc.dados) } }, 409);
   }
+  let avisoPush = "";
+  if (col === "os" && atual) {
+    try {
+      const ant = await env.DB.prepare("SELECT dados FROM ordens_servico WHERE id = ?").bind(id).first();
+      const velho = ant && ant.dados ? JSON.parse(ant.dados) : {};
+      const novoId = dados.envio && dados.envio.tecnicoId;
+      const velhoId = velho.envio && velho.envio.tecnicoId;
+      if (novoId && String(novoId) !== String(velhoId || "")) avisoPush = String(novoId);
+    } catch { avisoPush = ""; }
+  }
+  if (col === "os" && Number(dados.stage) >= 6) {
+    const prev = await env.DB.prepare("SELECT stage FROM ordens_servico WHERE id = ?").bind(id).first();
+    if (prev && Number(prev.stage) < 6) {
+      if (dados.pausa) return json({ erro: "A OS está pausada. Retome antes de concluir." }, 409);
+      const abertos = checksAbertos(dados);
+      if (abertos.length) return json({ erro: "Preencha o checklist antes de finalizar: " + abertos.join(", ") }, 409);
+    }
+  }
   dados.num = atual.num;
   const sets = Object.keys(extra).map((k) => `${k} = ?`).concat(["dados = ?", "versao = versao + 1", "atualizado_em = ?", "atualizado_por = ?"]);
   const r = await env.DB.batch([
@@ -517,10 +535,98 @@ async function salvarDoc(env, request, col, id, email) {
     env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, email, col, id, dados.num, acao)
   ]);
   if (!r[0].meta.changes) return json({ erro: "conflito" }, 409);
-  if (col === "os") { try { await crmDaOS(env, dados, email); } catch (e) {} try { await cmpSyncDaOS(env, dados, email); } catch (e) {} try { await estReconciliarOS(env, dados, email); } catch (e) {} }
+  if (col === "os") { try { await crmDaOS(env, dados, email); } catch (e) {} try { await cmpSyncDaOS(env, dados, email); } catch (e) {} try { await estReconciliarOS(env, dados, email); } catch (e) {} if (avisoPush) { try { await avisarTecnicoPush(env, avisoPush, dados); } catch (e) {} } }
   return json({ id, versao: atual.versao + 1, dados });
 }
+function diaOs(ms) {
+  const n = Number(ms);
+  if (!n) return "";
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (x) => (x < 10 ? "0" : "") + x;
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function resumoHistorico(d, row) {
+  return {
+    id: row.id,
+    num: d.num || row.num || "",
+    cliente: txt(d.cliente, 160),
+    cidade: txt(d.cidade, 80),
+    servico: txt(d.servico, 200),
+    tecnico: txt(d.tecnico, 120),
+    tipo: txt(d.tipo, 40),
+    sub: txt(d.sub, 80),
+    agenda: txt(d.agenda, 80),
+    quando: Number(row.atualizado_em) || 0
+  };
+}
+function detalheHistorico(d, row) {
+  const rel = d.rel && typeof d.rel === "object" ? d.rel : {};
+  const fotos = (Array.isArray(rel.fotos) ? rel.fotos : []).filter((f) => typeof f === "string" && (f.startsWith("/api/fotos/") || f.startsWith("data:image"))).slice(0, 12);
+  const assinatura = typeof rel.assinatura === "string" && (rel.assinatura.startsWith("/api/fotos/") || rel.assinatura.startsWith("data:image")) ? rel.assinatura : "";
+  return Object.assign(resumoHistorico(d, row), {
+    obs: txt(d.obs, 2000),
+    subproblema: d.subproblema && d.subproblema.nome ? { nome: txt(d.subproblema.nome, 120), problema: txt(d.subproblema.problema, 120) } : null,
+    rel: { texto: txt(rel.texto, 4000), fotos, assinatura, assinNome: txt(rel.assinNome, 120), por: txt(rel.por, 120), quando: txt(rel.quando, 40) },
+    itens: (Array.isArray(d.itens) ? d.itens : []).slice(0, 80).map((i) => ({ qtd: txt(i.qtd, 20), nome: txt(i.nome, 160), st: txt(i.st, 20) })),
+    checks: (Array.isArray(d.checks) ? d.checks : []).slice(0, 20).map((ch) => ({
+      nome: txt(ch.nome, 120),
+      status: ch.status === "feito" ? "feito" : "pendente",
+      obs: txt(ch.obs, 2000),
+      itens: (Array.isArray(ch.itens) ? ch.itens : []).slice(0, 40).map((it) => ({
+        rotulo: txt(it.rotulo, 200),
+        resultado: it.resultado === "ok" || it.resultado === "nok" ? it.resultado : "",
+        obs: txt(it.obs, 500)
+      }))
+    })),
+    hist: (Array.isArray(d.hist) ? d.hist : []).slice(-40).map((h) => ({ quando: txt(h.quando, 40), quem: txt(h.quem, 80), acao: txt(h.acao, 300) }))
+  });
+}
+async function garantirMenuHistorico(env) {
+  const ja = await env.DB.prepare("SELECT id FROM menu_itens WHERE id = ?").bind("at-hist").first();
+  if (ja) return;
+  const base = await env.DB.prepare("SELECT grupo, ordem, pai FROM menu_itens WHERE id = ?").bind("at-os").first();
+  if (!base) return;
+  await env.DB.prepare("INSERT INTO menu_itens (id, grupo, titulo, ordem, pai, destino, url, ativo) VALUES (?,?,?,?,?,?,?,1)").bind("at-hist", base.grupo, "Histórico de OS", Number(base.ordem || 0) + 2, base.pai || null, "novo", "/assistencia/historico").run();
+  await env.DB.prepare("INSERT INTO usuario_permissoes (usuario_id, item_id) SELECT usuario_id, 'at-hist' FROM usuario_permissoes p WHERE p.item_id = 'at-os' AND NOT EXISTS (SELECT 1 FROM usuario_permissoes x WHERE x.usuario_id = p.usuario_id AND x.item_id = 'at-hist')").run();
+}
+async function historicoOs(env, url) {
+  try { await garantirMenuHistorico(env); } catch { /* o atalho do quadro continua valendo */ }
+  const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+  const de = String(url.searchParams.get("de") || "");
+  const ate = String(url.searchParams.get("ate") || "");
+  const id = String(url.searchParams.get("id") || "");
+  if (id) {
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) return json({ erro: "Identificador inválido" }, 400);
+    const row = await env.DB.prepare("SELECT id, num, stage, dados, atualizado_em FROM ordens_servico WHERE id = ?").bind(id).first();
+    if (!row || Number(row.stage) < 7) return json({ erro: "OS finalizada não encontrada." }, 404);
+    let d = {};
+    try { d = JSON.parse(row.dados || "{}"); } catch { d = {}; }
+    return json({ os: detalheHistorico(d, row) });
+  }
+  const { results } = await env.DB.prepare("SELECT id, num, stage, dados, atualizado_em FROM ordens_servico WHERE stage >= 7 ORDER BY atualizado_em DESC LIMIT 800").all();
+  const itens = [];
+  for (const row of results || []) {
+    let d = {};
+    try { d = JSON.parse(row.dados || "{}"); } catch { continue; }
+    const dia = diaOs(row.atualizado_em);
+    if (de && dia && dia < de) continue;
+    if (ate && dia && dia > ate) continue;
+    const item = resumoHistorico(d, row);
+    if (q) {
+      const blob = [item.num, item.cliente, item.cidade, item.servico, item.tecnico, item.tipo, item.sub].join(" ").toLowerCase();
+      if (!blob.includes(q)) continue;
+    }
+    itens.push(item);
+    if (itens.length >= 100) break;
+  }
+  return json({ itens });
+}
 async function rotaDocs(request, env, url, email) {
+  if (url.pathname === "/api/os/historico" && request.method === "GET") {
+    try { return await historicoOs(env, url); }
+    catch { return json({ erro: "Falha no banco de dados" }, 500); }
+  }
   const m = url.pathname.match(/^\/api\/(os|tickets)(?:\/([^/]+))?$/);
   if (!m) return null;
   const [, col, id] = m;
@@ -530,11 +636,231 @@ async function rotaDocs(request, env, url, email) {
       const agora = Date.now();
       return json({ docs: await listarDocs(env, col, desde ? desde - 2e3 : 0), agora });
     }
+    if (id && request.method === "DELETE" && col === "os") return await excluirOsDoc(env, id, email);
     if (id && request.method === "PUT") return await salvarDoc(env, request, col, id, email);
     return json({ erro: "M\xE9todo n\xE3o permitido" }, 405);
   } catch (e) {
     return json({ erro: "Falha no banco de dados" }, 500);
   }
+}
+
+async function excluirOsDoc(env, id, email) {
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) return json({ erro: "Identificador inválido" }, 400);
+  const row = await env.DB.prepare("SELECT num, stage FROM ordens_servico WHERE id = ?").bind(id).first();
+  if (!row) return json({ erro: "OS não encontrada." }, 404);
+  if (Number(row.stage) >= 7) return json({ erro: "OS finalizada não pode ser excluída." }, 409);
+  const agora = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM ordens_servico WHERE id = ?").bind(id),
+    env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, email, "os", id, row.num, "OS excluída")
+  ]);
+  return json({ ok: true });
+}
+function podeChecklist(u) {
+  return ehAdmin(u) || (u.permissoes || []).includes("at-os") || (u.permissoes || []).includes("at-agenda");
+}
+function idCurto(v, prefixo) {
+  const s = String(v || "");
+  return /^[A-Za-z0-9_-]{2,40}$/.test(s) ? s : (prefixo + Math.random().toString(36).slice(2, 10));
+}
+function instanciaChecklist(cat) {
+  const itens = (Array.isArray(cat.itens) ? cat.itens : []).slice(0, 40).map((it) => ({
+    id: txt(it.id, 40) || ("i" + Math.random().toString(36).slice(2, 8)),
+    rotulo: txt(it.rotulo, 200),
+    obrigatorio: it.obrigatorio !== false,
+    resultado: null,
+    obs: ""
+  })).filter((it) => it.rotulo);
+  const nome = txt(cat.nome, 120);
+  if (!nome || !itens.length) return null;
+  return { id: "ck" + Math.random().toString(36).slice(2, 10), checklistId: String(cat.id), nome, status: "pendente", obs: "", itens };
+}
+async function garantirChecklists(env) {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS sgo_checklists (id TEXT PRIMARY KEY, nome TEXT NOT NULL, ativo INTEGER NOT NULL DEFAULT 1, ordem INTEGER NOT NULL DEFAULT 0, itens TEXT NOT NULL, atualizado_em BIGINT NOT NULL)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS sgo_problemas (id TEXT PRIMARY KEY, nome TEXT NOT NULL, pai_id TEXT, ativo INTEGER NOT NULL DEFAULT 1, ordem INTEGER NOT NULL DEFAULT 0, atualizado_em BIGINT NOT NULL)"
+  ).run();
+  try { await env.DB.prepare("ALTER TABLE sgo_checklists ADD COLUMN IF NOT EXISTS subproblema_ids TEXT").run(); } catch { /* coluna já existe */ }
+  const n = await env.DB.prepare("SELECT COUNT(*)::int AS n FROM sgo_checklists").first();
+  const agora = Date.now();
+  if (!n || Number(n.n) === 0) {
+    const seeds = [
+      { id: "ck-instalacao", nome: "Instalação", ordem: 1, itens: [
+        { id: "i1", rotulo: "Alimentação e fixação conferidas", obrigatorio: true },
+        { id: "i2", rotulo: "Comunicação testada com a central", obrigatorio: true },
+        { id: "i3", rotulo: "Cliente orientado sobre o uso", obrigatorio: true },
+        { id: "i4", rotulo: "Local limpo ao finalizar", obrigatorio: true }
+      ] },
+      { id: "ck-manutencao", nome: "Manutenção", ordem: 2, itens: [
+        { id: "m1", rotulo: "Falha reproduzida ou confirmada com o cliente", obrigatorio: true },
+        { id: "m2", rotulo: "Causa identificada", obrigatorio: true },
+        { id: "m3", rotulo: "Teste final feito com o cliente", obrigatorio: true },
+        { id: "m4", rotulo: "Peça ou equipamento substituído", obrigatorio: false }
+      ] },
+      { id: "ck-visita", nome: "Visita técnica (orçamento)", ordem: 3, itens: [
+        { id: "v1", rotulo: "Local e pontos de instalação vistoriados", obrigatorio: true },
+        { id: "v2", rotulo: "Necessidade do cliente registrada no orçamento", obrigatorio: true },
+        { id: "v3", rotulo: "Cliente ciente do próximo passo", obrigatorio: true }
+      ] }
+    ];
+    for (const s of seeds) {
+      await env.DB.prepare("INSERT INTO sgo_checklists (id, nome, ativo, ordem, itens, subproblema_ids, atualizado_em) VALUES (?,?,1,?,?,?,?)").bind(s.id, s.nome, s.ordem, JSON.stringify(s.itens), "[]", agora).run();
+    }
+  }
+  const np = await env.DB.prepare("SELECT COUNT(*)::int AS n FROM sgo_problemas").first();
+  if (!np || Number(np.n) === 0) {
+    const pais = [
+      { id: "pb-instalacao", nome: "Instalação", ordem: 1 },
+      { id: "pb-manutencao", nome: "Manutenção", ordem: 2 },
+      { id: "pb-visita", nome: "Visita técnica", ordem: 3 }
+    ];
+    for (const p of pais) {
+      await env.DB.prepare("INSERT INTO sgo_problemas (id, nome, pai_id, ativo, ordem, atualizado_em) VALUES (?,?,NULL,1,?,?)").bind(p.id, p.nome, p.ordem, agora).run();
+    }
+    await env.DB.prepare("INSERT INTO sgo_problemas (id, nome, pai_id, ativo, ordem, atualizado_em) VALUES (?,?,?,1,?,?)").bind("sp-cerca", "Manutenção de cerca", "pb-manutencao", 1, agora).run();
+    await env.DB.prepare("UPDATE sgo_checklists SET subproblema_ids = ? WHERE id = ? AND (subproblema_ids IS NULL OR subproblema_ids = '' OR subproblema_ids = '[]')").bind(JSON.stringify(["sp-cerca"]), "ck-manutencao").run();
+  }
+  try {
+    const ja = await env.DB.prepare("SELECT id FROM menu_itens WHERE id = ?").bind("at-check").first();
+    if (!ja) {
+      const base = await env.DB.prepare("SELECT grupo, ordem, pai FROM menu_itens WHERE id = ?").bind("at-os").first();
+      if (base) {
+        await env.DB.prepare("INSERT INTO menu_itens (id, grupo, titulo, ordem, pai, destino, url, ativo) VALUES (?,?,?,?,?,?,?,1)").bind("at-check", base.grupo, "Checklists", Number(base.ordem || 0) + 1, base.pai || null, "novo", "/assistencia/checklists").run();
+        await env.DB.prepare("INSERT INTO usuario_permissoes (usuario_id, item_id) SELECT usuario_id, 'at-check' FROM usuario_permissoes p WHERE p.item_id = 'at-os' AND NOT EXISTS (SELECT 1 FROM usuario_permissoes x WHERE x.usuario_id = p.usuario_id AND x.item_id = 'at-check')").run();
+      }
+    }
+  } catch { /* menu segue pelo atalho da OS se a tabela tiver outro formato */ }
+}
+function modeloChecklist(r) {
+  let itens = [];
+  let subs = [];
+  try { itens = JSON.parse(r.itens); } catch { itens = []; }
+  try { subs = JSON.parse(r.subproblema_ids || "[]"); } catch { subs = []; }
+  return {
+    id: r.id,
+    nome: r.nome,
+    ativo: Number(r.ativo) !== 0,
+    ordem: Number(r.ordem) || 0,
+    subproblemaIds: (Array.isArray(subs) ? subs : []).map((id) => String(id)),
+    itens: (Array.isArray(itens) ? itens : []).map((it) => ({
+      id: String(it.id || ""),
+      rotulo: String(it.rotulo || ""),
+      obrigatorio: it.obrigatorio !== false
+    })).filter((it) => it.rotulo)
+  };
+}
+async function listarModelosChecklist(env, soAtivos) {
+  const { results } = await env.DB.prepare("SELECT id, nome, ativo, ordem, itens, subproblema_ids FROM sgo_checklists ORDER BY ordem, nome").all();
+  return (results || []).map(modeloChecklist).filter((c) => !soAtivos || c.ativo);
+}
+async function listarProblemas(env) {
+  const { results } = await env.DB.prepare("SELECT id, nome, pai_id, ativo, ordem FROM sgo_problemas ORDER BY ordem, nome").all();
+  const pais = (results || []).filter((r) => !r.pai_id).map((r) => ({
+    id: r.id, nome: r.nome, ativo: Number(r.ativo) !== 0, ordem: Number(r.ordem) || 0,
+    subs: (results || []).filter((s) => s.pai_id === r.id).map((s) => ({ id: s.id, nome: s.nome, ativo: Number(s.ativo) !== 0, ordem: Number(s.ordem) || 0 }))
+  }));
+  return pais;
+}
+async function catalogoNoAcao(env, a) {
+  await garantirChecklists(env);
+  if (a.dados.subproblemaId) {
+    const sub = await env.DB.prepare("SELECT s.id, s.nome, s.ativo, p.nome AS problema FROM sgo_problemas s LEFT JOIN sgo_problemas p ON p.id = s.pai_id WHERE s.id = ? AND s.pai_id IS NOT NULL").bind(String(a.dados.subproblemaId)).first();
+    if (!sub || Number(sub.ativo) === 0) return "Subproblema não encontrado.";
+    const cats = await listarModelosChecklist(env, true);
+    a.dados.subproblema = { id: sub.id, nome: sub.nome, problema: sub.problema || "" };
+    a.dados.catalogos = cats.filter((c) => (c.subproblemaIds || []).includes(String(sub.id)));
+    return null;
+  }
+  const row = await env.DB.prepare("SELECT id, nome, ativo, ordem, itens, subproblema_ids FROM sgo_checklists WHERE id = ?").bind(String(a.dados.anexar || "")).first();
+  if (!row || Number(row.ativo) === 0) return "Checklist não encontrado.";
+  a.dados.catalogo = modeloChecklist(row);
+  return null;
+}
+async function rotaChecklists(request, env, u) {
+  if (!podeChecklist(u)) return json({ erro: "Sem permissão para checklists." }, 403);
+  await garantirChecklists(env);
+  if (request.method === "GET") return json({ problemas: await listarProblemas(env), checklists: await listarModelosChecklist(env, false) });
+  if (request.method === "POST") return await salvarChecklistConfig(request, env, u);
+  if (request.method !== "PUT") return json({ erro: "Método não permitido" }, 405);
+  let d;
+  try { d = await lerJson(request, 2e5); } catch { return json({ erro: "Dados inválidos" }, 400); }
+  const lista = Array.isArray(d.checklists) ? d.checklists.slice(0, 40) : null;
+  if (!lista) return json({ erro: "Envie a lista de checklists." }, 400);
+  const agora = Date.now();
+  const prontos = [];
+  for (const c of lista) {
+    const nome = txt(c && c.nome, 120);
+    if (!nome) return json({ erro: "Todo checklist precisa de um nome." }, 400);
+    const itens = (Array.isArray(c.itens) ? c.itens : []).slice(0, 40).map((it) => ({
+      id: /^[A-Za-z0-9_-]{1,40}$/.test(String(it && it.id || "")) ? String(it.id) : ("i" + Math.random().toString(36).slice(2, 10)),
+      rotulo: txt(it && it.rotulo, 200),
+      obrigatorio: !(it && it.obrigatorio === false)
+    })).filter((it) => it.rotulo);
+    if (!itens.length) return json({ erro: "O checklist “" + nome + "” precisa de ao menos um item." }, 400);
+    const id = /^[A-Za-z0-9_-]{2,40}$/.test(String(c.id || "")) ? String(c.id) : ("ck" + Math.random().toString(36).slice(2, 10));
+    const subproblemaIds = (Array.isArray(c.subproblemaIds) ? c.subproblemaIds : []).map((id) => String(id)).filter((id) => /^[A-Za-z0-9_-]{2,40}$/.test(id)).slice(0, 40);
+    prontos.push({ id, nome, ativo: c.ativo === false ? 0 : 1, ordem: prontos.length + 1, itens, subproblemaIds });
+  }
+  const ids = new Set();
+  const ops = [env.DB.prepare("DELETE FROM sgo_checklists")];
+  for (const c of prontos) {
+    if (ids.has(c.id)) return json({ erro: "Há dois checklists com o mesmo identificador." }, 400);
+    ids.add(c.id);
+    ops.push(env.DB.prepare("INSERT INTO sgo_checklists (id, nome, ativo, ordem, itens, subproblema_ids, atualizado_em) VALUES (?,?,?,?,?,?,?)").bind(c.id, c.nome, c.ativo, c.ordem, JSON.stringify(c.itens), JSON.stringify(c.subproblemaIds || []), agora));
+  }
+  ops.push(env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, u.login, "os", "checklists", null, "Modelos de checklist atualizados (" + prontos.length + ")"));
+  await env.DB.batch(ops);
+  return json({ ok: true, problemas: await listarProblemas(env), checklists: await listarModelosChecklist(env, false) });
+}
+async function salvarChecklistConfig(request, env, u) {
+  let d;
+  try { d = await lerJson(request, 2e5); } catch { return json({ erro: "Dados inválidos" }, 400); }
+  const acao = String(d.acao || "");
+  const agora = Date.now();
+  if (acao === "problema" || acao === "subproblema") {
+    const nome = txt(d.nome, 120);
+    if (!nome) return json({ erro: "Informe o nome." }, 400);
+    const id = idCurto(d.id, acao === "problema" ? "pb" : "sp");
+    let pai = null;
+    if (acao === "subproblema") {
+      pai = String(d.problemaId || "");
+      const p = await env.DB.prepare("SELECT id FROM sgo_problemas WHERE id = ? AND pai_id IS NULL").bind(pai).first();
+      if (!p) return json({ erro: "Escolha o problema antes do subproblema." }, 400);
+    }
+    const ja = await env.DB.prepare("SELECT id FROM sgo_problemas WHERE id = ?").bind(id).first();
+    if (ja) await env.DB.prepare("UPDATE sgo_problemas SET nome = ?, pai_id = ?, atualizado_em = ? WHERE id = ?").bind(nome, pai, agora, id).run();
+    else {
+      const n = await env.DB.prepare("SELECT COUNT(*)::int AS n FROM sgo_problemas WHERE pai_id IS NOT DISTINCT FROM ?").bind(pai).first();
+      await env.DB.prepare("INSERT INTO sgo_problemas (id, nome, pai_id, ativo, ordem, atualizado_em) VALUES (?,?,?,1,?,?)").bind(id, nome, pai, Number(n && n.n) + 1, agora).run();
+    }
+  } else if (acao === "ativo") {
+    const id = String(d.id || "");
+    const ativo = d.ativo === false ? 0 : 1;
+    if (d.tipo === "checklist") await env.DB.prepare("UPDATE sgo_checklists SET ativo = ?, atualizado_em = ? WHERE id = ?").bind(ativo, agora, id).run();
+    else await env.DB.prepare("UPDATE sgo_problemas SET ativo = ?, atualizado_em = ? WHERE id = ?").bind(ativo, agora, id).run();
+  } else if (acao === "checklist") {
+    const nome = txt(d.nome, 120);
+    if (!nome) return json({ erro: "Todo checklist precisa de um nome." }, 400);
+    const itens = (Array.isArray(d.itens) ? d.itens : []).slice(0, 40).map((it) => ({
+      id: idCurto(it && it.id, "i").slice(0, 40),
+      rotulo: txt(it && it.rotulo, 200),
+      obrigatorio: !(it && it.obrigatorio === false)
+    })).filter((it) => it.rotulo);
+    if (!itens.length) return json({ erro: "O checklist precisa de ao menos um item." }, 400);
+    const subproblemaIds = (Array.isArray(d.subproblemaIds) ? d.subproblemaIds : []).map((id) => String(id)).filter((id) => /^[A-Za-z0-9_-]{2,40}$/.test(id)).slice(0, 40);
+    if (!subproblemaIds.length) return json({ erro: "Vincule o checklist a um subproblema." }, 400);
+    const id = idCurto(d.id, "ck");
+    const ja = await env.DB.prepare("SELECT id FROM sgo_checklists WHERE id = ?").bind(id).first();
+    if (ja) await env.DB.prepare("UPDATE sgo_checklists SET nome = ?, ativo = ?, itens = ?, subproblema_ids = ?, atualizado_em = ? WHERE id = ?").bind(nome, d.ativo === false ? 0 : 1, JSON.stringify(itens), JSON.stringify(subproblemaIds), agora, id).run();
+    else {
+      const n = await env.DB.prepare("SELECT COUNT(*)::int AS n FROM sgo_checklists").first();
+      await env.DB.prepare("INSERT INTO sgo_checklists (id, nome, ativo, ordem, itens, subproblema_ids, atualizado_em) VALUES (?,?,?,?,?,?,?)").bind(id, nome, 1, Number(n && n.n) + 1, JSON.stringify(itens), JSON.stringify(subproblemaIds), agora).run();
+    }
+  } else return json({ erro: "Ação desconhecida." }, 400);
+  await env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, u.login, "os", "checklists", null, "Configuração de checklist: " + acao).run();
+  return json({ ok: true, problemas: await listarProblemas(env), checklists: await listarModelosChecklist(env, false) });
 }
 
 // public/tecnico/regras.js
@@ -592,7 +918,102 @@ function mover(card, to, quando, quem, acao, extra, opts) {
   upd.hist = hist.concat([h(quando, quem, acao)]);
   return upd;
 }
+function checksAbertos(c) {
+  const lista = c && Array.isArray(c.checks) ? c.checks : [];
+  const nomes = [];
+  for (const ch of lista) {
+    const itens = Array.isArray(ch.itens) ? ch.itens : [];
+    const falta = itens.some((i) => i && i.obrigatorio !== false && i.resultado !== "ok" && i.resultado !== "nok");
+    const semObs = !String(ch.obs || "").trim();
+    if (falta || semObs) nomes.push(String(ch.nome || "checklist") + (semObs ? " (observação)" : ""));
+  }
+  return nomes;
+}
 var ACOES = {
+  pausar(c, a, u, q) {
+    if (c.stage !== 5 || c.tecnicoId !== u.id) return { erro: "A OS não está em execução com você." };
+    if (c.co) return { erro: "O check-out desta OS já foi feito." };
+    if (c.pausa) return { erro: "Esta OS já está pausada." };
+    const motivo = txt(a.dados && a.dados.motivo, 300);
+    if (motivo.length < 3) return { erro: "Informe o motivo da pausa." };
+    const quem = c.tecnico || u.nome || "Técnico";
+    return { card: Object.assign({}, c, { pausa: { em: Date.now(), motivo, por: quem }, hist: (c.hist || []).concat([h(q, quem, "OS pausada · " + motivo)]) }) };
+  },
+  retomar(c, a, u, q) {
+    if (c.stage !== 5 || c.tecnicoId !== u.id) return { erro: "A OS não está em execução com você." };
+    if (!c.pausa) return { erro: "Esta OS não está pausada." };
+    const quem = c.tecnico || u.nome || "Técnico";
+    const motivo = c.pausa.motivo ? " · " + c.pausa.motivo : "";
+    return { card: Object.assign({}, c, { pausa: null, hist: (c.hist || []).concat([h(q, quem, "OS retomada" + motivo)]) }) };
+  },
+  excluir() {
+    return { erro: "Só a Assistência técnica pode excluir uma OS." };
+  },
+  checklist(c, a, u, q) {
+    const dono = c.tecnicoId === u.id || (c.envio && c.envio.tecnicoId === u.id);
+    if (!dono) return { erro: "Esta OS não é sua." };
+    if (Number(c.stage) >= 7) return { erro: "OS finalizada." };
+    const quem = c.tecnico || u.nome || "Técnico";
+    if (a.dados && a.dados.subproblema) {
+      const cats = Array.isArray(a.dados.catalogos) ? a.dados.catalogos : [];
+      const usar = a.dados.todos || cats.length <= 1 ? cats : [];
+      let checks = Array.isArray(c.checks) ? c.checks.slice() : [];
+      const hist = (c.hist || []).slice();
+      const sub = a.dados.subproblema;
+      hist.push(h(q, quem, "Subproblema: " + (sub.problema ? sub.problema + " · " : "") + (sub.nome || "")));
+      for (const cat of usar) {
+        if (!cat || checks.some((ch) => ch.checklistId === cat.id)) continue;
+        const inst = instanciaChecklist(cat);
+        if (!inst) continue;
+        checks = checks.concat([inst]);
+        hist.push(h(q, quem, "Checklist vinculado: " + inst.nome));
+      }
+      return { card: Object.assign({}, c, { subproblema: { id: String(sub.id || ""), nome: txt(sub.nome, 120), problema: txt(sub.problema, 120) }, checks, hist }) };
+    }
+    if (a.dados && a.dados.catalogo) {
+      const cat = a.dados.catalogo;
+      if ((c.checks || []).some((ch) => ch.checklistId === cat.id)) return { erro: "Esse checklist já está na OS." };
+      const inst = {
+        id: "ck" + Math.random().toString(36).slice(2, 10),
+        checklistId: String(cat.id),
+        nome: txt(cat.nome, 120),
+        status: "pendente",
+        obs: "",
+        itens: (Array.isArray(cat.itens) ? cat.itens : []).slice(0, 40).map((it) => ({
+          id: txt(it.id, 40) || ("i" + Math.random().toString(36).slice(2, 8)),
+          rotulo: txt(it.rotulo, 200),
+          obrigatorio: it.obrigatorio !== false,
+          resultado: null,
+          obs: ""
+        })).filter((it) => it.rotulo)
+      };
+      if (!inst.nome || !inst.itens.length) return { erro: "Checklist sem itens." };
+      return { card: Object.assign({}, c, { checks: (c.checks || []).concat([inst]), hist: (c.hist || []).concat([h(q, quem, "Checklist vinculado: " + inst.nome)]) }) };
+    }
+    const ckId = String(a.dados && a.dados.checkId || "");
+    const respostas = Array.isArray(a.dados && a.dados.itens) ? a.dados.itens : [];
+    if (!(c.checks || []).some((ch) => ch.id === ckId)) return { erro: "Checklist não encontrado nesta OS." };
+    let nome = "", virou = false;
+    const checks = (c.checks || []).map((ch) => {
+      if (ch.id !== ckId) return ch;
+      nome = ch.nome || "";
+      const byId = new Map(respostas.map((r) => [String(r.id), r]));
+      const itens = (ch.itens || []).map((it) => {
+        const r = byId.get(String(it.id));
+        if (!r) return it;
+        const resultado = r.resultado === "ok" || r.resultado === "nok" ? r.resultado : it.resultado || null;
+        const obs = r.obs != null ? txt(r.obs, 500) : (it.obs || "");
+        return Object.assign({}, it, { resultado, obs });
+      });
+      const obsCheck = a.dados.obs != null ? txt(a.dados.obs, 2000) : (ch.obs || "");
+      const itensOk = itens.length > 0 && itens.every((it) => it.obrigatorio === false || it.resultado === "ok" || it.resultado === "nok");
+      const feito = itensOk && !!String(obsCheck || "").trim();
+      virou = feito && ch.status !== "feito";
+      return Object.assign({}, ch, { itens, obs: obsCheck, status: feito ? "feito" : "pendente", por: feito ? quem : null, em: feito ? Date.now() : null });
+    });
+    const hist = (c.hist || []).concat(virou ? [h(q, quem, "Checklist preenchido: " + nome)] : []);
+    return { card: Object.assign({}, c, { checks, hist }) };
+  },
   ok(c, a, u, q) {
     if (c.stage !== 4 || !c.envio || c.envio.tecnicoId !== u.id) return { erro: "A OS n\xE3o est\xE1 mais aguardando o seu OK." };
     if (c.envio.div) return { erro: "Voc\xEA reportou diverg\xEAncia nesta OS; aguarde a Assist\xEAncia tratar." };
@@ -618,6 +1039,7 @@ var ACOES = {
   checkin(c, a, u, q, t) {
     if (c.stage !== 5 || c.tecnicoId !== u.id) return { erro: "A OS n\xE3o est\xE1 em execu\xE7\xE3o com voc\xEA." };
     if (c.ci) return { erro: "O check-in desta OS j\xE1 foi feito." };
+    if (c.pausa) return { erro: "A OS está pausada. Retome antes do check-in." };
     const gps = limpaGps(a.dados && a.dados.gps);
     return { card: Object.assign({}, c, { ci: t, ciGps: gps || null, hist: (c.hist || []).concat([h(q, c.tecnico || "T\xE9cnico", "Check-in no local da OS" + (gps ? " (com localiza\xE7\xE3o)" : ""))]) }) };
   },
@@ -625,6 +1047,9 @@ var ACOES = {
     if (c.stage !== 5 || c.tecnicoId !== u.id) return { erro: "A OS n\xE3o est\xE1 em execu\xE7\xE3o com voc\xEA." };
     if (!c.ci) return { erro: "Fa\xE7a o check-in antes do check-out." };
     if (c.co) return { erro: "O check-out desta OS j\xE1 foi feito." };
+    if (c.pausa) return { erro: "A OS está pausada. Retome antes do check-out." };
+    const abertosCk = checksAbertos(c);
+    if (abertosCk.length) return { erro: "Preencha o checklist antes de finalizar: " + abertosCk.join(", ") };
     const texto = String(a.dados && a.dados.texto || "").trim().slice(0, 4e3);
     if (!texto) return { erro: "Descreva a resolu\xE7\xE3o antes do check-out." };
     const fotos = (Array.isArray(a.dados.fotos) ? a.dados.fotos : []).filter((f) => /^[a-z0-9-]{8,40}$/i.test(f)).slice(0, 20).map((f) => "/api/fotos/" + c.id + "/" + f + ".jpg");
@@ -666,6 +1091,9 @@ var ACOES = {
   },
   aceitar(c, a, u, q) {
     if (c.stage !== 5 || c.tecnicoId !== u.id || !c.confPend) return { erro: "N\xE3o h\xE1 confer\xEAncia aguardando o seu aceite." };
+    if (c.pausa) return { erro: "A OS está pausada. Retome antes de aceitar a conferência." };
+    const abertosAce = checksAbertos(c);
+    if (abertosAce.length) return { erro: "Preencha o checklist antes de finalizar: " + abertosAce.join(", ") };
     const p = c.confPend, eq = c.tecnico || "T\xE9cnico";
     const base = Object.assign({}, c, {
       itens: p.itens,
@@ -714,7 +1142,16 @@ async function aplicar(env, u, a) {
   const q = rotulo(t);
   let status = "erro", motivo = null, versao = null, dados = null;
   if (!fn) motivo = "A\xE7\xE3o desconhecida.";
-  for (let tentativa = 0; fn && tentativa < 3; tentativa++) {
+  let pular = false;
+  if (fn && a.tipo === "checklist" && a.dados && (a.dados.anexar || a.dados.subproblemaId)) {
+    const erroCat = await catalogoNoAcao(env, a);
+    if (erroCat) { status = "recusada"; motivo = erroCat; pular = true; }
+  }
+  if (fn && a.tipo === "extra" && !(a.dados && a.dados.origem === "empresa")) {
+    const erroEst = await conferirUsoEstoque(env, u, a);
+    if (erroEst) { status = "recusada"; motivo = erroEst; pular = true; }
+  }
+  for (let tentativa = 0; fn && !pular && tentativa < 3; tentativa++) {
     const doc = await env.DB.prepare("SELECT versao, num, dados FROM ordens_servico WHERE id = ?").bind(String(a.os || "")).first();
     if (!doc) {
       motivo = "OS n\xE3o encontrada.";
@@ -726,6 +1163,20 @@ async function aplicar(env, u, a) {
       motivo = r.erro;
       break;
     }
+    if (r.apagar) {
+      const res = await env.DB.batch([
+        env.DB.prepare("DELETE FROM ordens_servico WHERE id = ? AND versao = ?").bind(String(a.os), doc.versao),
+        env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, u.login, "os", a.os, doc.num, "App: OS excluída")
+      ]);
+      if (res[0].meta.changes) {
+        status = "ok";
+        versao = doc.versao + 1;
+        dados = null;
+        break;
+      }
+      continue;
+    }
+    if (!r.card) { motivo = "Ação inválida."; break; }
     const card = r.card;
     const ultimo = card.hist && card.hist.length ? card.hist[card.hist.length - 1].acao : null;
     const res = await env.DB.batch([
@@ -790,15 +1241,45 @@ async function viaCriarLink(request, env, url, u) {
   }
   return json({ url: url.origin + "/v/" + r.token });
 }
-function viaDados(c, base) {
+async function viaPrecosOs(env, c) {
+  if (Array.isArray(c.produtosOrc) && c.produtosOrc.length) return { itens: c.produtosOrc, desconto: +c.descontoProd || 0 };
+  const id = c.orcamento && c.orcamento.id;
+  const num = (c.orcamento && c.orcamento.num) || c.orc || "";
+  if (!id && !num) return null;
+  const row = await env.DB.prepare("SELECT dados FROM orcamentos WHERE excluido = 0 AND (id = ? OR num = ?)").bind(id || "", String(num).toUpperCase()).first();
+  if (!row) return null;
+  try { return orcProdutos(JSON.parse(row.dados || "{}")); } catch { return null; }
+}
+function viaDados(c, base, precos) {
   const f = c.fech || {}, rel = c.rel || {};
   const num = (x) => (typeof x === "number" && isFinite(x) ? x : null);
+  const lista = (precos && precos.itens) || (Array.isArray(c.produtosOrc) ? c.produtosOrc : []);
+  const mapa = {};
+  for (const p of lista) if (p && p.nome) mapa[cadNorm(p.nome)] = p;
+  const precoDe = (nome) => {
+    const k = cadNorm(nome);
+    if (!k) return null;
+    if (mapa[k]) return mapa[k];
+    const keys = Object.keys(mapa);
+    let hit = null;
+    for (const key of keys) {
+      if (key === k || key.startsWith(k + " ") || k.startsWith(key + " ")) { if (hit) return null; hit = mapa[key]; }
+    }
+    return hit;
+  };
   return {
     num: c.num, cliente: c.cliente || "", cidade: c.cidade || "", tipo: c.tipo || "", sub: c.sub || "", servico: c.servico || "",
     orc: c.orc || "", orcamento: c.orcamento && c.orcamento.num ? { num: c.orcamento.num } : null,
+    descontoProd: precos ? +precos.desconto || 0 : +c.descontoProd || 0,
     tecnico: c.tecnico || "", auxiliar: c.auxiliar || "", finDate: c.finDate || "", ci: num(c.ci), co: num(c.co),
     visitas: (Array.isArray(c.visitas) ? c.visitas : []).map((v) => ({ ci: num(v && v.ci), co: num(v && v.co) })),
-    itens: (Array.isArray(c.itens) ? c.itens : []).map((t) => ({ nome: t.nome, qtd: t.qtd, st: t.st, usado: t.usado })),
+    itens: (Array.isArray(c.itens) ? c.itens : []).map((t) => {
+      const qRaw = t.st === "aplicado" && t.usado != null && t.usado !== "" ? t.usado : t.qtd;
+      const qn = parseFloat(String(qRaw == null ? "" : qRaw).replace(",", ".").replace(/x$/i, "")) || 0;
+      const p = precoDe(t.nome);
+      const unit = p && p.preco != null && isFinite(+p.preco) ? Math.round(+p.preco * 100) / 100 : null;
+      return { nome: t.nome, qtd: t.qtd, st: t.st, usado: t.usado, preco: unit, total: unit != null ? Math.round(qn * unit * 100) / 100 : null };
+    }),
     fech: c.fech ? {
       minutos: num(f.minutos), quando: num(f.quando), pessoas: Array.isArray(f.pessoas) ? f.pessoas : [], auxiliar: f.auxiliar || "",
       visitas: (Array.isArray(f.visitas) ? f.visitas : []).map((v) => ({ ci: num(v.ci), co: num(v.co), min: num(v.min) })),
@@ -822,7 +1303,7 @@ async function viaPublica(env, m) {
   }
   if (!m[2]) return new Response(VIA_PAGINA, { headers: Object.assign({ "content-type": "text/html; charset=utf-8" }, VIA_HDR) });
   const c = JSON.parse(l.dados || "{}"), base = "/v/" + m[1];
-  if (m[2] === "dados") return json(viaDados(c, base), 200, VIA_HDR);
+  if (m[2] === "dados") return json(viaDados(c, base, await viaPrecosOs(env, c)), 200, VIA_HDR);
   const rel = c.rel || {};
   const src = m[2] === "a" ? rel.assinatura : (Array.isArray(rel.fotos) ? rel.fotos[Number(m[3])] : null);
   const fm = String(src || "").match(FOTO);
@@ -1218,7 +1699,25 @@ async function estoqueTecnico(request, env, url, u) {
   }
   return json({ erro: "Não encontrado" }, 404);
 }
-var VIA_PAGINA = "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex, nofollow\"><meta name=\"theme-color\" content=\"#141414\"><link rel=\"icon\" href=\"/img/logo-ancora.png\"><title>Via do cliente · Âncora Segurança</title></head><body style=\"margin:0;font:15px system-ui,sans-serif\"><p id=\"vc-car\" style=\"padding:28px\">Carregando a via do cliente…</p><script>/* Via do cliente da OS · montagem, PDF e página pública · v25\n   Usado na tela de OS (botões da via) e na página pública /v/<link> que o cliente abre.\n   Mostra só o que o cliente precisa: atendimento, tempo no local, produtos, valor fechado,\n   resolução, fotos e assinatura. Não mostra histórico interno nem motivo de ajuste. */\n(function () {\n  \"use strict\";\n  var H2P = \"https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js\";\n  function esc(s) { return String(s == null ? \"\" : s).replace(/[&<>\"']/g, function (c) { return { \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"&#39;\" }[c]; }); }\n  function brl(v) { return (Number(v) || 0).toLocaleString(\"pt-BR\", { style: \"currency\", currency: \"BRL\" }); }\n  function p2(n) { return (n < 10 ? \"0\" : \"\") + n; }\n  var TZ = { timeZone: \"America/Sao_Paulo\" };\n  function data(ms) { try { return new Date(ms).toLocaleDateString(\"pt-BR\", TZ); } catch (e) { var d = new Date(ms); return p2(d.getDate()) + \"/\" + p2(d.getMonth() + 1) + \"/\" + d.getFullYear(); } }\n  function hora(ms) { try { return new Date(ms).toLocaleTimeString(\"pt-BR\", { timeZone: \"America/Sao_Paulo\", hour: \"2-digit\", minute: \"2-digit\" }); } catch (e) { var d = new Date(ms); return p2(d.getHours()) + \":\" + p2(d.getMinutes()); } }\n  function dataIso(s) { var m = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(s || \"\"); return m ? m[3] + \"/\" + m[2] + \"/\" + m[1] : \"\"; }\n  function durTxt(min) { min = Math.max(0, Math.round(min || 0)); var h = Math.floor(min / 60), m = min % 60; return h ? h + \" h\" + (m ? \" \" + p2(m) + \" min\" : \"\") : m + \" min\"; }\n  function qtdTxt(q) { var s = String(q == null ? \"\" : q).trim(); return s.replace(/x$/i, \"\"); }\n  function tipoTxt(c) {\n    if (c.tipo === \"manut\") return \"Manutenção\" + (c.sub ? \" · \" + c.sub : \"\");\n    if (c.tipo === \"monit\") return \"Monitoramento\" + (c.sub ? \" · \" + c.sub : \"\");\n    if (c.tipo === \"visita\") return \"Visita técnica / orçamento\";\n    return \"Instalação\";\n  }\n\n  function visitas(c) {\n    var v = (c.fech && c.fech.visitas && c.fech.visitas.length ? c.fech.visitas : (c.visitas || [])).filter(function (x) { return x && x.ci; });\n    if (!v.length && c.ci) v = [{ ci: c.ci, co: c.co }];\n    return v.map(function (x) { return { ci: x.ci, co: x.co, min: x.min != null ? x.min : (x.co ? (x.co - x.ci) / 6e4 : 0) }; });\n  }\n  function produtos(c) {\n    return (c.itens || []).map(function (t) {\n      var q = t.st === \"aplicado\" && t.usado != null && t.usado !== \"\" ? t.usado : t.qtd;\n      return { qtd: qtdTxt(q), nome: t.nome };\n    }).filter(function (t) { return t.nome && String(t.qtd) !== \"0\"; });\n  }\n\n  function partes(c, opts) {\n    opts = opts || {};\n    var f = c.fech || {}, rel = c.rel || {}, V = visitas(c), P = produtos(c);\n    var minutos = f.minutos != null ? f.minutos : V.reduce(function (s, v) { return s + (v.min || 0); }, 0);\n    var fotos = (rel.fotos || []).filter(function (u) { return String(u).charAt(0) === \"/\"; });\n    var mo = (f.mo || []).filter(function (x) { return x.qtd > 0; });\n    var valor = f.valorMO != null ? f.valorMO : null;\n    var somaMO = mo.reduce(function (s, x) { return s + x.qtd * (x.preco || 0); }, 0);\n    var tecnicos = (f.pessoas && f.pessoas.length ? f.pessoas.join(\", \") : \"\") || c.tecnico || \"—\";\n    var aux = f.auxiliar || c.auxiliar;\n    var quando = c.finDate ? dataIso(c.finDate) : (f.quando ? data(f.quando) : data(Date.now()));\n    var css = \"@page{size:A4;margin:12mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}\" +\n      \"body{margin:0;font:12px/1.45 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#141414}\" +\n      \".top{display:flex;align-items:center;gap:14px;border-bottom:4px solid #FFD200;padding-bottom:10px}.top img{width:58px;height:58px;object-fit:contain}\" +\n      \".top .emp{flex:1}.top .emp b{display:block;font-size:17px;letter-spacing:.3px}.top .emp span{color:#555;font-size:11px}\" +\n      \".top .os{text-align:right}.top .os .k{display:inline-block;background:#141414;color:#FFD200;font-weight:800;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;padding:3px 8px;border-radius:4px}\" +\n      \".top .os .n{font-size:20px;font-weight:800;margin-top:4px}.top .os .d{color:#555;font-size:11px}\" +\n      \"h2{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#141414;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #ddd}\" +\n      \".g{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 18px}.g .l{font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;color:#666}.g .v{font-weight:600}\" +\n      \"table{width:100%;border-collapse:collapse}th{font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;color:#666;text-align:left;font-weight:600;padding:4px 6px;border-bottom:1px solid #ccc}\" +\n      \"td{padding:5px 6px;border-bottom:1px solid #eee;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}td.q{width:60px;font-weight:700}\" +\n      \".tot{display:flex;justify-content:space-between;align-items:center;background:#141414;color:#fff;border-radius:6px;padding:9px 12px;margin-top:8px}.tot b{color:#FFD200;font-size:17px}\" +\n      \".tempo{display:flex;justify-content:space-between;background:#f4f4f0;border-radius:6px;padding:7px 10px;margin-top:6px;font-weight:600}\" +\n      \".rel{white-space:pre-wrap;background:#f7f7f3;border-left:3px solid #FFD200;padding:8px 10px;border-radius:0 6px 6px 0}\" +\n      \".fotos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.fotos img{width:100%;height:150px;object-fit:cover;border-radius:6px;border:1px solid #ddd;display:block}\" +\n      \".ass{display:grid;grid-template-columns:1.3fr 1fr;gap:24px;margin-top:6px;align-items:end;break-inside:avoid}\" +\n      \".ass .cx{border-bottom:1.5px solid #141414;height:90px;display:flex;align-items:flex-end;justify-content:center}.ass .cx img{max-height:86px;max-width:100%}\" +\n      \".ass .leg{font-size:10.5px;color:#444;margin-top:4px}.vazio{color:#777;font-style:italic}\" +\n      \".rod{margin-top:18px;border-top:1px solid #ddd;padding-top:6px;font-size:10px;color:#666;display:flex;justify-content:space-between;gap:10px}\" +\n      \"section{break-inside:avoid}.quebra{break-inside:auto}\" +\n      \".folha{max-width:186mm;margin:0 auto;background:#fff}\" +\n      \"@media screen{body{background:#ecece8}.folha{padding:14mm 12mm;margin:16px auto;box-shadow:0 2px 14px #0000001f;border-radius:4px}}\" +\n      \".vbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#141414;color:#fff;padding:10px 16px;border-bottom:4px solid #FFD200}.vbar .t{flex:1;min-width:180px;font-weight:700}.vbar .t small{display:block;font-weight:500;color:#bdbdb5}\" +\n      \".vbar button{font:700 14px Inter,system-ui,sans-serif;min-height:44px;padding:0 16px;border-radius:9px;border:0;cursor:pointer;background:#fff;color:#141414}.vbar button.y{background:#FFD200}.vbar button:focus-visible{outline:3px solid #FFD200;outline-offset:2px}.vbar button:disabled{opacity:.55;cursor:wait}\" +\n      \"@media print{.vbar{display:none}body{background:#fff}.folha{padding:0;margin:0;box-shadow:none;max-width:none}}\" +\n      \"@media screen and (max-width:640px){.folha{padding:16px 14px;margin:0;border-radius:0;box-shadow:none}.g{grid-template-columns:1fr 1fr}.top{flex-wrap:wrap}.top .os{text-align:left;width:100%}.fotos{grid-template-columns:1fr 1fr}.fotos img{height:120px}.ass{grid-template-columns:1fr}td,th{padding:5px 4px}}\";\n    var h = '<div class=\"folha\">';\n    h += '<div class=\"top\"><img src=\"/img/logo-ancora.png\" alt=\"\"><div class=\"emp\"><b>ÂNCORA SEGURANÇA</b><span>Portaria remota · monitoramento · segurança eletrônica</span></div>' +\n      '<div class=\"os\"><span class=\"k\">Via do cliente</span><div class=\"n\">OS Nº ' + esc(c.num) + '</div><div class=\"d\">Finalizada em ' + esc(quando) + '</div></div></div>';\n    h += '<section><h2>Cliente e serviço</h2><div class=\"g\">' +\n      '<div><div class=\"l\">Cliente</div><div class=\"v\">' + esc(c.cliente || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Cidade</div><div class=\"v\">' + esc(c.cidade || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Tipo de atendimento</div><div class=\"v\">' + esc(tipoTxt(c)) + '</div></div>' +\n      '<div style=\"grid-column:span 2\"><div class=\"l\">Serviço</div><div class=\"v\">' + esc(c.servico || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Orçamento</div><div class=\"v\">' + esc((c.orcamento && c.orcamento.num) || c.orc || \"—\") + '</div></div>' +\n      '</div></section>';\n    h += '<section><h2>Atendimento no local</h2><div class=\"g\" style=\"margin-bottom:6px\">' +\n      '<div><div class=\"l\">Equipe técnica</div><div class=\"v\">' + esc(c.tecnico || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Técnico(s)</div><div class=\"v\">' + esc(tecnicos) + '</div></div>' +\n      '<div><div class=\"l\">Auxiliar</div><div class=\"v\">' + esc(aux || \"—\") + '</div></div></div>';\n    if (V.length) {\n      h += '<table><tr><th>Data</th><th>Chegada</th><th>Saída</th><th class=\"n\">Tempo</th></tr>' + V.map(function (v) {\n        return \"<tr><td>\" + data(v.ci) + \"</td><td>\" + hora(v.ci) + \"</td><td>\" + (v.co ? hora(v.co) : \"—\") + '</td><td class=\"n\">' + (v.co ? durTxt(v.min) : \"—\") + \"</td></tr>\";\n      }).join(\"\") + \"</table>\";\n    }\n    h += '<div class=\"tempo\"><span>Tempo total no local</span><span>' + (minutos > 0 ? durTxt(minutos) : \"—\") + \"</span></div></section>\";\n    h += '<section><h2>O que foi feito</h2><div class=\"rel\">' + (rel.texto ? esc(rel.texto) : '<span class=\"vazio\">Sem descrição registrada.</span>') + \"</div></section>\";\n    h += '<section class=\"quebra\"><h2>Produtos utilizados</h2>' + (P.length\n      ? '<table><tr><th>Qtd</th><th>Produto</th></tr>' + P.map(function (t) { return '<tr><td class=\"q\">' + esc(t.qtd) + \"</td><td>\" + esc(t.nome) + \"</td></tr>\"; }).join(\"\") + \"</table>\"\n      : '<div class=\"vazio\">Nenhum produto utilizado neste atendimento.</div>') + \"</section>\";\n    h += '<section><h2>Valor do atendimento</h2>';\n    if (mo.length) {\n      h += '<table><tr><th>Mão de obra</th><th class=\"n\">Qtd</th><th class=\"n\">Valor unit.</th><th class=\"n\">Total</th></tr>' + mo.map(function (x) {\n        return \"<tr><td>\" + esc(x.descricao) + '</td><td class=\"n\">' + esc(x.qtd) + \" \" + esc(String(x.unidade || \"\").toLowerCase()) + '</td><td class=\"n\">' + brl(x.preco) + '</td><td class=\"n\">' + brl(x.qtd * (x.preco || 0)) + \"</td></tr>\";\n      }).join(\"\") + (valor != null && Math.abs(valor - somaMO) > 0.009 ? '<tr><td colspan=\"3\">Ajuste no fechamento</td><td class=\"n\">' + brl(valor - somaMO) + \"</td></tr>\" : \"\") + \"</table>\";\n    }\n    var mat = (f.mat || []).filter(function (x) { return x && x.qtd > 0; });\n    if (mat.length) {\n      h += '<table style=\"margin-top:6px\"><tr><th>Material</th><th class=\"n\">Qtd</th><th class=\"n\">Valor unit.</th><th class=\"n\">Total</th></tr>' + mat.map(function (x) {\n        return \"<tr><td>\" + esc(x.descricao) + '</td><td class=\"n\">' + esc(x.qtd) + '</td><td class=\"n\">' + brl(x.preco) + '</td><td class=\"n\">' + brl(x.qtd * (x.preco || 0)) + \"</td></tr>\";\n      }).join(\"\") + \"</table>\";\n    }\n    var total = f.valorTotal != null ? f.valorTotal : valor != null ? valor + mat.reduce(function (t, x) { return t + x.qtd * (x.preco || 0); }, 0) : null;\n    h += total != null ? '<div class=\"tot\"><span>Valor fechado do atendimento</span><b>' + brl(total) + \"</b></div>\" : '<div class=\"vazio\">Valor não informado no fechamento.</div>';\n    h += \"</section>\";\n    if (fotos.length) h += '<section class=\"quebra\"><h2>Fotos do local</h2><div class=\"fotos\">' + fotos.map(function (u, i) { return '<img src=\"' + esc(u) + '\" alt=\"Foto ' + (i + 1) + '\">'; }).join(\"\") + \"</div></section>\";\n    var assImg = rel.assinatura && String(rel.assinatura).charAt(0) === \"/\" ? rel.assinatura : \"\";\n    h += '<section><h2>Recebimento do serviço</h2><div class=\"ass\"><div><div class=\"cx\">' + (assImg ? '<img src=\"' + esc(assImg) + '\" alt=\"Assinatura do cliente\">' : \"\") + '</div><div class=\"leg\">Assinatura do cliente' +\n      (rel.assinNome ? \" · \" + esc(rel.assinNome) : \" · nome legível: ______________________________\") + (assImg && rel.quando ? \" · \" + esc(rel.quando) : \"\") + '</div></div>' +\n      '<div><div class=\"cx\" style=\"height:40px\"><b style=\"font-size:12px\">' + esc(tecnicos) + '</b></div><div class=\"leg\">Técnico responsável</div></div></div></section>';\n    h += '<div class=\"rod\"><span>Âncora Segurança · atendimento@ancoraseguranca.com.br</span><span>Documento emitido em ' + data(Date.now()) + \" \" + hora(Date.now()) + \"</span></div>\";\n    return { titulo: \"OS-\" + c.num + \" · via do cliente\", css: css, corpo: h + \"</div>\" };\n  }\n\n\n  function montar(c, opts) {\n    var p = partes(c, opts);\n    return '<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>' + esc(p.titulo) + \"</title><style>\" + p.css + \"</style></head><body>\" + p.corpo + \"</body></html>\";\n  }\n  function nomeArquivo(c) {\n    var cli = String(c.cliente || \"cliente\").replace(/[\\\\/:*?\"<>|]/g, \"\").replace(/\\s+/g, \" \").trim().slice(0, 80);\n    return (\"OS-\" + c.num + \" - \" + cli + \" - via do cliente\").slice(0, 120) + \".pdf\";\n  }\n  function lib(win) {\n    if (win.html2pdf) return Promise.resolve();\n    return new Promise(function (ok, erro) {\n      var s = win.document.createElement(\"script\"); s.src = H2P;\n      s.onload = function () { win.html2pdf ? ok() : erro(new Error(\"gerador de PDF indisponível\")); };\n      s.onerror = function () { erro(new Error(\"não foi possível carregar o gerador de PDF (verifique a internet)\")); };\n      win.document.head.appendChild(s);\n    });\n  }\n  function imagens(doc) {\n    return Promise.all([].slice.call(doc.images).map(function (im) {\n      return im.complete ? 0 : new Promise(function (ok) { im.onload = im.onerror = ok; setTimeout(ok, 8000); });\n    }));\n  }\n  /* Gera e baixa o PDF a partir da folha já desenhada na janela \"win\" */\n  function pdf(win, nome) {\n    var doc = win.document, folha = doc.querySelector(\".folha\");\n    return imagens(doc).then(function () { return lib(win); }).then(function () {\n      /* as opções são criadas dentro da própria janela: o html2pdf recusa listas vindas de outra janela */\n      var o = win.JSON.parse(JSON.stringify({\n        margin: [10, 10, 10, 10], filename: nome,\n        image: { type: \"jpeg\", quality: 0.92 },\n        html2canvas: { scale: 2, useCORS: true, backgroundColor: \"#ffffff\", windowWidth: 820 },\n        jsPDF: { unit: \"mm\", format: \"a4\", orientation: \"portrait\" },\n        pagebreak: { mode: [\"css\", \"legacy\"], avoid: [\"section:not(.quebra)\", \"tr\", \".fotos img\", \".ass\", \".tot\", \".tempo\"] }\n      }));\n      o.html2canvas.onclone = function (d) { d.documentElement.style.background = d.body.style.background = \"#fff\"; var f = d.querySelector(\".folha\"); if (f) f.style.cssText = \"padding:0;margin:0;box-shadow:none;max-width:186mm;border-radius:0;background:#fff\"; };\n      return win.html2pdf().set(o).from(folha).save();\n    });\n  }\n  /* Desenha a via numa janela escondida de largura fixa e baixa o PDF (mesmo layout no celular e no computador) */\n  function baixarPdf(c) {\n    var velho = document.getElementById(\"via-pdf-frame\");\n    if (velho) velho.remove();\n    var fr = document.createElement(\"iframe\");\n    fr.id = \"via-pdf-frame\"; fr.setAttribute(\"aria-hidden\", \"true\"); fr.tabIndex = -1;\n    fr.style.cssText = \"position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0\";\n    document.body.appendChild(fr);\n    var d = fr.contentWindow.document;\n    d.open(); d.write(montar(c)); d.close();\n    return pdf(fr.contentWindow, nomeArquivo(c)).then(function (r) { setTimeout(function () { fr.remove(); }, 1500); return r; }, function (e) { fr.remove(); throw e; });\n  }\n  /* Página pública: desenha a via com a barra de ações (baixar PDF / imprimir) */\n  function abrirPublica(c) {\n    var p = partes(c, { publico: true });\n    document.title = p.titulo + \" · Âncora Segurança\";\n    var st = document.createElement(\"style\"); st.textContent = p.css; document.head.appendChild(st);\n    document.body.innerHTML = '<div class=\"vbar\" data-html2canvas-ignore=\"true\"><div class=\"t\">Via do cliente · OS ' + esc(c.num) + \"<small>\" + esc(c.cliente || \"\") + '</small></div><button type=\"button\" class=\"y\" id=\"vb-pdf\">Baixar PDF</button><button type=\"button\" id=\"vb-print\">Imprimir</button></div>' + p.corpo;\n    document.getElementById(\"vb-print\").onclick = function () { window.print(); };\n    var bt = document.getElementById(\"vb-pdf\");\n    bt.onclick = function () {\n      bt.disabled = true; bt.textContent = \"Gerando PDF…\";\n      baixarPdf(c).catch(function (e) { alert(\"Não foi possível gerar o PDF: \" + e.message + \". Use o botão Imprimir e escolha “Salvar como PDF”.\"); })\n        .then(function () { bt.disabled = false; bt.textContent = \"Baixar PDF\"; });\n    };\n  }\n  window.sgoVia = { partes: partes, montar: montar, nomeArquivo: nomeArquivo, pdf: pdf, baixarPdf: baixarPdf, abrirPublica: abrirPublica };\n})();\n</script><script>(function(){var u=location.pathname.replace(/\\/$/,\"\")+\"/dados\";fetch(u,{credentials:\"omit\",cache:\"no-store\"}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(c){window.sgoVia.abrirPublica(c)}).catch(function(){document.getElementById(\"vc-car\").textContent=\"Esta via não está disponível. Fale com a Âncora Segurança: atendimento@ancoraseguranca.com.br\"})})();</script></body></html>";
+async function conferirUsoEstoque(env, u, a) {
+  const n = parseInt(a.dados && a.dados.qtd, 10);
+  const pid = parseInt(a.dados && a.dados.pid, 10);
+  if (!(n > 0) || !(pid > 0)) return "Escolha um equipamento do seu estoque e a quantidade.";
+  const eq = await env.DB.prepare("SELECT id FROM equipes_tecnicas WHERE principal_id = ? AND ativo = 1 ORDER BY id LIMIT 1").bind(u.id).first();
+  if (!eq) return "Você não é o principal de nenhuma equipe técnica.";
+  const saldo = await estSaldoLocal(env, "eq:" + eq.id);
+  const res = await estReservado(env, eq.id);
+  const disp = estQ((saldo[pid] || 0) - (res[pid] ? res[pid].qtd : 0));
+  if (n > disp + 1e-3) return "Você tem " + Math.max(0, disp) + " disponível desse equipamento.";
+  const p = await env.DB.prepare("SELECT descricao FROM produtos WHERE id = ?").bind(pid).first();
+  if (!p) return "Equipamento não encontrado no estoque.";
+  a.dados.nome = p.descricao;
+  a.dados.origem = "tecnico";
+  a.dados.pid = pid;
+  a.dados.qtd = n;
+  return null;
+}
+var VIA_PAGINA = "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex, nofollow\"><meta name=\"theme-color\" content=\"#141414\"><link rel=\"icon\" href=\"/img/logo-ancora.png\"><title>Via do cliente · Âncora Segurança</title></head><body style=\"margin:0;font:15px system-ui,sans-serif\"><p id=\"vc-car\" style=\"padding:28px\">Carregando a via do cliente…</p><script>/* Via do cliente da OS · montagem, PDF e página pública · v26\n   Usado na tela de OS (botões da via) e na página pública /v/<link> que o cliente abre.\n   Mostra só o que o cliente precisa: atendimento, tempo no local, produtos, valor fechado,\n   resolução, fotos e assinatura. Não mostra histórico interno nem motivo de ajuste. */\n(function () {\n  \"use strict\";\n  var H2P = \"https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js\";\n  function esc(s) { return String(s == null ? \"\" : s).replace(/[&<>\"']/g, function (c) { return { \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"&#39;\" }[c]; }); }\n  function brl(v) { return (Number(v) || 0).toLocaleString(\"pt-BR\", { style: \"currency\", currency: \"BRL\" }); }\n  function p2(n) { return (n < 10 ? \"0\" : \"\") + n; }\n  var TZ = { timeZone: \"America/Sao_Paulo\" };\n  function data(ms) { try { return new Date(ms).toLocaleDateString(\"pt-BR\", TZ); } catch (e) { var d = new Date(ms); return p2(d.getDate()) + \"/\" + p2(d.getMonth() + 1) + \"/\" + d.getFullYear(); } }\n  function hora(ms) { try { return new Date(ms).toLocaleTimeString(\"pt-BR\", { timeZone: \"America/Sao_Paulo\", hour: \"2-digit\", minute: \"2-digit\" }); } catch (e) { var d = new Date(ms); return p2(d.getHours()) + \":\" + p2(d.getMinutes()); } }\n  function dataIso(s) { var m = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(s || \"\"); return m ? m[3] + \"/\" + m[2] + \"/\" + m[1] : \"\"; }\n  function durTxt(min) { min = Math.max(0, Math.round(min || 0)); var h = Math.floor(min / 60), m = min % 60; return h ? h + \" h\" + (m ? \" \" + p2(m) + \" min\" : \"\") : m + \" min\"; }\n  function qtdTxt(q) { var s = String(q == null ? \"\" : q).trim(); return s.replace(/x$/i, \"\"); }\n  function tipoTxt(c) {\n    if (c.tipo === \"manut\") return \"Manutenção\" + (c.sub ? \" · \" + c.sub : \"\");\n    if (c.tipo === \"monit\") return \"Monitoramento\" + (c.sub ? \" · \" + c.sub : \"\");\n    if (c.tipo === \"visita\") return \"Visita técnica / orçamento\";\n    return \"Instalação\";\n  }\n\n  function visitas(c) {\n    var v = (c.fech && c.fech.visitas && c.fech.visitas.length ? c.fech.visitas : (c.visitas || [])).filter(function (x) { return x && x.ci; });\n    if (!v.length && c.ci) v = [{ ci: c.ci, co: c.co }];\n    return v.map(function (x) { return { ci: x.ci, co: x.co, min: x.min != null ? x.min : (x.co ? (x.co - x.ci) / 6e4 : 0) }; });\n  }\n  function chave(s) { return String(s || \"\").normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").toLowerCase().replace(/[^a-z0-9]+/g, \" \").trim(); }\n  function qtdNum(q) { var n = parseFloat(String(q == null ? \"\" : q).replace(\",\", \".\").replace(/x$/i, \"\")); return isFinite(n) ? n : 0; }\n  function acharPreco(tabela, nome) {\n    var k = chave(nome);\n    if (!k) return null;\n    if (tabela[k]) return tabela[k];\n    var keys = Object.keys(tabela), i, hit = null;\n    for (i = 0; i < keys.length; i++) {\n      if (keys[i] === k || keys[i].indexOf(k + \" \") === 0 || k.indexOf(keys[i] + \" \") === 0) { if (hit) return null; hit = tabela[keys[i]]; }\n    }\n    return hit;\n  }\n  function produtos(c) {\n    var tabela = {};\n    (c.produtosVia || c.produtosOrc || []).forEach(function (p) { if (p && p.nome) tabela[chave(p.nome)] = p; });\n    return (c.itens || []).map(function (t) {\n      var q = t.st === \"aplicado\" && t.usado != null && t.usado !== \"\" ? t.usado : t.qtd;\n      var qn = qtdNum(q);\n      var via = acharPreco(tabela, t.nome);\n      var unit = t.preco != null && t.preco !== \"\" ? Number(t.preco) : via && via.preco != null ? Number(via.preco) : null;\n      var total = unit != null && isFinite(unit) ? Math.round(qn * unit * 100) / 100 : null;\n      return { qtd: qtdTxt(q), nome: t.nome, preco: unit != null && isFinite(unit) ? unit : null, total: total };\n    }).filter(function (t) { return t.nome && String(t.qtd) !== \"0\"; });\n  }\n\n  function partes(c, opts) {\n    opts = opts || {};\n    var f = c.fech || {}, rel = c.rel || {}, V = visitas(c), P = produtos(c);\n    var minutos = f.minutos != null ? f.minutos : V.reduce(function (s, v) { return s + (v.min || 0); }, 0);\n    var fotos = (rel.fotos || []).filter(function (u) { return String(u).charAt(0) === \"/\"; });\n    var mo = (f.mo || []).filter(function (x) { return x.qtd > 0; });\n    var valor = f.valorMO != null ? f.valorMO : null;\n    var somaMO = mo.reduce(function (s, x) { return s + x.qtd * (x.preco || 0); }, 0);\n    var tecnicos = (f.pessoas && f.pessoas.length ? f.pessoas.join(\", \") : \"\") || c.tecnico || \"—\";\n    var aux = f.auxiliar || c.auxiliar;\n    var quando = c.finDate ? dataIso(c.finDate) : (f.quando ? data(f.quando) : data(Date.now()));\n    var css = \"@page{size:A4;margin:12mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}\" +\n      \"body{margin:0;font:12px/1.45 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#141414}\" +\n      \".top{display:flex;align-items:center;gap:14px;border-bottom:4px solid #FFD200;padding-bottom:10px}.top img{width:58px;height:58px;object-fit:contain}\" +\n      \".top .emp{flex:1}.top .emp b{display:block;font-size:17px;letter-spacing:.3px}.top .emp span{color:#555;font-size:11px}\" +\n      \".top .os{text-align:right}.top .os .k{display:inline-block;background:#141414;color:#FFD200;font-weight:800;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;padding:3px 8px;border-radius:4px}\" +\n      \".top .os .n{font-size:20px;font-weight:800;margin-top:4px}.top .os .d{color:#555;font-size:11px}\" +\n      \"h2{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#141414;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #ddd}\" +\n      \".g{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 18px}.g .l{font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;color:#666}.g .v{font-weight:600}\" +\n      \"table{width:100%;border-collapse:collapse}th{font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;color:#666;text-align:left;font-weight:600;padding:4px 6px;border-bottom:1px solid #ccc}\" +\n      \"td{padding:5px 6px;border-bottom:1px solid #eee;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}td.q{width:60px;font-weight:700}\" +\n      \".tot{display:flex;justify-content:space-between;align-items:center;background:#141414;color:#fff;border-radius:6px;padding:9px 12px;margin-top:8px}.tot b{color:#FFD200;font-size:17px}\" +\n      \".tempo{display:flex;justify-content:space-between;background:#f4f4f0;border-radius:6px;padding:7px 10px;margin-top:6px;font-weight:600}\" +\n      \".rel{white-space:pre-wrap;background:#f7f7f3;border-left:3px solid #FFD200;padding:8px 10px;border-radius:0 6px 6px 0}\" +\n      \".fotos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.fotos img{width:100%;height:150px;object-fit:cover;border-radius:6px;border:1px solid #ddd;display:block}\" +\n      \".ass{display:grid;grid-template-columns:1.3fr 1fr;gap:24px;margin-top:6px;align-items:end;break-inside:avoid}\" +\n      \".ass .cx{border-bottom:1.5px solid #141414;height:90px;display:flex;align-items:flex-end;justify-content:center}.ass .cx img{max-height:86px;max-width:100%}\" +\n      \".ass .leg{font-size:10.5px;color:#444;margin-top:4px}.vazio{color:#777;font-style:italic}\" +\n      \".rod{margin-top:18px;border-top:1px solid #ddd;padding-top:6px;font-size:10px;color:#666;display:flex;justify-content:space-between;gap:10px}\" +\n      \"section{break-inside:avoid}.quebra{break-inside:auto}\" +\n      \".folha{max-width:186mm;margin:0 auto;background:#fff}\" +\n      \"@media screen{body{background:#ecece8}.folha{padding:14mm 12mm;margin:16px auto;box-shadow:0 2px 14px #0000001f;border-radius:4px}}\" +\n      \".vbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#141414;color:#fff;padding:10px 16px;border-bottom:4px solid #FFD200}.vbar .t{flex:1;min-width:180px;font-weight:700}.vbar .t small{display:block;font-weight:500;color:#bdbdb5}\" +\n      \".vbar button{font:700 14px Inter,system-ui,sans-serif;min-height:44px;padding:0 16px;border-radius:9px;border:0;cursor:pointer;background:#fff;color:#141414}.vbar button.y{background:#FFD200}.vbar button:focus-visible{outline:3px solid #FFD200;outline-offset:2px}.vbar button:disabled{opacity:.55;cursor:wait}\" +\n      \"@media print{.vbar{display:none}body{background:#fff}.folha{padding:0;margin:0;box-shadow:none;max-width:none}}\" +\n      \"@media screen and (max-width:640px){.folha{padding:16px 14px;margin:0;border-radius:0;box-shadow:none}.g{grid-template-columns:1fr 1fr}.top{flex-wrap:wrap}.top .os{text-align:left;width:100%}.fotos{grid-template-columns:1fr 1fr}.fotos img{height:120px}.ass{grid-template-columns:1fr}td,th{padding:5px 4px}}\";\n    var h = '<div class=\"folha\">';\n    h += '<div class=\"top\"><img src=\"/img/logo-ancora.png\" alt=\"\"><div class=\"emp\"><b>ÂNCORA SEGURANÇA</b><span>Portaria remota · monitoramento · segurança eletrônica</span></div>' +\n      '<div class=\"os\"><span class=\"k\">Via do cliente</span><div class=\"n\">OS Nº ' + esc(c.num) + '</div><div class=\"d\">Finalizada em ' + esc(quando) + '</div></div></div>';\n    h += '<section><h2>Cliente e serviço</h2><div class=\"g\">' +\n      '<div><div class=\"l\">Cliente</div><div class=\"v\">' + esc(c.cliente || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Cidade</div><div class=\"v\">' + esc(c.cidade || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Tipo de atendimento</div><div class=\"v\">' + esc(tipoTxt(c)) + '</div></div>' +\n      '<div style=\"grid-column:span 2\"><div class=\"l\">Serviço</div><div class=\"v\">' + esc(c.servico || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Orçamento</div><div class=\"v\">' + esc((c.orcamento && c.orcamento.num) || c.orc || \"—\") + '</div></div>' +\n      '</div></section>';\n    h += '<section><h2>Atendimento no local</h2><div class=\"g\" style=\"margin-bottom:6px\">' +\n      '<div><div class=\"l\">Equipe técnica</div><div class=\"v\">' + esc(c.tecnico || \"—\") + '</div></div>' +\n      '<div><div class=\"l\">Técnico(s)</div><div class=\"v\">' + esc(tecnicos) + '</div></div>' +\n      '<div><div class=\"l\">Auxiliar</div><div class=\"v\">' + esc(aux || \"—\") + '</div></div></div>';\n    if (V.length) {\n      h += '<table><tr><th>Data</th><th>Chegada</th><th>Saída</th><th class=\"n\">Tempo</th></tr>' + V.map(function (v) {\n        return \"<tr><td>\" + data(v.ci) + \"</td><td>\" + hora(v.ci) + \"</td><td>\" + (v.co ? hora(v.co) : \"—\") + '</td><td class=\"n\">' + (v.co ? durTxt(v.min) : \"—\") + \"</td></tr>\";\n      }).join(\"\") + \"</table>\";\n    }\n    h += '<div class=\"tempo\"><span>Tempo total no local</span><span>' + (minutos > 0 ? durTxt(minutos) : \"—\") + \"</span></div></section>\";\n    h += '<section><h2>O que foi feito</h2><div class=\"rel\">' + (rel.texto ? esc(rel.texto) : '<span class=\"vazio\">Sem descrição registrada.</span>') + \"</div></section>\";\n    var comPreco = P.some(function (t) { return t.total != null; });\n    h += '<section class=\"quebra\"><h2>Produtos utilizados</h2>' + (P.length\n      ? '<table><tr><th>Qtd</th><th>Produto</th>' + (comPreco ? '<th class=\"n\">Valor unit.</th><th class=\"n\">Total</th>' : \"\") + \"</tr>\" + P.map(function (t) {\n        return '<tr><td class=\"q\">' + esc(t.qtd) + \"</td><td>\" + esc(t.nome) + \"</td>\" + (comPreco ? '<td class=\"n\">' + (t.preco != null ? brl(t.preco) : \"—\") + '</td><td class=\"n\">' + (t.total != null ? brl(t.total) : \"—\") + \"</td>\" : \"\") + \"</tr>\";\n      }).join(\"\") + \"</table>\"\n      : '<div class=\"vazio\">Nenhum produto utilizado neste atendimento.</div>') + \"</section>\";\n    h += '<section><h2>Valor do atendimento</h2>';\n    if (mo.length) {\n      h += '<table><tr><th>Mão de obra</th><th class=\"n\">Qtd</th><th class=\"n\">Valor unit.</th><th class=\"n\">Total</th></tr>' + mo.map(function (x) {\n        return \"<tr><td>\" + esc(x.descricao) + '</td><td class=\"n\">' + esc(x.qtd) + \" \" + esc(String(x.unidade || \"\").toLowerCase()) + '</td><td class=\"n\">' + brl(x.preco) + '</td><td class=\"n\">' + brl(x.qtd * (x.preco || 0)) + \"</td></tr>\";\n      }).join(\"\") + (valor != null && Math.abs(valor - somaMO) > 0.009 ? '<tr><td colspan=\"3\">Ajuste no fechamento</td><td class=\"n\">' + brl(valor - somaMO) + \"</td></tr>\" : \"\") + \"</table>\";\n    }\n    var matTodos = (f.mat || []).filter(function (x) { return x && x.qtd > 0; });\n    var nomesProd = {};\n    if (comPreco) P.forEach(function (t) { if (t.total != null) nomesProd[chave(t.nome)] = 1; });\n    var mat = comPreco ? matTodos.filter(function (x) { return !nomesProd[chave(x.descricao)]; }) : matTodos;\n    if (mat.length) {\n      h += '<table style=\"margin-top:6px\"><tr><th>Material</th><th class=\"n\">Qtd</th><th class=\"n\">Valor unit.</th><th class=\"n\">Total</th></tr>' + mat.map(function (x) {\n        return \"<tr><td>\" + esc(x.descricao) + '</td><td class=\"n\">' + esc(x.qtd) + '</td><td class=\"n\">' + brl(x.preco) + '</td><td class=\"n\">' + brl(x.qtd * (x.preco || 0)) + \"</td></tr>\";\n      }).join(\"\") + \"</table>\";\n    }\n    var somaProd = P.reduce(function (s, t) { return s + (t.total || 0); }, 0);\n    var descProd = comPreco ? Math.min(somaProd, Math.max(0, Number(c.descontoProd) || 0)) : 0;\n    var somaMat = mat.reduce(function (t, x) { return t + x.qtd * (x.preco || 0); }, 0);\n    var baseMO = valor != null ? valor : mo.length ? somaMO : null;\n    if (comPreco) {\n      h += '<div class=\"tempo\"><span>Produtos</span><span>' + brl(somaProd) + \"</span></div>\";\n      if (descProd > 0.009) h += '<div class=\"tempo\"><span>Desconto do orçamento</span><span>− ' + brl(descProd) + \"</span></div>\";\n    }\n    var total = comPreco ? Math.round(((baseMO || 0) + somaProd - descProd + somaMat) * 100) / 100 : f.valorTotal != null ? f.valorTotal : valor != null ? valor + somaMat : null;\n    h += total != null ? '<div class=\"tot\"><span>Valor fechado do atendimento</span><b>' + brl(total) + \"</b></div>\" : '<div class=\"vazio\">Valor não informado no fechamento.</div>';\n    h += \"</section>\";\n    if (fotos.length) h += '<section class=\"quebra\"><h2>Fotos do local</h2><div class=\"fotos\">' + fotos.map(function (u, i) { return '<img src=\"' + esc(u) + '\" alt=\"Foto ' + (i + 1) + '\">'; }).join(\"\") + \"</div></section>\";\n    var assImg = rel.assinatura && String(rel.assinatura).charAt(0) === \"/\" ? rel.assinatura : \"\";\n    h += '<section><h2>Recebimento do serviço</h2><div class=\"ass\"><div><div class=\"cx\">' + (assImg ? '<img src=\"' + esc(assImg) + '\" alt=\"Assinatura do cliente\">' : \"\") + '</div><div class=\"leg\">Assinatura do cliente' +\n      (rel.assinNome ? \" · \" + esc(rel.assinNome) : \" · nome legível: ______________________________\") + (assImg && rel.quando ? \" · \" + esc(rel.quando) : \"\") + '</div></div>' +\n      '<div><div class=\"cx\" style=\"height:40px\"><b style=\"font-size:12px\">' + esc(tecnicos) + '</b></div><div class=\"leg\">Técnico responsável</div></div></div></section>';\n    h += '<div class=\"rod\"><span>Âncora Segurança · atendimento@ancoraseguranca.com.br</span><span>Documento emitido em ' + data(Date.now()) + \" \" + hora(Date.now()) + \"</span></div>\";\n    return { titulo: \"OS-\" + c.num + \" · via do cliente\", css: css, corpo: h + \"</div>\" };\n  }\n\n\n  function montar(c, opts) {\n    var p = partes(c, opts);\n    return '<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>' + esc(p.titulo) + \"</title><style>\" + p.css + \"</style></head><body>\" + p.corpo + \"</body></html>\";\n  }\n  function nomeArquivo(c) {\n    var cli = String(c.cliente || \"cliente\").replace(/[\\\\/:*?\"<>|]/g, \"\").replace(/\\s+/g, \" \").trim().slice(0, 80);\n    return (\"OS-\" + c.num + \" - \" + cli + \" - via do cliente\").slice(0, 120) + \".pdf\";\n  }\n  function lib(win) {\n    if (win.html2pdf) return Promise.resolve();\n    return new Promise(function (ok, erro) {\n      var s = win.document.createElement(\"script\"); s.src = H2P;\n      s.onload = function () { win.html2pdf ? ok() : erro(new Error(\"gerador de PDF indisponível\")); };\n      s.onerror = function () { erro(new Error(\"não foi possível carregar o gerador de PDF (verifique a internet)\")); };\n      win.document.head.appendChild(s);\n    });\n  }\n  function imagens(doc) {\n    return Promise.all([].slice.call(doc.images).map(function (im) {\n      return im.complete ? 0 : new Promise(function (ok) { im.onload = im.onerror = ok; setTimeout(ok, 8000); });\n    }));\n  }\n  /* Gera e baixa o PDF a partir da folha já desenhada na janela \"win\" */\n  function pdf(win, nome) {\n    var doc = win.document, folha = doc.querySelector(\".folha\");\n    return imagens(doc).then(function () { return lib(win); }).then(function () {\n      /* as opções são criadas dentro da própria janela: o html2pdf recusa listas vindas de outra janela */\n      var o = win.JSON.parse(JSON.stringify({\n        margin: [10, 10, 10, 10], filename: nome,\n        image: { type: \"jpeg\", quality: 0.92 },\n        html2canvas: { scale: 2, useCORS: true, backgroundColor: \"#ffffff\", windowWidth: 820 },\n        jsPDF: { unit: \"mm\", format: \"a4\", orientation: \"portrait\" },\n        pagebreak: { mode: [\"css\", \"legacy\"], avoid: [\"section:not(.quebra)\", \"tr\", \".fotos img\", \".ass\", \".tot\", \".tempo\"] }\n      }));\n      o.html2canvas.onclone = function (d) { d.documentElement.style.background = d.body.style.background = \"#fff\"; var f = d.querySelector(\".folha\"); if (f) f.style.cssText = \"padding:0;margin:0;box-shadow:none;max-width:186mm;border-radius:0;background:#fff\"; };\n      return win.html2pdf().set(o).from(folha).save();\n    });\n  }\n  /* Desenha a via numa janela escondida de largura fixa e baixa o PDF (mesmo layout no celular e no computador) */\n  function baixarPdf(c) {\n    var velho = document.getElementById(\"via-pdf-frame\");\n    if (velho) velho.remove();\n    var fr = document.createElement(\"iframe\");\n    fr.id = \"via-pdf-frame\"; fr.setAttribute(\"aria-hidden\", \"true\"); fr.tabIndex = -1;\n    fr.style.cssText = \"position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0\";\n    document.body.appendChild(fr);\n    var d = fr.contentWindow.document;\n    d.open(); d.write(montar(c)); d.close();\n    return pdf(fr.contentWindow, nomeArquivo(c)).then(function (r) { setTimeout(function () { fr.remove(); }, 1500); return r; }, function (e) { fr.remove(); throw e; });\n  }\n  /* Página pública: desenha a via com a barra de ações (baixar PDF / imprimir) */\n  function abrirPublica(c) {\n    var p = partes(c, { publico: true });\n    document.title = p.titulo + \" · Âncora Segurança\";\n    var st = document.createElement(\"style\"); st.textContent = p.css; document.head.appendChild(st);\n    document.body.innerHTML = '<div class=\"vbar\" data-html2canvas-ignore=\"true\"><div class=\"t\">Via do cliente · OS ' + esc(c.num) + \"<small>\" + esc(c.cliente || \"\") + '</small></div><button type=\"button\" class=\"y\" id=\"vb-pdf\">Baixar PDF</button><button type=\"button\" id=\"vb-print\">Imprimir</button></div>' + p.corpo;\n    document.getElementById(\"vb-print\").onclick = function () { window.print(); };\n    var bt = document.getElementById(\"vb-pdf\");\n    bt.onclick = function () {\n      bt.disabled = true; bt.textContent = \"Gerando PDF…\";\n      baixarPdf(c).catch(function (e) { alert(\"Não foi possível gerar o PDF: \" + e.message + \". Use o botão Imprimir e escolha “Salvar como PDF”.\"); })\n        .then(function () { bt.disabled = false; bt.textContent = \"Baixar PDF\"; });\n    };\n  }\n  window.sgoVia = { partes: partes, montar: montar, nomeArquivo: nomeArquivo, pdf: pdf, baixarPdf: baixarPdf, abrirPublica: abrirPublica };\n})();\n</script><script>(function(){var u=location.pathname.replace(/\\/$/,\"\")+\"/dados\";fetch(u,{credentials:\"omit\",cache:\"no-store\"}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(c){window.sgoVia.abrirPublica(c)}).catch(function(){document.getElementById(\"vc-car\").textContent=\"Esta via não está disponível. Fale com a Âncora Segurança: atendimento@ancoraseguranca.com.br\"})})();</script></body></html>";
 var VIA_INDISP = "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>Via não disponível · Âncora Segurança</title></head><body style=\"margin:0;font:16px/1.5 system-ui,sans-serif;background:#f3f3ef;color:#141414\"><div style=\"max-width:520px;margin:12vh auto;background:#fff;border-radius:14px;padding:28px;box-shadow:0 0 0 1px #0000000f;border-top:6px solid #FFD200\"><img src=\"/img/logo-ancora.png\" alt=\"Âncora Segurança\" width=\"64\" height=\"64\"><h1 style=\"font-size:20px;margin:12px 0 6px\">Via não disponível</h1><p style=\"margin:0;color:#3d3d3d\">Este link não está mais disponível. Fale com a Âncora Segurança pelo e-mail atendimento@ancoraseguranca.com.br.</p></div></body></html>";
 
 // src/config.js · v27 — Configurações: integrações (chaves cifradas), chaves de acesso à API do SGO e banco de dados
@@ -1469,11 +1968,274 @@ async function tecnicoFrota(request, env, url, u) {
   }
   return null;
 }
+function geoHaversine(a, b) {
+  if (!a || !b || a.lat == null || b.lat == null) return null;
+  const r = Math.PI / 180, R = 6371;
+  const dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s)) * 10) / 10;
+}
+function geoHa(ms) {
+  if (!ms) return "";
+  const min = Math.max(0, Math.round((Date.now() - Number(ms)) / 60000));
+  if (min < 2) return "agora";
+  if (min < 60) return "há " + min + " min";
+  const h = Math.round(min / 60);
+  if (h < 36) return "há " + h + " h";
+  return "há " + Math.round(h / 24) + " dias";
+}
+function geoCoords(extra) {
+  let o = extra;
+  if (typeof o === "string") { try { o = JSON.parse(o); } catch { o = null; } }
+  if (!o || typeof o !== "object") return null;
+  const lat = Number(o.latitude != null ? o.latitude : o.lat);
+  const lng = Number(o.longitude != null ? o.longitude : (o.lng != null ? o.lng : o.lon));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+async function garantirGeo(env) {
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS geo_pontos (chave TEXT PRIMARY KEY, lat DOUBLE PRECISION, lng DOUBLE PRECISION, rotulo TEXT, endereco TEXT, atualizado_em BIGINT NOT NULL)").run();
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS tecnico_push (usuario_id BIGINT PRIMARY KEY, token TEXT NOT NULL, plataforma TEXT, atualizado_em BIGINT NOT NULL)").run();
+  try { await env.DB.prepare("ALTER TABLE geo_pontos ADD COLUMN IF NOT EXISTS preciso INTEGER").run(); } catch { /* coluna já existe */ }
+}
+async function geoGravar(env, chave, lat, lng, rotulo, endereco, preciso) {
+  const agora = Date.now();
+  const p = preciso == null ? null : preciso ? 1 : 0;
+  const ja = await env.DB.prepare("SELECT chave FROM geo_pontos WHERE chave = ?").bind(chave).first();
+  if (ja) await env.DB.prepare("UPDATE geo_pontos SET lat = ?, lng = ?, rotulo = ?, endereco = ?, atualizado_em = ?, preciso = ? WHERE chave = ?").bind(lat, lng, rotulo, endereco, agora, p, chave).run();
+  else await env.DB.prepare("INSERT INTO geo_pontos (chave, lat, lng, rotulo, endereco, atualizado_em, preciso) VALUES (?,?,?,?,?,?,?)").bind(chave, lat, lng, rotulo, endereco, agora, p).run();
+}
+function geoExtenso(n) {
+  const u = ["", "um", "dois", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"];
+  const d = ["", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"];
+  n = parseInt(n, 10);
+  if (!(n > 0 && n < 100)) return "";
+  if (n < 20) return u[n];
+  return d[Math.floor(n / 10)] + (n % 10 ? " e " + u[n % 10] : "");
+}
+function geoLogradouros(endereco) {
+  let s = String(endereco || "").replace(/\s+/g, " ").trim();
+  if (!s) return [];
+  s = s.replace(/^r\.?\s+/i, "Rua ").replace(/^av\.?\s+/i, "Avenida ").replace(/^al\.?\s+/i, "Alameda ").replace(/^tv\.?\s+/i, "Travessa ");
+  s = s.replace(/,\s*/g, " ").replace(/\s+/g, " ").trim();
+  const casa = s.match(/^(.*?)[,\s]+(\d{1,6})$/);
+  const nome = casa && casa[1].trim() ? casa[1].trim() : s;
+  const num = casa && casa[1].trim() ? casa[2] : "";
+  const comCasa = num ? nome + " " + num : nome;
+  const soletrado = nome.replace(/\b(\d{1,3})\b/, (x) => geoExtenso(x) || x);
+  const lista = [comCasa, nome];
+  if (!/^(rua|avenida|alameda|travessa|rodovia|estrada|praca|praça)\b/i.test(nome)) {
+    lista.push("Rua " + comCasa, "Rua " + nome);
+  }
+  if (soletrado !== nome) lista.push((/^(rua|avenida|alameda|travessa)\b/i.test(soletrado) ? "" : "Rua ") + soletrado, soletrado);
+  return [...new Set(lista.map((x) => x.replace(/\s+/g, " ").trim()).filter((x) => x.length > 3))];
+}
+let geoUltima = 0;
+async function geoNominatim(q) {
+  const texto = String(q || "").replace(/\s+/g, " ").trim();
+  if (texto.length < 4) return null;
+  const espera = 1100 - (Date.now() - geoUltima);
+  if (espera > 0) await new Promise((r) => setTimeout(r, espera));
+  geoUltima = Date.now();
+  const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&countrycodes=br&q=" + encodeURIComponent(texto);
+  const r = await fetch(url, { headers: { "user-agent": "SGO-Ancora/1.0 (atendimento@ancoraseguranca.com.br)", accept: "application/json" } });
+  if (!r.ok) return null;
+  const lista = await r.json();
+  const p = Array.isArray(lista) ? lista[0] : null;
+  if (!p) return null;
+  const lat = Number(p.lat), lng = Number(p.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const addr = p.address || {};
+  const tipo = String(p.addresstype || p.type || "");
+  return {
+    lat, lng,
+    cidade: cadNorm(addr.city || addr.town || addr.municipality || addr.village || ""),
+    grosso: /^(city|town|municipality|administrative|postcode|state|county)$/.test(tipo)
+  };
+}
+async function geocodificarParceiro(p) {
+  const cidade = String(p.cidade || "").replace(/\s*\([A-Z]{2}\)\s*$/, "").trim();
+  const uf = String(p.uf || "").trim();
+  const quero = cadNorm(cidade);
+  for (const rua of geoLogradouros(p.endereco)) {
+    const hit = await geoNominatim([rua, cidade, uf, "Brasil"].filter(Boolean).join(", "));
+    if (!hit || hit.grosso) continue;
+    if (quero && hit.cidade && hit.cidade !== quero) continue;
+    return { lat: hit.lat, lng: hit.lng, aproximado: false };
+  }
+  if (cidade) {
+    const hit = await geoNominatim([cidade, uf, "Brasil"].filter(Boolean).join(", "));
+    if (hit && (!quero || !hit.cidade || hit.cidade === quero)) return { lat: hit.lat, lng: hit.lng, aproximado: true };
+  }
+  return null;
+}
+function enderecoParceiro(p) {
+  return [p.endereco, p.bairro, p.cidade, p.uf, p.cep, "Brasil"].filter(Boolean).join(", ");
+}
+async function pontoParceiro(env, p, near) {
+  const chave = "parceiro:" + p.id;
+  const endereco = enderecoParceiro(p);
+  const ja = await env.DB.prepare("SELECT lat, lng, endereco, preciso FROM geo_pontos WHERE chave = ?").bind(chave).first();
+  if (ja && ja.lat != null && ja.endereco === endereco && ja.preciso === 1) return { lat: Number(ja.lat), lng: Number(ja.lng), aproximado: false };
+  const omie = geoCoords(p.extra);
+  if (omie) {
+    await geoGravar(env, chave, omie.lat, omie.lng, p.razao || "", endereco, 1);
+    return { lat: omie.lat, lng: omie.lng, aproximado: false };
+  }
+  const g = await geoEnderecoOmie(p, near && near.lat != null ? { lat: near.lat, lng: near.lng } : null);
+  if (!g) return null;
+  await geoGravar(env, chave, g.lat, g.lng, p.razao || "", endereco, g.aproximado ? 0 : 1);
+  return g;
+}
+async function geoEnderecoOmie(p, near) {
+  try {
+    const { geocodeBrazilAddress } = await import("../../server/geo.ts");
+    const geo = await geocodeBrazilAddress({
+      address: [p.endereco, p.bairro].filter(Boolean).join(" - "),
+      city: String(p.cidade || "").replace(/\s*\([A-Z]{2}\)\s*$/, ""),
+      uf: p.uf,
+      cep: p.cep,
+      near
+    });
+    if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lng)) {
+      return { lat: geo.lat, lng: geo.lng, aproximado: geo.precision === "city", precision: geo.precision };
+    }
+  } catch { /* segue no geocódigo local */ }
+  return geocodificarParceiro(p);
+}
+async function pontoBase(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'assist.company_location'").first();
+    if (row && row.value) {
+      const j = JSON.parse(row.value);
+      const lat = Number(j.lat), lng = Number(j.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
+        return { lat, lng, rotulo: j.label || "Base", endereco: [j.address, j.city, j.uf].filter(Boolean).join(", "), aproximado: false };
+      }
+    }
+  } catch { /* sem base salva */ }
+  const ja = await env.DB.prepare("SELECT lat, lng, rotulo, endereco, preciso FROM geo_pontos WHERE chave = 'base'").first();
+  if (ja && ja.lat != null && ja.preciso === 1) return { lat: Number(ja.lat), lng: Number(ja.lng), rotulo: ja.rotulo || "Base", endereco: ja.endereco || "" };
+  const { results } = await env.DB.prepare("SELECT id, razao, fantasia, endereco, bairro, cidade, uf, cep, extra FROM parceiros WHERE situacao = 'Ativo' AND busca LIKE '%ancora%' AND busca LIKE '%segur%' ORDER BY id LIMIT 20").all();
+  const emp = (results || []).find((p) => /segur/.test(cadNorm((p.razao || "") + " " + (p.fantasia || ""))));
+  if (!emp) return { lat: null, lng: null, rotulo: "Base", endereco: "" };
+  const ponto = await pontoParceiro(env, emp);
+  if (!ponto) return { lat: null, lng: null, rotulo: emp.razao || "Base", endereco: enderecoParceiro(emp) };
+  if (!ponto.aproximado) await geoGravar(env, "base", ponto.lat, ponto.lng, emp.razao || "Base", enderecoParceiro(emp), 1);
+  return { lat: ponto.lat, lng: ponto.lng, rotulo: emp.razao || "Base", endereco: enderecoParceiro(emp), aproximado: !!ponto.aproximado };
+}
+function geoKmTxt(km) {
+  if (km == null || !Number.isFinite(km)) return "";
+  if (km < 1) return Math.round(km * 1000) + " m";
+  if (km < 10) return (Math.round(km * 10) / 10).toFixed(1).replace(".", ",") + " km";
+  return Math.round(km) + " km";
+}
+async function acharParceiro(env, nome, cidade) {
+  const alvo = cadNorm(nome);
+  const partes = alvo.split(" ").filter((t) => t.length > 2).slice(0, 4);
+  if (!partes.length) return null;
+  let sql = "SELECT id, razao, fantasia, endereco, bairro, cidade, uf, cep, extra FROM parceiros WHERE situacao = 'Ativo'";
+  const args = [];
+  for (const t of partes) { sql += " AND busca LIKE ?"; args.push("%" + t + "%"); }
+  sql += " LIMIT 12";
+  const { results } = await env.DB.prepare(sql).bind(...args).all();
+  const cid = cadNorm(String(cidade || "").replace(/\s*\([A-Z]{2}\)\s*$/, ""));
+  let best = null, score = -1;
+  for (const p of results || []) {
+    const nomes = [cadNorm(p.razao), cadNorm(p.fantasia)].filter(Boolean);
+    let s = 0;
+    for (const n of nomes) {
+      if (n === alvo) s = Math.max(s, 100);
+      else if (n.includes(alvo) || alvo.includes(n)) s = Math.max(s, 70);
+      else {
+        const hit = partes.filter((x) => n.includes(x)).length;
+        if (hit) s = Math.max(s, 30 + hit * 10);
+      }
+    }
+    if (cid && cadNorm(p.cidade) === cid) s += 15;
+    if (s > score) { score = s; best = p; }
+  }
+  return score >= 50 ? best : null;
+}
+async function geoDaOs(env, id) {
+  await garantirGeo(env);
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) return { erro: "Identificador inválido", status: 400 };
+  const row = await env.DB.prepare("SELECT id, dados FROM ordens_servico WHERE id = ?").bind(id).first();
+  if (!row) return { erro: "OS não encontrada.", status: 404 };
+  let d = {};
+  try { d = JSON.parse(row.dados || "{}"); } catch { d = {}; }
+  const parceiro = await acharParceiro(env, d.cliente, d.cidade);
+  const base = await pontoBase(env);
+  const clientePonto = parceiro ? await pontoParceiro(env, parceiro, base) : null;
+  const kmBase = geoHaversine(base, clientePonto);
+  const regiao = (parceiro && parceiro.cidade) || String(d.cidade || "").replace(/\s*\([A-Z]{2}\)\s*$/, "") || "";
+  const enderecoCurto = parceiro ? [parceiro.endereco, parceiro.bairro].filter(Boolean).join(" · ") : "";
+  const kmTxt = geoKmTxt(kmBase);
+  let resumo = regiao || "Sem cidade";
+  if (kmTxt && clientePonto) resumo = kmTxt + " da base · " + (regiao || "região") + (enderecoCurto ? " · " + enderecoCurto : "");
+  else if (parceiro && !clientePonto) resumo = (enderecoCurto || regiao || parceiro.razao) + " · endereço da Omie ainda sem coordenada";
+  else if (!parceiro) resumo = (regiao ? regiao + " · " : "") + "cliente não encontrado na Omie";
+  const { equipes } = await eqCarregar(env, true);
+  const { results: locais } = await env.DB.prepare("SELECT chave, lat, lng, atualizado_em FROM geo_pontos WHERE chave LIKE 'tecnico:%'").all();
+  const porTec = new Map((locais || []).map((l) => [String(l.chave).slice(8), l]));
+  const tecnicos = equipes.filter((e) => e.principalAtivo).map((e) => {
+    const loc = porTec.get(String(e.principal_id));
+    const ponto = loc && loc.lat != null ? { lat: Number(loc.lat), lng: Number(loc.lng) } : null;
+    const km = geoHaversine(ponto, clientePonto);
+    return { id: e.principal_id, nome: e.principal, equipe: e.nome, km, regiao, ha: loc ? geoHa(loc.atualizado_em) : "", lat: ponto ? ponto.lat : null, lng: ponto ? ponto.lng : null };
+  });
+  tecnicos.sort((a, b) => (a.km == null ? 1e9 : a.km) - (b.km == null ? 1e9 : b.km));
+  return { id: row.id, resumo, regiao, kmBase, cliente: clientePonto, base: { lat: base.lat, lng: base.lng, endereco: base.endereco }, tecnicos };
+}
+async function avisarTecnicoPush(env, usuarioId, os) {
+  await garantirGeo(env);
+  const row = await env.DB.prepare("SELECT token FROM tecnico_push WHERE usuario_id = ?").bind(usuarioId).first();
+  if (!row || !row.token) return;
+  await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      to: row.token,
+      title: "Nova OS " + (os.num || ""),
+      body: [os.cliente || "Cliente", os.cidade && os.cidade !== "—" ? os.cidade : ""].filter(Boolean).join(" · "),
+      sound: "default",
+      channelId: "os-tecnico",
+      priority: "high",
+      data: { osId: os.id || "" }
+    })
+  });
+}
 async function rotaTecnico(request, env, url, u) {
   const caminho = url.pathname;
   if (u.perfil !== "tecnico") return json({ erro: "Dispon\xEDvel s\xF3 para o perfil T\xE9cnico." }, 403);
+  if (caminho === "/api/tecnico/local" && request.method === "POST") {
+    let b = {};
+    try { b = await lerJson(request, 2e3); } catch { return json({ erro: "Dados inválidos" }, 400); }
+    const lat = Number(b.lat), lng = Number(b.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return json({ erro: "Localização inválida." }, 400);
+    await garantirGeo(env);
+    await geoGravar(env, "tecnico:" + u.id, lat, lng, u.nome || "", txt(b.accuracy, 20), 1);
+    return json({ ok: true });
+  }
+  if (caminho === "/api/tecnico/push" && request.method === "POST") {
+    let b = {};
+    try { b = await lerJson(request, 2e3); } catch { return json({ erro: "Dados inválidos" }, 400); }
+    const token = String(b.token || b.expoPushToken || "");
+    if (!/^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(token)) return json({ erro: "Token de notificação inválido." }, 400);
+    await garantirGeo(env);
+    const agora = Date.now();
+    const ja = await env.DB.prepare("SELECT usuario_id FROM tecnico_push WHERE usuario_id = ?").bind(u.id).first();
+    if (ja) await env.DB.prepare("UPDATE tecnico_push SET token = ?, plataforma = ?, atualizado_em = ? WHERE usuario_id = ?").bind(token, txt(b.plataforma, 20), agora, u.id).run();
+    else await env.DB.prepare("INSERT INTO tecnico_push (usuario_id, token, plataforma, atualizado_em) VALUES (?,?,?,?)").bind(u.id, token, txt(b.plataforma, 20), agora).run();
+    return json({ ok: true });
+  }
   const frota = await tecnicoFrota(request, env, url, u);
   if (frota) return frota;
+  if (caminho === "/api/tecnico/checklists" && request.method === "GET") {
+    await garantirChecklists(env);
+    return json({ problemas: await listarProblemas(env), checklists: await listarModelosChecklist(env, true) });
+  }
   if (caminho === "/api/tecnico/os" && request.method === "GET") {
     return json({ docs: await listar(env, u), agora: Date.now(), eu: { id: u.id, nome: u.nome, equipe: u.equipe } });
   }
@@ -1775,7 +2537,7 @@ async function crmCriarOS(env, op, u) {
       crm: { id: op.id, cod: op.cod }
     };
     if (orcRow) dados.orcamento = { id: orcRow.id, num: orcRow.num };
-    if (od) dados.servicosOrc = orcServicos(od);
+    if (od) { const prodOrc = orcProdutos(od); dados.servicosOrc = orcServicos(od); dados.produtosOrc = prodOrc.itens; dados.descontoProd = prodOrc.desconto; }
     try {
       await env.DB.batch([
         env.DB.prepare("INSERT INTO ordens_servico (id, num, stage, dados, versao, atualizado_em, atualizado_por) VALUES (?,?,0,?,1,?,?)").bind(id, num, JSON.stringify(dados), agora, u.login),
@@ -2114,7 +2876,7 @@ function orcSaida(r, completo) {
   if (completo) o.dados = d;
   o.mensal = r.mensal || 0;
   if (!completo) { o.n_servicos = d.mensal && d.mensal.itens ? d.mensal.itens.length : 0; o.prazo_meses = d.mensal && d.mensal.prazo_meses || null; }
-  if (!completo) { o.n_itens = (d.itens || []).length; o.cidade = d.cliente && d.cliente.cidade || ""; o.documento = d.cliente && d.cliente.documento || ""; o.validade = d.validade || ""; }
+  if (!completo) { o.n_itens = (d.itens || []).length; o.cidade = d.cliente && d.cliente.cidade || ""; o.documento = d.cliente && d.cliente.documento || ""; o.validade = d.validade || ""; o.autorizou = d.autorizacao && d.autorizacao.por || ""; }
   return o;
 }
 var ORC_SEL = "SELECT o.*, l.num AS lt_num, c.cod AS op_cod FROM orcamentos o LEFT JOIN levantamentos l ON l.id = o.lt_id LEFT JOIN crm_oportunidades c ON c.id = o.op_id";
@@ -2332,11 +3094,24 @@ async function orcRotas(request, env, url, u) {
   if (r[2] === "oportunidade" && m === "POST") return orcParaOportunidade(env, request, u, atual);
   if (r[2] === "pedido" && m === "POST") {
     if (atual.op_id) return json({ erro: "Este orçamento é da oportunidade " + (atual.op_cod || "do CRM") + ". A OS de instalação é gerada ao finalizar a oportunidade como Fechado no CRM." }, 409);
+    let b; try { b = await lerJson(request, 12e6); } catch (e) { return json({ erro: e && e.message === "grande" ? "O documento passa de 8 MB." : "Dados inválidos" }, 400); }
+    const por = String(b.autorizou || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    if (por.length < 2) return json({ erro: "Informe quem autorizou o orçamento." }, 400);
+    const docPrep = await orcDocAutorizacao(b.documento);
+    if (docPrep.erro) return json({ erro: docPrep.erro }, docPrep.status || 400);
+    if (docPrep.bin && !env.FOTOS) return json({ erro: "Não dá para guardar o documento agora. Envie sem o arquivo ou tente de novo." }, 503);
     // trava: só um pedido por orçamento
     const trava = await env.DB.prepare("UPDATE orcamentos SET os_id = 'gerando', atualizado_em = ? WHERE id = ? AND os_id IS NULL AND excluido = 0").bind(agora, id).run();
     if (!trava.meta.changes) return json({ erro: "Este orçamento já foi enviado ao pedido." }, 409);
     try {
       const d = JSON.parse(atual.dados), q = rotulo(agora);
+      let docMeta = null;
+      if (docPrep.bin) {
+        await env.FOTOS.put("orcamentos/" + id + "/autorizacao", docPrep.bin, { httpMetadata: { contentType: docPrep.tipo }, customMetadata: { nome: docPrep.nome, usuario: u.login, enviado: String(agora) } });
+        docMeta = { nome: docPrep.nome, url: "/api/orcamento-ver/" + encodeURIComponent(id) + "/autorizacao" };
+      }
+      const autorizacao = { por, quando: q, doc: docMeta };
+      d.autorizacao = autorizacao;
       const itens = (d.itens || []).filter((i) => i.tipo !== "servico").map((i) => ({ qtd: (Math.round(i.qtd) || 1) + "x", nome: (String(i.descricao || "") + (i.obs ? " (" + i.obs + ")" : "")).slice(0, 120), st: "pendente", prev: "" }));
       const svs = d.mensal && d.mensal.itens ? d.mensal.itens : [];
       const txtMensal = svs.length ? "Serviço mensal: " + svs.map((s) => (s.qtd > 1 ? (Math.round(s.qtd) || 1) + "x " : "") + s.descricao).join(", ") + (d.mensal.prazo_meses ? " · contrato de " + d.mensal.prazo_meses + " meses" : "") : "";
@@ -2347,10 +3122,10 @@ async function orcRotas(request, env, url, u) {
         const num = await proximoNumero(env, "os"), oid = "os-" + aleatorio(6);
         const dados = {
           id: oid, num, tipo: "pedido", sub: null, orc: atual.num, cliente: atual.cliente, cidade: cid || "—",
-          obs: "Orçamento " + atual.num + " aprovado" + (txtMensal ? ". " + txtMensal : "") + (d.obs ? ". " + String(d.obs).slice(0, 300) : ""),
+          obs: "Orçamento " + atual.num + " aprovado · autorizado por " + por + (txtMensal ? ". " + txtMensal : "") + (d.obs ? ". " + String(d.obs).slice(0, 300) : ""),
           servico: ((d.itens || []).length ? "Instalação" : "Ativação do serviço mensal") + " conforme orçamento " + atual.num, stage: 0, agenda: "A agendar", tecnico: null, pending: null, itens,
-          hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir do orçamento " + atual.num + " (Comercial · enviado ao pedido)" }],
-          orcamento: { id: atual.id, num: atual.num }, servicosOrc: orcServicos(d)
+          hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir do orçamento " + atual.num + " (Comercial · enviado ao pedido · autorizado por " + por + (docMeta ? " · documento " + docMeta.nome : "") + ")" }],
+          orcamento: { id: atual.id, num: atual.num }, autorizacao, servicosOrc: orcServicos(d), produtosOrc: orcProdutos(d).itens, descontoProd: orcProdutos(d).desconto
         };
         try {
           await env.DB.batch([
@@ -2362,8 +3137,8 @@ async function orcRotas(request, env, url, u) {
       }
       if (!os) throw new Error("num");
       await env.DB.batch([
-        env.DB.prepare("UPDATE orcamentos SET os_id = ?, os_num = ?, status = 'aprovado', versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ?").bind(os.id, os.num, agora, u.login, id),
-        env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, u.login, "orcamentos", id, atual.num, "Enviado ao pedido · OS " + os.num)
+        env.DB.prepare("UPDATE orcamentos SET os_id = ?, os_num = ?, status = 'aprovado', dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ?").bind(os.id, os.num, JSON.stringify(d), agora, u.login, id),
+        env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora, u.login, "orcamentos", id, atual.num, "Enviado ao pedido · OS " + os.num + " · autorizado por " + por)
       ]);
       if (atual.lt_id) {
         const lt = await env.DB.prepare("SELECT os_id FROM levantamentos WHERE id = ?").bind(atual.lt_id).first();
@@ -2469,6 +3244,38 @@ async function orcDaOp(env, op) {
   return r;
 }
 
+function orcDocAutorizacao(doc) {
+  if (!doc || !doc.base64) return { bin: null };
+  const tipos = {
+    "application/pdf": "application/pdf",
+    "image/jpeg": "image/jpeg",
+    "image/png": "image/png",
+    "image/webp": "image/webp",
+    "application/msword": "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  };
+  const nomeArq = String(doc.nome || "").toLowerCase();
+  const tipo = tipos[String(doc.tipo || "").toLowerCase()] || (nomeArq.endsWith(".pdf") ? "application/pdf" : nomeArq.endsWith(".png") ? "image/png" : nomeArq.endsWith(".webp") ? "image/webp" : nomeArq.endsWith(".jpg") || nomeArq.endsWith(".jpeg") ? "image/jpeg" : nomeArq.endsWith(".docx") ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : nomeArq.endsWith(".doc") ? "application/msword" : "");
+  if (!tipo) return { erro: "O documento precisa ser PDF, imagem ou Word.", status: 400 };
+  const nome = String(doc.nome || "documento").replace(/[^\w.\- ()áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180) || "documento";
+  let bin;
+  try {
+    const limpo = String(doc.base64).replace(/\s/g, "");
+    bin = typeof Buffer !== "undefined" ? new Uint8Array(Buffer.from(limpo, "base64")) : Uint8Array.from(atob(limpo), (c) => c.charCodeAt(0));
+  } catch { return { erro: "Documento inválido.", status: 400 }; }
+  if (!bin.byteLength || bin.byteLength > 8 * 1024 * 1024) return { erro: "O documento está vazio ou passa de 8 MB.", status: 400 };
+  return { bin, tipo, nome };
+}
+async function orcAutorizacaoArquivo(env, chave) {
+  const k = decodeURIComponent(String(chave || "")).slice(0, 40);
+  if (!/^[A-Za-z0-9_-]{3,40}$/.test(k)) return json({ erro: "Orçamento inválido" }, 400);
+  const row = await env.DB.prepare("SELECT id FROM orcamentos WHERE (id = ? OR num = ?) AND excluido = 0").bind(k, k.toUpperCase()).first();
+  if (!row || !env.FOTOS) return json({ erro: "Documento não encontrado" }, 404);
+  const obj = await env.FOTOS.get("orcamentos/" + row.id + "/autorizacao");
+  if (!obj) return json({ erro: "Documento não encontrado" }, 404);
+  const nome = (obj.customMetadata && obj.customMetadata.nome) || "autorizacao";
+  return new Response(obj.body, { headers: { "content-type": obj.httpMetadata && obj.httpMetadata.contentType || "application/octet-stream", "content-disposition": "inline; filename*=UTF-8''" + encodeURIComponent(nome), "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" } });
+}
 // Documento do orçamento "anexado" à OS e à oportunidade: leitura para quem trabalha na OS, CRM, Compras e Estoque
 async function orcVer(env, chave) {
   const k = decodeURIComponent(String(chave || "")).slice(0, 40);
@@ -3206,6 +4013,22 @@ function servirEstatico(request) {
 function orcServicos(d) {
   return (d && Array.isArray(d.itens) ? d.itens : []).filter((i) => i && i.tipo === "servico").map((i) => ({ mo_id: i.mo_id, codigo: i.codigo, descricao: i.descricao, unidade: i.unidade, qtd: i.qtd, preco: i.preco, desc: i.desc || 0, total: i.total }));
 }
+function orcProdutos(d) {
+  const itens = d && Array.isArray(d.itens) ? d.itens : [];
+  let prodSub = 0, allSub = 0;
+  const lista = [];
+  for (const i of itens) {
+    if (!i) continue;
+    const linha = +i.total || 0;
+    allSub += linha;
+    if (i.tipo === "servico") continue;
+    prodSub += linha;
+    const qtd = +i.qtd || 1;
+    lista.push({ nome: (String(i.descricao || "") + (i.obs ? " (" + i.obs + ")" : "")).slice(0, 120), qtd, preco: Math.round((linha / qtd) * 100) / 100, total: linha });
+  }
+  const desc = Math.min(allSub, Math.max(0, +(d && d.desconto) || 0));
+  return { itens: lista, desconto: allSub > 0 ? Math.round(desc * (prodSub / allSub) * 100) / 100 : 0 };
+}
 // src/worker.js
 var PUBLICOS = /* @__PURE__ */ new Set(["/login", "/login.html", "/img/logo-ancora.png", "/favicon.ico", "/api/login", "/api/health"]);
 var REGRAS = [
@@ -3213,7 +4036,7 @@ var REGRAS = [
   [/^\/(telas\/config|configuracoes)(\/|\.html|$)/, ["config", "cfg-integracoes", "cfg-banco"]],
   [/^\/api\/estoque\//, ["op-estoque", "op-est-emp", "op-est-tec", "op-est-mov", "op-est-sep", "op-est-conf", "at-os", "at-agenda"]],
   [/^\/(telas\/estoque|operacoes\/estoque)(\/|\.html|$)/, ["op-est-emp", "op-est-tec", "op-est-mov"]],
-  [/^\/(api\/os|telas\/os|assistencia\/os|assistencia\/agenda)(\/|\.html|$)/, ["at-os", "at-agenda"]],
+  [/^\/(api\/os|telas\/os|assistencia\/os|assistencia\/agenda|assistencia\/historico|assistencia\/checklists|api\/checklists|api\/geo)(\/|\.html|$)/, ["at-os", "at-agenda"]],
   [/^\/(api\/tickets|telas\/tickets|tickets)(\/|\.html|$)/, ["tickets"]],
   [/^\/(painel|views\/painel)(\/|\.html|$)/, ["painel"]],
   [/^\/(usuarios|api\/usuarios|api\/auxiliares)(\/|\.html|$)/, ["usuarios"]],
@@ -3494,6 +4317,14 @@ var worker_default = {
     }
     const spm = caminho.match(/^\/softphone\/([a-z0-9.-]+)$/);
     if (spm && request.method === "GET") return voipServirArquivo(request, env, spm[1]);
+    if (caminho === "/api/geo/os" && request.method === "GET") {
+      if (!(ehAdmin(u) || u.permissoes.includes("at-os") || u.permissoes.includes("at-agenda"))) return json({ erro: "Sem acesso." }, 403);
+      try {
+        const g = await geoDaOs(env, String(url.searchParams.get("id") || ""));
+        if (g && g.erro) return json({ erro: g.erro }, g.status || 400);
+        return json(g);
+      } catch (e) { return json({ erro: "Não foi possível calcular a distância." }, 500); }
+    }
     if (caminho === "/api/equipes") return eqParaOS(env);
     if (caminho === "/api/equipes-tecnicas" || caminho.startsWith("/api/equipes-tecnicas/")) {
       try {
@@ -3607,7 +4438,9 @@ var worker_default = {
     if (/^\/orcamento\/ver\/[A-Za-z0-9_-]{3,40}$/.test(caminho)) return telaR2(env, "orcamentos");
     if (caminho.startsWith("/api/orcamento-ver/") && request.method === "GET") {
       try {
-        return await orcVer(env, caminho.slice(19));
+        const resto = caminho.slice(19);
+        if (resto.endsWith("/autorizacao")) return await orcAutorizacaoArquivo(env, resto.slice(0, -"/autorizacao".length));
+        return await orcVer(env, resto);
       } catch (e) {
         return json({ erro: "Falha ao abrir o orçamento." }, 500);
       }
@@ -3673,6 +4506,13 @@ var worker_default = {
         return await crmRotas(request, env, url, u);
       } catch (e) {
         return json({ erro: "Falha no CRM. Tente de novo." }, 500);
+      }
+    }
+    if (caminho === "/api/checklists") {
+      try {
+        return await rotaChecklists(request, env, u);
+      } catch (e) {
+        return json({ erro: "Falha nos checklists. Tente de novo." }, 500);
       }
     }
     if (caminho.startsWith("/api/")) {
