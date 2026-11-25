@@ -70,13 +70,19 @@ function normBusca(s: string) {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** Busca de clientes do orçamento, da OS e dos tickets no cadastro já sincronizado (parceiros). */
+/** Busca de clientes e fornecedores no cadastro sincronizado (parceiros e Omie). */
 async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/cadastros/busca" || request.method !== "GET") return null;
 
   const tipo = (url.searchParams.get("tipo") || "produto").toLowerCase();
-  if (tipo !== "cliente" && tipo !== "clientes") return null;
+  const tag =
+    tipo === "cliente" || tipo === "clientes"
+      ? "Cliente"
+      : tipo === "fornecedor" || tipo === "fornecedores"
+        ? "Fornecedor"
+        : null;
+  if (!tag) return null;
 
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 80);
   const lim = Math.min(30, Math.max(1, parseInt(url.searchParams.get("limite") || "12", 10) || 12));
@@ -105,11 +111,15 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
           .reduce((a, b) => sql`${a} and ${b}`)
       : sql`false`;
     const doc = dig.length >= 4 ? sql`regexp_replace(coalesce(t.documento, ''), '\\D', '', 'g') like ${"%" + dig + "%"}` : sql`false`;
+    const tagSql =
+      tag === "Fornecedor"
+        ? sql`coalesce(t.tags, '[]')::jsonb @> '["Fornecedor"]'::jsonb`
+        : sql`coalesce(t.tags, '[]')::jsonb @> '["Cliente"]'::jsonb`;
     const rows = await sql<Record<string, unknown>[]>`
       select t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao
       from parceiros t
       where t.situacao = 'Ativo'
-        and coalesce(t.tags, '[]')::jsonb @> '["Cliente"]'::jsonb
+        and ${tagSql}
         and (${nome} or ${doc})
       order by coalesce(t.fantasia, t.razao)
       limit ${lim}
@@ -119,9 +129,32 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
       try { tags = JSON.parse(String(r.tags || "[]")) as string[]; } catch { tags = []; }
       return { ...r, tags };
     });
+    if (tag === "Fornecedor" && itens.length < lim) {
+      const docs = new Set(itens.map((r) => String(r.documento || "").replace(/\D+/g, "")).filter((d) => d.length >= 8));
+      const { listOmieSuppliers } = await import("@/db/suppliers");
+      const omie = await listOmieSuppliers({ query: q, activeOnly: true, limit: lim });
+      for (const s of omie) {
+        if (itens.length >= lim) break;
+        const docOmie = String(s.cnpjCpf || "").replace(/\D+/g, "");
+        if (docOmie.length >= 8 && docs.has(docOmie)) continue;
+        itens.push({
+          id: s.id,
+          documento: s.cnpjCpf,
+          tipo_pessoa: docOmie.length === 11 ? "PF" : docOmie.length === 14 ? "PJ" : null,
+          razao: s.razaoSocial,
+          fantasia: s.nomeFantasia || s.razaoSocial,
+          tags: ["Fornecedor"],
+          telefone: null,
+          contato: null,
+          email: null,
+          cidade: null,
+          situacao: "Ativo",
+        });
+      }
+    }
     return Response.json({ itens });
   } catch (e) {
-    console.error("[sgo] busca clientes", e);
+    console.error("[sgo] busca cadastros", e);
     return null;
   }
 }

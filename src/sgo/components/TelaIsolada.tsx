@@ -87,8 +87,9 @@ export function TelaIsolada({ def, busca }: { def: DefTela; busca?: string }) {
     Promise.allSettled(def.meta.bibliotecas.map(carregarScript))
       .then(() => {
         if (!vivo) return;
-        executar(def.logica, amb, def.id);
+        // A busca precisa existir antes da lógica: a tela isolada guarda SGOBusca na janela dela.
         if (def.meta.buscaCadastros) executar(buscaCadastros, amb, def.id + "-busca");
+        executar(def.logica, amb, def.id);
       })
       .catch((e: Error) => vivo && setErro(e.message));
 

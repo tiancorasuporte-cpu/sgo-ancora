@@ -7,8 +7,11 @@
 import { Fragment, useState } from "react";
 
 import { E, a, arr, chave, css, fn, s, t } from "@/sgo/lib/dc";
+import { ligarComplementosOs } from "@/sgo/telas/os/complementos";
 import { GeoLinha } from "@/sgo/telas/os/GeoLinha";
 import { ExcluirOs, OsCampo } from "@/sgo/telas/os/OsCampo";
+
+ligarComplementosOs();
 
 type FiltroCol = { aberto: boolean; nome: string; de: string; ate: string };
 const FILTRO_VAZIO: FiltroCol = { aberto: false, nome: "", de: "", ate: "" };
