@@ -4,13 +4,38 @@
  */
 /* eslint-disable */
 // @ts-nocheck
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 
 import { E, a, arr, chave, css, fn, s, t } from "@/sgo/lib/dc";
 import { GeoLinha } from "@/sgo/telas/os/GeoLinha";
 import { ExcluirOs, OsCampo } from "@/sgo/telas/os/OsCampo";
 
+type FiltroCol = { aberto: boolean; nome: string; de: string; ate: string };
+const FILTRO_VAZIO: FiltroCol = { aberto: false, nome: "", de: "", ate: "" };
+
+function passaCard(card: any, filtro: FiltroCol) {
+  const nome = filtro.nome.trim().toLocaleLowerCase();
+  if (nome) {
+    const texto = [card?.num, card?.cliente, card?.servico, card?.cidade, card?.tecnico]
+      .filter(Boolean)
+      .join(" ")
+      .toLocaleLowerCase();
+    if (!texto.includes(nome)) return false;
+  }
+  if (filtro.de || filtro.ate) {
+    const dia = String(card?.agDate || "");
+    if (!dia) return false;
+    if (filtro.de && dia < filtro.de) return false;
+    if (filtro.ate && dia > filtro.ate) return false;
+  }
+  return true;
+}
+
 export function QuadroOsView({ v }: { v: any }) {
+  const [filtros, setFiltros] = useState<Record<string, FiltroCol>>({});
+  const mudarFiltro = (id: string, patch: Partial<FiltroCol>) => {
+    setFiltros((atual) => ({ ...atual, [id]: { ...(atual[id] || FILTRO_VAZIO), ...patch } }));
+  };
   return (
     <div className="tela-os">
       <div className={"z0"}>
@@ -233,7 +258,12 @@ export function QuadroOsView({ v }: { v: any }) {
               ) : null}
               <div className={"z16"}>
                 <div className={"z17"}>
-                  {arr(v["cols"]).map((_col5: any, _i5: number) => (
+                  {arr(v["cols"]).map((_col5: any, _i5: number) => {
+                    const fid = String(_col5?.["step"] ?? _i5);
+                    const filtro = filtros[fid] || FILTRO_VAZIO;
+                    const filtrando = !!(filtro.nome.trim() || filtro.de || filtro.ate);
+                    const visiveis = arr(_col5?.["lanes"]).reduce((n: number, lane: any) => n + arr(lane?.["cards"]).filter((card: any) => passaCard(card, filtro)).length, 0);
+                    return (
                     <Fragment key={chave(_col5, _i5)}>
                         <section className={a((s(_col5?.["cls"]) + " z18"))} aria-label={a(_col5?.["name"])} onDragOver={fn(_col5?.["onDragOver"])} onDrop={fn(_col5?.["onDrop"])}>
                           <div className={"col-bar"}>
@@ -243,8 +273,21 @@ export function QuadroOsView({ v }: { v: any }) {
                               <h2 className={"z1b"}>
                                 {t((s(_col5?.["step"]) + ". " + s(_col5?.["name"])))}
                               </h2>
-                              <span className={"col-badge z1c"}>
-                                {t(_col5?.["count"])}
+                              <span style={css("display:flex;align-items:center;gap:6px")}>
+                                <button
+                                  type={"button"}
+                                  className={a("col-filt" + (filtro.aberto || filtrando ? " on" : ""))}
+                                  aria-label={"Filtrar esta coluna"}
+                                  aria-expanded={filtro.aberto}
+                                  onClick={() => mudarFiltro(fid, { aberto: !filtro.aberto })}
+                                >
+                                  <svg aria-hidden={"true"} width={"15"} height={"15"} viewBox={"0 0 24 24"} fill={"none"} stroke={"currentColor"} strokeWidth={"2"} strokeLinecap={"round"}>
+                                    <path d={"M4 5h16l-6 7v6l-4 2v-8z"} />
+                                  </svg>
+                                </button>
+                                <span className={"col-badge z1c"}>
+                                  {t(filtrando ? visiveis : _col5?.["count"])}
+                                </span>
                               </span>
                             </div>
                             <div className={"z1d"}>
@@ -259,11 +302,45 @@ export function QuadroOsView({ v }: { v: any }) {
                                 {t(_col5?.["moverLabel"])}
                               </span>
                             </div>
+                            {filtro.aberto ? (
+                              <div className={"col-filtro"}>
+                                <label>
+                                  {"Nome"}
+                                  <input
+                                    type={"search"}
+                                    value={filtro.nome}
+                                    placeholder={"Cliente, OS ou cidade"}
+                                    onChange={(e) => mudarFiltro(fid, { nome: e.target.value })}
+                                  />
+                                </label>
+                                <label>
+                                  {"De"}
+                                  <input
+                                    type={"date"}
+                                    value={filtro.de}
+                                    onChange={(e) => mudarFiltro(fid, { de: e.target.value })}
+                                  />
+                                </label>
+                                <label>
+                                  {"Até"}
+                                  <input
+                                    type={"date"}
+                                    value={filtro.ate}
+                                    onChange={(e) => mudarFiltro(fid, { ate: e.target.value })}
+                                  />
+                                </label>
+                                {filtrando ? (
+                                  <button type={"button"} className={"btn-ghost"} onClick={() => mudarFiltro(fid, { nome: "", de: "", ate: "" })}>
+                                    {"Limpar"}
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
                           <div className={"z1f"}>
                             {arr(_col5?.["lanes"]).map((_lane6: any, _i6: number) => (
                               <Fragment key={chave(_lane6, _i6)}>
-                                  {E(_lane6?.["hasTitle"]) ? (
+                                  {E(_lane6?.["hasTitle"]) && (!filtrando || arr(_lane6?.["cards"]).some((card: any) => passaCard(card, filtro))) ? (
                                     <>
                                       <div className={a(_lane6?.["cls"])}>
                                         <span >
@@ -275,7 +352,7 @@ export function QuadroOsView({ v }: { v: any }) {
                                       </div>
                                     </>
                                   ) : null}
-                                  {arr(_lane6?.["cards"]).map((_card7: any, _i7: number) => (
+                                  {arr(_lane6?.["cards"]).filter((_card7: any) => passaCard(_card7, filtro)).map((_card7: any, _i7: number) => (
                                     <Fragment key={chave(_card7, _i7)}>
                                         <article className={a((s(_card7?.["cls"]) + " z1g"))} draggable={a(_card7?.["drag"])} onDragStart={fn(_card7?.["onDragStart"])} onDragEnd={fn(_card7?.["onDragEnd"])}>
                                           {E(_card7?.["hasSite"]) ? (
@@ -448,7 +525,7 @@ export function QuadroOsView({ v }: { v: any }) {
                                         </article>
                                     </Fragment>
                                   ))}
-                                  {E(_lane6?.["emptyLane"]) ? (
+                                  {!filtrando && E(_lane6?.["emptyLane"]) ? (
                                     <>
                                       <div className={"z1p"}>
                                         {t(_lane6?.["emptyText"])}
@@ -464,7 +541,12 @@ export function QuadroOsView({ v }: { v: any }) {
                                 </button>
                               </>
                             ) : null}
-                            {E(_col5?.["empty"]) ? (
+                            {filtrando && visiveis === 0 ? (
+                              <div className={"z1r"}>
+                                {"Nenhum card com esse filtro"}
+                              </div>
+                            ) : null}
+                            {!filtrando && E(_col5?.["empty"]) ? (
                               <>
                                 <div className={"z1r"}>
                                   {"Nenhuma OS nesta etapa"}
@@ -474,7 +556,8 @@ export function QuadroOsView({ v }: { v: any }) {
                           </div>
                         </section>
                     </Fragment>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </main>

@@ -2068,6 +2068,12 @@ async function migrateSchema() {
   if (!(await indexExists("mat_saida_itens_saida_idx"))) {
     await sql.unsafe("create index mat_saida_itens_saida_idx on mat_saida_itens (saida_id)");
   }
+  if ((await tableExists("mat_saida_itens")) && !(await columnExists("mat_saida_itens", "recebido_em"))) {
+    await sql.unsafe("alter table mat_saida_itens add column recebido_em timestamptz");
+  }
+  if ((await tableExists("mat_saida_itens")) && !(await columnExists("mat_saida_itens", "recusado_em"))) {
+    await sql.unsafe("alter table mat_saida_itens add column recusado_em timestamptz");
+  }
 
   if (!(await tableExists("team_stock_moves"))) {
     await sql`

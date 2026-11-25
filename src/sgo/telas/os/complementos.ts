@@ -6,3 +6,4 @@ import "./fechamento.js";
 import "./etapas.js";
 import "./via-montar.js";
 import "./via-botoes.js";
+import "./omie-envio.js";

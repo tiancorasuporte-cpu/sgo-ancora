@@ -953,6 +953,10 @@ function EstoquePage() {
                               <span className="rounded-full bg-stone-200 px-xs py-2xs text-label-sm font-semibold text-stone-700">
                                 Cancelada
                               </span>
+                            ) : s.status === "recusada" ? (
+                              <span className="rounded-full bg-stone-200 px-xs py-2xs text-label-sm font-semibold text-stone-700">
+                                Não recebida
+                              </span>
                             ) : (
                               s.status
                             )}

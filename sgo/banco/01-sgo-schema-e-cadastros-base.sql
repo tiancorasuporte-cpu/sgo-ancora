@@ -359,6 +359,7 @@ INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo",
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('tickets',NULL,'Tickets',20,'novo','/tickets',1,NULL);
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('cob-venc','Cobrança','Vencimentos',30,'em_breve',NULL,1,NULL);
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('cob-notif','Cobrança','Notificações',31,'em_breve',NULL,1,NULL);
+INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('cob-alertas','Cobrança','Alertas e horário',32,'novo','/settings',1,NULL);
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('com-orc','Comercial','Orçamentos',40,'novo','/comercial/orcamentos',1,NULL);
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('com-postos','Comercial','Orçamento Postos',41,'novo','/comercial/postos',1,NULL);
 INSERT INTO "menu_itens" ("id","grupo","titulo","ordem","destino","url","ativo","pai") VALUES ('com-precos','Comercial','Tabela de preços',42,'novo','/comercial/precos',1,NULL);

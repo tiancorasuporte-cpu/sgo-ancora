@@ -92,7 +92,17 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
     const pal = normBusca(q).split(" ").filter(Boolean).slice(0, 6);
     const dig = q.replace(/\D+/g, "");
     const nome = pal.length
-      ? pal.map((p) => sql`t.busca ilike ${"%" + p + "%"}`).reduce((a, b) => sql`${a} and ${b}`)
+      ? pal
+          .map(
+            (p) => sql`(
+              t.busca ilike ${"%" + p + "%"}
+              or t.razao ilike ${"%" + p + "%"}
+              or coalesce(t.fantasia, '') ilike ${"%" + p + "%"}
+              or coalesce(t.cidade, '') ilike ${"%" + p + "%"}
+              or coalesce(t.contato, '') ilike ${"%" + p + "%"}
+            )`,
+          )
+          .reduce((a, b) => sql`${a} and ${b}`)
       : sql`false`;
     const doc = dig.length >= 4 ? sql`regexp_replace(coalesce(t.documento, ''), '\\D', '', 'g') like ${"%" + dig + "%"}` : sql`false`;
     const rows = await sql<Record<string, unknown>[]>`
@@ -165,6 +175,44 @@ async function atenderSyncOmieCadastros(request: Request): Promise<Response | nu
   }
 }
 
+async function atenderFaturarOsOmie(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/os/faturar-omie" || request.method !== "POST") return null;
+  if (request.headers.get("x-sgo") !== "1") {
+    return Response.json({ erro: "Requisição recusada." }, { status: 403 });
+  }
+
+  const { usuarioSgo, ehAdminSgo } = await import("./sessao");
+  const eu = await usuarioSgo(request);
+  if (!eu) return Response.json({ erro: "Faça login para continuar." }, { status: 401 });
+  const pode = ehAdminSgo(eu) || eu.permissoes.includes("at-os") || eu.permissoes.includes("at-agenda");
+  if (!pode) return Response.json({ erro: "Sem permissão para enviar a OS para a Omie." }, { status: 403 });
+
+  let body: { id?: string; faturamento?: Record<string, unknown>; substituir?: boolean } = {};
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    body = {};
+  }
+
+  try {
+    const { enviarOsParaFaturarOmie } = await import("@/server/omie/os-faturar");
+    const result = await enviarOsParaFaturarOmie({
+      id: String(body.id || ""),
+      faturamento: (body.faturamento || {}) as never,
+      substituir: !!body.substituir,
+      por: eu.nome || eu.login,
+    });
+    return Response.json(result);
+  } catch (e) {
+    console.error("[sgo] faturar-omie", e);
+    return Response.json(
+      { erro: e instanceof Error ? e.message : "Falha ao enviar para a Omie." },
+      { status: 400 },
+    );
+  }
+}
+
 export async function atenderSgo(request: Request): Promise<Response> {
   const { garantirInstalacao } = await import("./instalar");
   await garantirInstalacao();
@@ -175,6 +223,9 @@ export async function atenderSgo(request: Request): Promise<Response> {
 
   const buscaOmie = await atenderBuscaCadastrosOmie(request);
   if (buscaOmie) return buscaOmie;
+
+  const faturar = await atenderFaturarOsOmie(request);
+  if (faturar) return faturar;
 
   const mod = await import("./worker.js");
   const worker = (mod as { default: { fetch: (r: Request, e: unknown) => Promise<Response> } }).default;

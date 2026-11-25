@@ -1084,7 +1084,12 @@ var ACOES = {
   },
   lev(c, a, u, q) {
     if (c.stage !== 5 || c.tecnicoId !== u.id || c.tipo !== "visita") return { erro: "Esta OS n\xE3o \xE9 uma visita de or\xE7amento em execu\xE7\xE3o com voc\xEA." };
-    const itens = (Array.isArray(a.dados && a.dados.itens) ? a.dados.itens : []).map((r) => ({ qtd: (parseInt(r.qtd, 10) || 0) + "x", nome: txt(r.nome, 120), obs: txt(r.obs, 200) })).filter((r) => r.nome && parseInt(r.qtd, 10) > 0).slice(0, 60);
+    if (c.confPend) return { erro: "A conferência já foi enviada. O orçamento não pode mais ser alterado." };
+    const itens = (Array.isArray(a.dados && a.dados.itens) ? a.dados.itens : []).map((r) => {
+      const pid = parseInt(r.pid, 10);
+      const codigo = txt(r.codigo, 40);
+      return { qtd: (parseInt(r.qtd, 10) || 0) + "x", nome: txt(r.nome, 120), obs: txt(r.obs, 200), codigo: codigo || undefined, pid: pid > 0 ? pid : undefined };
+    }).filter((r) => r.nome && parseInt(r.qtd, 10) > 0).slice(0, 60);
     if (!itens.length) return { erro: "Inclua pelo menos um equipamento ou servi\xE7o." };
     const lev = { itens, obs: txt(a.dados.obs, 1e3) };
     return { card: Object.assign({}, c, { lev, hist: (c.hist || []).concat([h(q, c.tecnico || "T\xE9cnico", (c.lev ? "T\xE9cnico atualizou o or\xE7amento: " : "T\xE9cnico registrou or\xE7amento: ") + itens.length + (itens.length === 1 ? " item" : " itens"))]) }) };
@@ -1119,6 +1124,32 @@ function minha(c, u) {
 }
 
 // src/tecnico.js
+const localClienteCache = new Map();
+async function localDoCliente(env, c) {
+  const cidade = c.cidade && c.cidade !== "—" ? String(c.cidade) : "";
+  const chave = cadNorm(c.cliente || "") + "|" + cadNorm(cidade);
+  const agora = Date.now();
+  const hit = localClienteCache.get(chave);
+  if (hit && hit.ate > agora) return hit.valor;
+  const vazio = { endereco: "", enderecoMapa: cidade, telefone: "", lat: null, lng: null };
+  let valor = vazio;
+  try {
+    const p = await acharParceiro(env, c.cliente, cidade);
+    if (p) {
+      const rua = [p.endereco, p.bairro].filter(Boolean).join(" · ");
+      const mapa = [p.endereco, p.bairro, p.cidade || cidade, p.uf, p.cep].filter(Boolean).join(", ");
+      let lat = null, lng = null;
+      try {
+        const g = await env.DB.prepare("SELECT lat, lng, preciso FROM geo_pontos WHERE chave = ?").bind("parceiro:" + p.id).first();
+        if (g && g.lat != null && Number(g.preciso) === 1) { lat = Number(g.lat); lng = Number(g.lng); }
+      } catch { /* coordenada é opcional; o endereço em texto já abre o mapa */ }
+      valor = { endereco: rua, enderecoMapa: mapa || cidade, telefone: String(p.telefone || "").replace(/\s+/g, " ").trim(), lat, lng };
+    }
+  } catch { valor = vazio; }
+  if (localClienteCache.size > 200) localClienteCache.clear();
+  localClienteCache.set(chave, { ate: agora + 60_000, valor });
+  return valor;
+}
 async function listar(env, u) {
   const { results } = await env.DB.prepare(
     `SELECT id, versao, dados FROM ordens_servico WHERE stage BETWEEN 4 AND 6 AND dados LIKE ?`
@@ -1126,7 +1157,9 @@ async function listar(env, u) {
   const docs = [];
   for (const r of results) {
     const c = JSON.parse(r.dados);
-    if (minha(c, u)) docs.push({ versao: r.versao, dados: c });
+    if (!minha(c, u)) continue;
+    const local = await localDoCliente(env, c);
+    docs.push({ versao: r.versao, dados: Object.assign({}, c, local) });
   }
   return docs;
 }
@@ -1644,27 +1677,236 @@ async function estoqueRotas(request, env, url, u) {
 }
 
 // ---------- rotas do App do Técnico (/api/tecnico/estoque...) ----------
+async function timesAssistDoTecnico(env, u) {
+  const nome = String(u.nome || u.login || "").trim();
+  const equipe = String(u.equipe || "").trim();
+  if (!nome && !equipe) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT t.id, t.name AS nome
+       FROM public.assist_teams t
+       LEFT JOIN public.assist_team_members m
+         ON m.team_id = t.id AND COALESCE(m.active, true) = true
+      WHERE COALESCE(t.active, true) = true
+        AND (
+          lower(trim(coalesce(m.name, ''))) = lower(?)
+          OR lower(trim(t.name)) = lower(?)
+          OR lower(trim(t.name)) = lower(?)
+        )`
+  ).bind(nome, nome, equipe || nome).all();
+  return results || [];
+}
+let colunaRecebidoItem = false;
+async function garantirRecebidoItem(env) {
+  if (colunaRecebidoItem) return;
+  await env.DB.prepare("ALTER TABLE public.mat_saida_itens ADD COLUMN IF NOT EXISTS recebido_em timestamptz").run();
+  await env.DB.prepare("ALTER TABLE public.mat_saida_itens ADD COLUMN IF NOT EXISTS recusado_em timestamptz").run();
+  colunaRecebidoItem = true;
+}
+async function saidasParaTecnico(env, u, times) {
+  await garantirRecebidoItem(env);
+  const nome = String(u.nome || "").trim();
+  const ids = times.map((t) => Number(t.id)).filter((id) => id > 0);
+  if (!nome && !ids.length) return [];
+  let q = `SELECT s.id, s.num, s.team_id, s.tecnico_nome, s.created_by_name, s.status
+             FROM public.mat_saidas s
+            WHERE s.status = 'aguardando' AND (lower(trim(coalesce(s.tecnico_nome, ''))) = lower(?)`;
+  const args = [nome];
+  if (ids.length) {
+    q += " OR s.team_id IN (" + ids.map(() => "?").join(",") + ")";
+    args.push(...ids);
+  }
+  q += ") ORDER BY s.id";
+  const { results } = await env.DB.prepare(q).bind(...args).all();
+  const saidas = results || [];
+  if (!saidas.length) return [];
+  const { results: linhas } = await env.DB.prepare(
+    `SELECT i.id, i.saida_id, i.product_id, i.nome, i.qtd, i.recebido_em, i.recusado_em, p.unidade, p.codigo_interno
+       FROM public.mat_saida_itens i
+       LEFT JOIN public.omie_products p ON p.id = i.product_id
+      WHERE i.saida_id IN (${saidas.map(() => "?").join(",")})
+      ORDER BY i.id`
+  ).bind(...saidas.map((s) => s.id)).all();
+  const porSaida = {};
+  for (const linha of linhas || []) {
+    const lista = porSaida[linha.saida_id] || (porSaida[linha.saida_id] = []);
+    lista.push({
+      id: linha.id,
+      qtd: Number(linha.qtd),
+      unidade: linha.unidade || "UN",
+      descricao: linha.nome,
+      produto_id: linha.product_id,
+      codigo: linha.codigo_interno || "",
+      recebido: !!linha.recebido_em,
+      recusado: !!linha.recusado_em
+    });
+  }
+  return saidas.map((s) => ({
+    id: "sd-" + s.id,
+    num: s.num,
+    tipo: "retirada",
+    status: "aguardando",
+    itens: porSaida[s.id] || [],
+    obs: s.tecnico_nome ? "Para " + s.tecnico_nome : "",
+    criado_por: s.created_by_name || "",
+    team_id: s.team_id
+  }));
+}
+async function bolsaAssist(env, u, times) {
+  const nome = String(u.nome || "").trim();
+  const ids = times.map((t) => Number(t.id)).filter((id) => id > 0);
+  if (!ids.length && !nome) return [];
+  let onde = "1 = 0";
+  const args = [];
+  if (ids.length) {
+    onde = "ts.team_id IN (" + ids.map(() => "?").join(",") + ")";
+    args.push(...ids);
+  }
+  if (nome) {
+    onde += " OR ts.team_id IN (SELECT team_id FROM public.mat_saidas WHERE lower(trim(coalesce(tecnico_nome, ''))) = lower(?))";
+    args.push(nome);
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT ts.product_id, ts.nome, ts.quantidade, p.unidade, p.codigo_interno
+       FROM public.team_stock ts
+       LEFT JOIN public.omie_products p ON p.id = ts.product_id
+      WHERE ts.quantidade <> 0 AND (${onde})`
+  ).bind(...args).all();
+  return (results || []).map((r) => ({
+    produto_id: r.product_id,
+    codigo: r.codigo_interno || "",
+    descricao: r.nome,
+    unidade: r.unidade || "UN",
+    saldo: Number(r.quantidade),
+    reservado: 0,
+    reservado_os: []
+  }));
+}
+async function fecharSaidaSeCompleta(env, u, saida) {
+  const resumo = await env.DB.prepare(
+    `SELECT count(*) AS total, count(recebido_em) AS recebidos, count(recusado_em) AS recusados
+       FROM public.mat_saida_itens WHERE saida_id = ?`
+  ).bind(saida.id).first();
+  const total = Number(resumo && resumo.total);
+  const recebidos = Number(resumo && resumo.recebidos);
+  const recusados = Number(resumo && resumo.recusados);
+  const completo = total > 0 && recebidos + recusados >= total;
+  if (!completo) return false;
+  const pub = await env.DB.prepare("SELECT id FROM public.users WHERE id = ?").bind(u.id).first();
+  const status = recebidos > 0 ? "recebida" : "recusada";
+  await env.DB.prepare(
+    `UPDATE public.mat_saidas
+        SET status = ?, confirmed_at = now(), confirmed_by = ?, confirmed_by_name = ?
+      WHERE id = ? AND status = 'aguardando'`
+  ).bind(status, pub ? pub.id : null, String(u.nome || u.login || "Técnico"), saida.id).run();
+  return true;
+}
+async function confirmarItemSaidaAssist(env, u, saidaId, itemId, acao) {
+  await garantirRecebidoItem(env);
+  const times = await timesAssistDoTecnico(env, u);
+  const nome = String(u.nome || "").trim();
+  const saida = await env.DB.prepare(
+    "SELECT id, num, team_id, tecnico_nome, status, os_id FROM public.mat_saidas WHERE id = ?"
+  ).bind(saidaId).first();
+  if (!saida) return json({ erro: "Saída não encontrada." }, 404);
+  const daEquipe = times.some((t) => Number(t.id) === Number(saida.team_id));
+  const paraMim = nome && String(saida.tecnico_nome || "").trim().toLowerCase() === nome.toLowerCase();
+  if (!daEquipe && !paraMim) return json({ erro: "Esta saída não é da sua equipe." }, 403);
+  if (saida.status === "recebida" || saida.status === "recusada") return json({ ok: true, completo: true });
+  if (saida.status !== "aguardando") return json({ erro: "Esta saída já está " + saida.status + "." }, 409);
+  const item = await env.DB.prepare(
+    "SELECT id, product_id, nome, qtd, recebido_em, recusado_em FROM public.mat_saida_itens WHERE id = ? AND saida_id = ?"
+  ).bind(itemId, saida.id).first();
+  if (!item) return json({ erro: "Produto não encontrado nesta saída." }, 404);
+  const recusar = acao === "recusar";
+  if (recusar) {
+    if (item.recebido_em) return json({ erro: "Este item já foi confirmado." }, 409);
+    if (!item.recusado_em) {
+      await env.DB.prepare(
+        "UPDATE public.mat_saida_itens SET recusado_em = now() WHERE id = ? AND saida_id = ? AND recebido_em IS NULL AND recusado_em IS NULL"
+      ).bind(item.id, saida.id).run();
+    }
+  } else if (!item.recebido_em) {
+    if (item.recusado_em) return json({ erro: "Este item já foi marcado como não confirmado." }, 409);
+    const marca = await env.DB.prepare(
+      "UPDATE public.mat_saida_itens SET recebido_em = now() WHERE id = ? AND saida_id = ? AND recebido_em IS NULL AND recusado_em IS NULL"
+    ).bind(item.id, saida.id).run();
+    if (marca.meta.changes) {
+      const qtd = Number(item.qtd);
+      const pub = await env.DB.prepare("SELECT id FROM public.users WHERE id = ?").bind(u.id).first();
+      const userId = pub ? pub.id : null;
+      const quem = String(u.nome || u.login || "Técnico");
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO public.team_stock (team_id, product_id, nome, quantidade, updated_at)
+           VALUES (?, ?, ?, 0, now())
+           ON CONFLICT (team_id, product_id) DO UPDATE SET nome = EXCLUDED.nome`
+        ).bind(saida.team_id, item.product_id, item.nome),
+        env.DB.prepare(
+          `UPDATE public.team_stock
+              SET quantidade = quantidade + ?, updated_at = now()
+            WHERE team_id = ? AND product_id = ?`
+        ).bind(qtd, saida.team_id, item.product_id),
+        env.DB.prepare(
+          `INSERT INTO public.team_stock_moves (team_id, product_id, tipo, quantidade, saldo_apos, tecnico_nome, os_id, saida_id, motivo, user_id, user_name)
+           SELECT ?, ?, 'entrada_pdv', ?, quantidade, ?, ?, ?, ?, ?, ?
+             FROM public.team_stock
+            WHERE team_id = ? AND product_id = ?`
+        ).bind(saida.team_id, item.product_id, qtd, saida.tecnico_nome || quem, saida.os_id, saida.id, "Confirmação " + saida.num + " · " + item.nome, userId, quem, saida.team_id, item.product_id)
+      ]);
+    }
+  }
+  const completo = await fecharSaidaSeCompleta(env, u, saida);
+  return json({ ok: true, completo });
+}
 async function estoqueTecnico(request, env, url, u) {
   if (u.perfil !== "tecnico") return json({ erro: "Disponível só para o perfil Técnico." }, 403);
   const eq = await env.DB.prepare("SELECT id, nome FROM equipes_tecnicas WHERE principal_id = ? AND ativo = 1 ORDER BY id LIMIT 1").bind(u.id).first();
-  if (!eq) return json({ erro: "Você não é o principal de nenhuma equipe técnica ativa." }, 404);
-  const c = url.pathname, m = request.method, local = "eq:" + eq.id, quem = String(u.nome || u.login || eq.nome);
+  const times = await timesAssistDoTecnico(env, u);
+  if (!eq && !times.length) return json({ erro: "Você não é o principal de nenhuma equipe técnica ativa." }, 404);
+  const c = url.pathname, m = request.method, local = eq ? "eq:" + eq.id : "", quem = String(u.nome || u.login || (eq && eq.nome) || "Técnico");
+  const itemSd = c.match(/^\/api\/tecnico\/estoque\/retirada\/sd-(\d+)\/item\/(\d+)$/);
+  if (itemSd && m === "POST") {
+    let b = {}; try { b = await request.json(); } catch {}
+    return confirmarItemSaidaAssist(env, u, parseInt(itemSd[1], 10), parseInt(itemSd[2], 10), b.acao === "recusar" ? "recusar" : "confirmar");
+  }
+  const sd = c.match(/^\/api\/tecnico\/estoque\/retirada\/sd-(\d+)$/);
+  if (sd && m === "POST") {
+    let b = {}; try { b = await request.json(); } catch {}
+    if (b.acao === "divergencia") return json({ erro: "Para esta saída, peça ao estoque para cancelar e enviar de novo." }, 400);
+    return json({ erro: "Confirme cada produto separadamente." }, 400);
+  }
   if (c === "/api/tecnico/estoque" && m === "GET") {
-    const saldo = await estSaldoLocal(env, local), res = await estReservado(env, eq.id);
-    const ids = [...new Set([...Object.keys(saldo), ...Object.keys(res)].map(Number))].filter((id) => (saldo[id] || 0) !== 0 || res[id]);
-    let prods = [];
-    if (ids.length) ({ results: prods } = await env.DB.prepare("SELECT id, codigo, descricao, unidade, preco_venda FROM produtos WHERE id IN (" + ids.map(() => "?").join(",") + ")").bind(...ids).all());
-    prods.sort((a, b) => String(a.descricao).localeCompare(String(b.descricao), "pt-BR"));
-    const nomes = { ["eq:" + eq.id]: eq.nome };
-    const { results: docs } = await env.DB.prepare("SELECT * FROM estoque_docs WHERE equipe_id = ? AND (status IN ('aguardando','divergencia') OR fechado_em > ?) ORDER BY criado_em DESC LIMIT 30").bind(eq.id, Date.now() - 7 * 864e5).all();
+    let itens = [];
+    let docs = [];
+    if (eq) {
+      const saldo = await estSaldoLocal(env, local), res = await estReservado(env, eq.id);
+      const ids = [...new Set([...Object.keys(saldo), ...Object.keys(res)].map(Number))].filter((id) => (saldo[id] || 0) !== 0 || res[id]);
+      let prods = [];
+      if (ids.length) ({ results: prods } = await env.DB.prepare("SELECT id, codigo, descricao, unidade, preco_venda FROM produtos WHERE id IN (" + ids.map(() => "?").join(",") + ")").bind(...ids).all());
+      itens = prods.map((p) => ({ produto_id: p.id, codigo: p.codigo, descricao: p.descricao, unidade: p.unidade, saldo: saldo[p.id] || 0, reservado: res[p.id] ? res[p.id].qtd : 0, reservado_os: res[p.id] ? res[p.id].os : [] }));
+      const nomes = { ["eq:" + eq.id]: eq.nome };
+      const { results: antigos } = await env.DB.prepare("SELECT * FROM estoque_docs WHERE equipe_id = ? AND (status IN ('aguardando','divergencia') OR fechado_em > ?) ORDER BY criado_em DESC LIMIT 30").bind(eq.id, Date.now() - 7 * 864e5).all();
+      docs = (antigos || []).map((r) => estDocSaida(r, nomes));
+    }
+    const pendentes = await saidasParaTecnico(env, u, times);
+    const bolsa = await bolsaAssist(env, u, times);
+    const porId = new Map(itens.map((i) => [Number(i.produto_id), i]));
+    for (const item of bolsa) {
+      const ja = porId.get(Number(item.produto_id));
+      if (ja) ja.saldo = estQ(Number(ja.saldo) + Number(item.saldo));
+      else itens.push(item);
+    }
+    itens.sort((a, b) => String(a.descricao).localeCompare(String(b.descricao), "pt-BR"));
     return json({
-      equipe: { id: eq.id, nome: eq.nome },
-      itens: prods.map((p) => ({ produto_id: p.id, codigo: p.codigo, descricao: p.descricao, unidade: p.unidade, saldo: saldo[p.id] || 0, reservado: res[p.id] ? res[p.id].qtd : 0, reservado_os: res[p.id] ? res[p.id].os : [] })),
-      docs: docs.map((r) => estDocSaida(r, nomes)), agora: Date.now()
+      equipe: { id: eq ? eq.id : (times[0] ? times[0].id : ""), nome: (eq && eq.nome) || (times[0] && times[0].nome) || "Meu estoque" },
+      itens,
+      docs: pendentes.concat(docs),
+      agora: Date.now()
     });
   }
   const rm = c.match(/^\/api\/tecnico\/estoque\/retirada\/(ed-[a-z0-9]{8,32})$/);
   if (rm && m === "POST") {
+    if (!eq) return json({ erro: "Retirada não encontrada." }, 404);
     let b = {}; try { b = await request.json(); } catch {}
     const r = await env.DB.prepare("SELECT * FROM estoque_docs WHERE id = ? AND equipe_id = ? AND tipo = 'retirada'").bind(rm[1], eq.id).first();
     if (!r) return json({ erro: "Retirada não encontrada." }, 404);
@@ -1684,6 +1926,7 @@ async function estoqueTecnico(request, env, url, u) {
     return json({ ok: true });
   }
   if (c === "/api/tecnico/estoque/devolucao" && m === "POST") {
+    if (!eq) return json({ erro: "A devolução desta bolsa ainda não está disponível no app." }, 400);
     let b = {}; try { b = await request.json(); } catch {}
     const itens = await estItensValidos(env, b.itens);
     if (!itens.length) return json({ erro: "Informe o que você está devolvendo." }, 400);
@@ -1943,7 +2186,30 @@ async function tecnicoFrota(request, env, url, u) {
         WHERE uv.usuario_id = ?
         ORDER BY v.name COLLATE NOCASE`
     ).bind(u.id).all();
-    return json({ ok: true, veiculos: results || [] });
+    const ids = (results || []).map((v) => v.id).filter((id) => id > 0);
+    let historico = [];
+    if (ids.length) {
+      const marks = ids.map(() => "?").join(",");
+      try {
+        const hist = await env.DB.prepare(
+          `SELECT * FROM (
+             SELECT r.id, 'reading' AS kind, r.vehicle_id, r.occurred_at::text AS occurred_at, r.odometer,
+                    COALESCE(NULLIF(r.reason, ''), 'KM do dia') AS title, NULL::text AS subtitle, 0::float AS amount
+               FROM fleet_readings r
+              WHERE r.vehicle_id IN (${marks})
+             UNION ALL
+             SELECT s.id, 'service', s.vehicle_id, s.occurred_at::text, s.odometer,
+                    COALESCE(NULLIF(s.title, ''), s.service_type), s.service_type, s.amount
+               FROM fleet_services s
+              WHERE s.vehicle_id IN (${marks})
+           ) h
+           ORDER BY occurred_at DESC
+           LIMIT 40`
+        ).bind(...ids, ...ids).all();
+        historico = hist.results || [];
+      } catch { historico = []; }
+    }
+    return json({ ok: true, veiculos: results || [], historico });
   }
   if (c === "/api/tecnico/frota/km" && m === "POST") {
     let b = {};
@@ -1964,6 +2230,31 @@ async function tecnicoFrota(request, env, url, u) {
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(vehicleId, agora, odometer, prev, "daily_km", reason, "assistencia", agora, odometer, reason, txt(b.notes, 300) || null).run();
     await env.DB.prepare("UPDATE fleet_vehicles SET current_odometer = ? WHERE id = ?").bind(odometer, vehicleId).run();
+    return json({ ok: true });
+  }
+  if (c === "/api/tecnico/frota/servico" && m === "POST") {
+    let b = {};
+    try { b = await lerJson(request, 8e3); } catch { return json({ erro: "Dados inválidos" }, 400); }
+    const vehicleId = parseInt(b.vehicleId, 10);
+    const serviceType = txt(b.serviceType, 120);
+    const amount = typeof b.amount === "number" ? b.amount : Number(String(b.amount ?? "0").includes(",") ? String(b.amount).replace(/\./g, "").replace(",", ".") : String(b.amount ?? "0"));
+    const odoRaw = b.odometer == null || b.odometer === "" ? null : Number(String(b.odometer).replace(",", "."));
+    if (!(vehicleId > 0) || !serviceType) return json({ erro: "Informe o veículo e o tipo de serviço." }, 400);
+    if (!(amount >= 0)) return json({ erro: "Informe o valor do serviço." }, 400);
+    const dono = await env.DB.prepare("SELECT 1 AS ok FROM usuario_veiculos WHERE usuario_id = ? AND vehicle_id = ?").bind(u.id, vehicleId).first();
+    if (!dono) return json({ erro: "Este veículo não está vinculado a você." }, 403);
+    const atual = await env.DB.prepare("SELECT current_odometer FROM fleet_vehicles WHERE id = ?").bind(vehicleId).first();
+    if (!atual) return json({ erro: "Veículo não encontrado." }, 404);
+    const prev = Number(atual.current_odometer || 0);
+    if (odoRaw != null && odoRaw + 0.05 < prev) return json({ erro: "O KM do serviço não pode ser menor que o atual do veículo (" + prev + ")." }, 400);
+    const agora = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO fleet_services (vehicle_id, occurred_at, odometer, title, service_type, amount, location, notes)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).bind(vehicleId, agora, odoRaw, txt(b.title, 160) || serviceType, serviceType, amount, txt(b.location, 160) || null, txt(b.notes, 300) || null).run();
+    if (odoRaw != null && odoRaw > prev) {
+      await env.DB.prepare("UPDATE fleet_vehicles SET current_odometer = ? WHERE id = ?").bind(odoRaw, vehicleId).run();
+    }
     return json({ ok: true });
   }
   return null;
@@ -2232,12 +2523,42 @@ async function rotaTecnico(request, env, url, u) {
   }
   const frota = await tecnicoFrota(request, env, url, u);
   if (frota) return frota;
+  if (caminho === "/api/tecnico/produtos" && request.method === "GET") {
+    const q = String(url.searchParams.get("q") || "").trim().slice(0, 80);
+    const pals = cadNorm(q).split(" ").filter((p) => p.length >= 2).slice(0, 5);
+    if (!pals.length) return json({ itens: [] });
+    const where = pals.map(() => "(busca LIKE ? OR lower(descricao) LIKE ? OR lower(coalesce(codigo, '')) LIKE ?)").join(" AND ");
+    const args = pals.flatMap((p) => ["%" + p + "%", "%" + p + "%", "%" + p + "%"]);
+    const { results } = await env.DB.prepare(
+      "SELECT id, codigo, descricao, unidade FROM produtos WHERE situacao = 'Ativo' AND " + where + " ORDER BY descricao LIMIT 20"
+    ).bind(...args).all();
+    return json({
+      itens: results.map((p) => ({
+        id: p.id,
+        codigo: p.codigo || "",
+        descricao: p.descricao,
+        unidade: p.unidade || "UN",
+      })),
+    });
+  }
   if (caminho === "/api/tecnico/checklists" && request.method === "GET") {
     await garantirChecklists(env);
     return json({ problemas: await listarProblemas(env), checklists: await listarModelosChecklist(env, true) });
   }
   if (caminho === "/api/tecnico/os" && request.method === "GET") {
-    return json({ docs: await listar(env, u), agora: Date.now(), eu: { id: u.id, nome: u.nome, equipe: u.equipe } });
+    let materiais = [];
+    try {
+      const times = await timesAssistDoTecnico(env, u);
+      const saidas = await saidasParaTecnico(env, u, times);
+      materiais = saidas.map((s) => ({
+        id: s.id,
+        num: s.num,
+        faltam: (s.itens || []).filter((i) => !i.recebido && !i.recusado).length,
+        total: (s.itens || []).length,
+        criado_por: s.criado_por || ""
+      })).filter((s) => s.faltam > 0);
+    } catch (e) {}
+    return json({ docs: await listar(env, u), materiais, agora: Date.now(), eu: { id: u.id, nome: u.nome, equipe: u.equipe } });
   }
   if (caminho === "/api/tecnico/acoes" && request.method === "POST") {
     let d;
@@ -2816,7 +3137,11 @@ async function ltGarantir(env, d) {
   const ja = await env.DB.prepare("SELECT id, num, status FROM levantamentos WHERE os_id = ?").bind(d.id).first();
   if (ja) return ja;
   const lev = d.lev || {};
-  const itens = (Array.isArray(lev.itens) ? lev.itens : []).map((i) => ({ qtd: parseInt(String(i.qtd || "").replace(/\D+/g, ""), 10) || 1, nome: String(i.nome || "").trim().slice(0, 160), obs: String(i.obs || "").trim().slice(0, 160) })).filter((i) => i.nome);
+  const itens = (Array.isArray(lev.itens) ? lev.itens : []).map((i) => {
+    const pid = parseInt(i.pid, 10);
+    const codigo = String(i.codigo || "").trim().slice(0, 40);
+    return { qtd: parseInt(String(i.qtd || "").replace(/\D+/g, ""), 10) || 1, nome: String(i.nome || "").trim().slice(0, 160), obs: String(i.obs || "").trim().slice(0, 160), codigo: codigo || undefined, pid: pid > 0 ? pid : undefined };
+  }).filter((i) => i.nome);
   {
     const r = { id: d.id, num: d.num };
     const agora = Date.now();
@@ -2853,15 +3178,20 @@ async function ltSugestao(env, id) {
   const cn = cadNorm(lt.cliente);
   let cliente = null, clientes = [];
   if (cn) {
-    const { results } = await env.DB.prepare("SELECT id, razao, fantasia, documento, cidade, uf FROM parceiros WHERE situacao = 'Ativo' AND busca LIKE ? LIMIT 20").bind("%" + cn + "%").all();
+    const pals = cn.split(" ").filter(Boolean).slice(0, 6);
+    const where = pals.map(() => "(busca LIKE ? OR razao LIKE ? OR COALESCE(fantasia,'') LIKE ?)").join(" AND ");
+    const args = pals.flatMap((p) => ["%" + p + "%", "%" + p + "%", "%" + p + "%"]);
+    const { results } = await env.DB.prepare("SELECT id, razao, fantasia, documento, cidade, uf FROM parceiros WHERE situacao = 'Ativo' AND " + where + " LIMIT 20").bind(...args).all();
     clientes = results;
     const exatos = results.filter((p) => cadNorm(p.fantasia) === cn || cadNorm(p.razao) === cn);
     if (exatos.length === 1) cliente = exatos[0];
   }
   const cat = await cmpCatalogo(env);
   const itens = lt.itens.map((i) => {
-    const pid = cat.resolver(i.nome);
-    const p = pid ? cat.porId.get(pid) : null;
+    const direto = parseInt(i.pid, 10);
+    const peloId = direto > 0 ? cat.porId.get(direto) || cat.porId.get(String(direto)) : null;
+    const pid = peloId ? peloId.id : cat.resolver(i.nome);
+    const p = peloId || (pid ? cat.porId.get(pid) : null);
     return Object.assign({}, i, { produto: p ? { id: p.id, codigo: p.codigo, descricao: p.descricao, unidade: p.unidade, preco_venda: p.preco_venda } : null });
   });
   const op = await env.DB.prepare("SELECT id, cod FROM crm_oportunidades WHERE os_id = ?").bind(lt.os_id).first();

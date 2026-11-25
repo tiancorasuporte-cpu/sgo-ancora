@@ -45,6 +45,8 @@ export type MatSaida = {
     nome: string;
     qtd: number;
     osItemId: number | null;
+    recebidoEm: string | null;
+    recusadoEm: string | null;
   }>;
 };
 
@@ -103,6 +105,8 @@ async function loadItensForSaidas(saidaIds: number[]) {
       nome: str(raw["nome"]),
       qtd: num(raw["qtd"]),
       osItemId: raw["os_item_id"] == null ? null : num(raw["os_item_id"]),
+      recebidoEm: raw["recebido_em"] == null ? null : iso(raw["recebido_em"]),
+      recusadoEm: raw["recusado_em"] == null ? null : iso(raw["recusado_em"]),
     });
     bySaida.set(saidaId, list);
   }
@@ -201,7 +205,7 @@ export async function emitMatSaida(input: {
   const tecnicoNome = input.tecnicoNome?.trim() || null;
   const numSaida = await nextSaidaNum();
 
-  return teamStockTransaction(db, async (tx) => {
+  const emitida = await teamStockTransaction(db, async (tx) => {
     const [saidaRow] = (await tx`
       insert into mat_saidas (
         num, destino, team_id, tecnico_nome, os_id, status,
@@ -280,6 +284,8 @@ export async function emitMatSaida(input: {
         nome,
         qtd,
         osItemId,
+        recebidoEm: null,
+        recusadoEm: null,
       });
     }
 
@@ -304,6 +310,44 @@ export async function emitMatSaida(input: {
       itensOut,
     );
   });
+  void avisarMaterialNoApp(emitida);
+  return emitida;
+}
+
+/** Avisa o técnico no celular quando há material novo para confirmar. Falha de push não desfaz a saída. */
+async function avisarMaterialNoApp(saida: MatSaida) {
+  const nome = saida.tecnicoNome?.trim();
+  if (!nome) return;
+  try {
+    const db = await getDb();
+    const users = (await db`
+      select id from sgo.usuarios
+      where ativo = 1 and perfil = 'tecnico' and lower(trim(nome)) = lower(${nome})
+      limit 1
+    `) as Array<{ id: number }>;
+    const usuarioId = users[0]?.id;
+    if (!usuarioId) return;
+    const tokens = (await db`
+      select token from sgo.tecnico_push where usuario_id = ${usuarioId} limit 1
+    `) as Array<{ token: string }>;
+    const token = tokens[0]?.token;
+    if (!token) return;
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        to: token,
+        title: "Material para confirmar",
+        body: `${saida.num} · ${saida.itens.length} item(ns) esperando você`,
+        sound: "default",
+        channelId: "os-tecnico",
+        priority: "high",
+        data: { tela: "estoque", saidaId: `sd-${saida.id}` },
+      }),
+    });
+  } catch {
+    // o sininho do app lê a saída pendente mesmo sem push
+  }
 }
 
 export async function confirmMatSaida(input: {
@@ -339,6 +383,7 @@ export async function confirmMatSaida(input: {
     }
 
     for (const item of saida.itens) {
+      if (item.recebidoEm || item.recusadoEm) continue;
       await creditTeamStock(tx, {
         teamId: saida.teamId,
         productId: item.productId,
@@ -355,6 +400,13 @@ export async function confirmMatSaida(input: {
         userName: input.userName,
       });
     }
+
+    await tx`
+      update mat_saida_itens
+      set recebido_em = coalesce(recebido_em, now())
+      where saida_id = ${saida.id}
+        and recusado_em is null
+    `;
 
     await tx`
       update mat_saidas
@@ -399,6 +451,9 @@ export async function cancelMatSaida(input: {
         ? `Saída ${saida.num} já foi confirmada. Não é possível desfazer por aqui.`
         : `Saída ${saida.num} não pode ser desfeita (${saida.status}).`,
     );
+  }
+  if (saida.itens.some((item) => item.recebidoEm)) {
+    throw new Error(`Saída ${saida.num} já tem itens confirmados pelo técnico. Não é possível desfazer.`);
   }
 
   await teamStockTransaction(db, async (tx) => {
