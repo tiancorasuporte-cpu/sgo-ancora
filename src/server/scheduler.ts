@@ -151,6 +151,8 @@ type ManualSyncJob = {
   finishedAt: number | null;
   result: ManualSyncResult | null;
   error: string | null;
+  percent: number;
+  label: string;
 };
 
 let manualSyncJob: ManualSyncJob = {
@@ -159,6 +161,8 @@ let manualSyncJob: ManualSyncJob = {
   finishedAt: null,
   result: null,
   error: null,
+  percent: 0,
+  label: "",
 };
 
 function snapshotManualSyncJob() {
@@ -168,6 +172,8 @@ function snapshotManualSyncJob() {
     finishedAt: manualSyncJob.finishedAt,
     result: manualSyncJob.result,
     error: manualSyncJob.error,
+    percent: manualSyncJob.percent,
+    label: manualSyncJob.label,
   };
 }
 
@@ -198,17 +204,25 @@ export function startManualSyncBackground() {
     finishedAt: null,
     result: null,
     error: null,
+    percent: 0,
+    label: "Iniciando sincronização Omie...",
   };
 
   void (async () => {
     try {
-      const result = await syncAllOmieApps();
+      const result = await syncAllOmieApps(90, 120, (progress) => {
+        if (manualSyncJob.status !== "running") return;
+        manualSyncJob.percent = progress.percent;
+        manualSyncJob.label = progress.label;
+      });
       manualSyncJob = {
         status: "done",
         startedAt: manualSyncJob.startedAt,
         finishedAt: Date.now(),
         result,
         error: null,
+        percent: 100,
+        label: "Sincronização concluída",
       };
       console.info("[sync] manual background done");
     } catch (error) {
@@ -219,6 +233,8 @@ export function startManualSyncBackground() {
         finishedAt: Date.now(),
         result: null,
         error: message,
+        percent: manualSyncJob.percent,
+        label: message,
       };
       console.error("[sync] manual background failed", error);
     }

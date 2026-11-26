@@ -144,7 +144,29 @@ function syncWindow(daysBack = 90, daysAhead = 120) {
   return { from, to };
 }
 
-export async function syncOmieApp(app: OmieAppConfig, daysBack = 90, daysAhead = 120) {
+export type SyncProgress = {
+  percent: number;
+  label: string;
+  appId?: string;
+  appName?: string;
+  appIndex?: number;
+  appTotal?: number;
+};
+
+type SyncProgressHandler = (progress: SyncProgress) => void;
+
+const STAGE_LABELS: Record<string, string> = {
+  movimentos: "movimentos financeiros",
+  contas_receber: "contas a receber",
+  notas: "NFe/NFS-e",
+};
+
+export async function syncOmieApp(
+  app: OmieAppConfig,
+  daysBack = 90,
+  daysAhead = 120,
+  onStage?: (stage: string) => void,
+) {
   const logId = await startSyncLog(app.id);
   clearClienteCache();
   const { from, to } = syncWindow(daysBack, daysAhead);
@@ -158,6 +180,7 @@ export async function syncOmieApp(app: OmieAppConfig, daysBack = 90, daysAhead =
     ];
 
     for (const [name, fn] of tasks) {
+      onStage?.(name);
       try {
         breakdown[name] = await fn(app, from, to);
         await sleep(1_500);
@@ -167,6 +190,7 @@ export async function syncOmieApp(app: OmieAppConfig, daysBack = 90, daysAhead =
       }
     }
 
+    onStage?.("notas");
     try {
       const invoiceResult = await syncInvoiceDocuments(app, from, to);
       breakdown.nfe = invoiceResult.nfe;
@@ -194,20 +218,65 @@ export async function syncOmieApp(app: OmieAppConfig, daysBack = 90, daysAhead =
   }
 }
 
-export async function syncAllOmieApps(daysBack = 90, daysAhead = 120) {
+export async function syncAllOmieApps(
+  daysBack = 90,
+  daysAhead = 120,
+  onProgress?: SyncProgressHandler,
+) {
   const apps = listOmieApps();
   if (apps.length === 0) {
     return { ok: false as const, error: "Nenhum aplicativo Omie configurado no .env." };
   }
+
+  const stagesPerApp = 3;
+  const totalUnits = apps.length * stagesPerApp + 1; // +1 finalização
+  let completedUnits = 0;
+
+  const report = (label: string, app?: OmieAppConfig, appIndex?: number) => {
+    const percent = Math.min(99, Math.round((completedUnits / totalUnits) * 100));
+    onProgress?.({
+      percent,
+      label,
+      appId: app?.id,
+      appName: app?.name,
+      appIndex: appIndex != null ? appIndex + 1 : undefined,
+      appTotal: apps.length,
+    });
+  };
+
+  report("Iniciando sincronização Omie...");
+
   const results = [];
   for (let index = 0; index < apps.length; index++) {
-    if (index > 0) await sleep(8_000);
-    results.push(await syncOmieApp(apps[index]!, daysBack, daysAhead));
+    const app = apps[index]!;
+    if (index > 0) {
+      report(`Aguardando próxima empresa (${app.name})...`, app, index);
+      await sleep(8_000);
+    }
+
+    results.push(
+      await syncOmieApp(app, daysBack, daysAhead, (stage) => {
+        completedUnits += 1;
+        report(
+          `${app.name}: ${STAGE_LABELS[stage] ?? stage} (${index + 1}/${apps.length})`,
+          app,
+          index,
+        );
+      }),
+    );
   }
+
+  report("Finalizando limpeza de títulos...");
   try {
     await closeNonOpenInvoiceDueItems();
   } catch (error) {
     console.warn("[sync] cleanup notas", error);
   }
+  completedUnits = totalUnits;
+  onProgress?.({
+    percent: 100,
+    label: "Sincronização concluída",
+    appTotal: apps.length,
+  });
   return { ok: true as const, results };
 }

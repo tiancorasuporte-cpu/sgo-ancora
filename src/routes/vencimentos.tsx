@@ -202,6 +202,8 @@ function VencimentosPage() {
   const [phoneDraft, setPhoneDraft] = useState("");
   const [savingPhoneId, setSavingPhoneId] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncPercent, setSyncPercent] = useState(0);
+  const [syncLabel, setSyncLabel] = useState("");
   const busy =
     sendingId !== null ||
     bulkSending ||
@@ -457,6 +459,8 @@ function VencimentosPage() {
               disabled={busy}
               onClick={async () => {
                 setSyncing(true);
+                setSyncPercent(0);
+                setSyncLabel("Iniciando...");
                 setFeedback(null);
                 try {
                   const started = await syncDueItemsFn();
@@ -468,17 +472,21 @@ function VencimentosPage() {
                     setSyncing(false);
                     return;
                   }
+                  setSyncPercent(started.percent ?? 0);
+                  setSyncLabel(started.label || "Sincronizando...");
                   setFeedback({
                     type: "info",
                     text: started.alreadyRunning
-                      ? "Sincronização já em andamento — aguardando..."
+                      ? "Sincronização já em andamento — acompanhando progresso..."
                       : "Sincronização iniciada em segundo plano...",
                   });
 
                   const deadline = Date.now() + 8 * 60_000;
                   while (Date.now() < deadline) {
-                    await new Promise((r) => setTimeout(r, 3_000));
+                    await new Promise((r) => setTimeout(r, 1_500));
                     const status = await getSyncDueItemsStatusFn();
+                    setSyncPercent(status.percent ?? 0);
+                    if (status.label) setSyncLabel(status.label);
                     if (status.status !== "done") continue;
 
                     if (status.error) {
@@ -508,6 +516,8 @@ function VencimentosPage() {
                             : [],
                       )
                       .filter(Boolean);
+                    setSyncPercent(100);
+                    setSyncLabel("Concluído");
                     setFeedback({
                       type: avisos.length ? "info" : "ok",
                       text: avisos.length
@@ -533,7 +543,7 @@ function VencimentosPage() {
               className={btnPrimary}
             >
               <Icon name="sync" className="text-[16px]" />
-              {syncing ? "Sincronizando..." : "Sincronizar boletos e notas"}
+              {syncing ? `Sincronizando ${syncPercent}%` : "Sincronizar boletos e notas"}
             </button>
             <button
               type="button"
@@ -549,6 +559,25 @@ function VencimentosPage() {
               ) : null}
             </button>
           </PageTitle>
+
+          {syncing ? (
+            <div
+              className="rounded-xl border border-outline-variant bg-surface-container-lowest p-md"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="mb-xs flex items-center justify-between gap-sm text-sm">
+                <span className="truncate text-on-surface-variant">{syncLabel || "Sincronizando..."}</span>
+                <span className="shrink-0 font-semibold tabular-nums text-on-surface">{syncPercent}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-surface-container-high">
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
+                  style={{ width: `${Math.min(100, Math.max(0, syncPercent))}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div className="grid gap-sm sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="Documentos" value={String(summary.count)} hint="Com os filtros atuais" />
