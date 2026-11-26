@@ -43,11 +43,16 @@ for (const arquivo of obrigatorios) {
 
 const servidor = [
   ["/api/os/faturar-omie", "rota de enviar a OS para a Omie"],
-  ['["Fornecedor"]', "busca de fornecedor no cadastro"],
   ["/api/cadastros/busca", "rota de busca de cadastros"],
+  ["exigeTag", "busca de fornecedor sem exigir só a tag Fornecedor"],
 ];
 for (const [marca, nome] of servidor) {
   if (!contem(serverBlob, marca)) faltando.push(`servidor: ${nome} → “${marca}”`);
+}
+// index.ts: cotação precisa achar parceiro mesmo quando a Omie deixou só a tag Cliente
+const indexTs = readFileSync(join(root, "src", "sgo", "server", "index.ts"), "utf8");
+if (!indexTs.includes('tag === "Fornecedor"') || !indexTs.includes("sql`true`")) {
+  faltando.push("src/sgo/server/index.ts: busca de fornecedor ainda exige só a tag Fornecedor");
 }
 
 // Regressões que já quebraram orçamentos/compras em produção: a busca precisa

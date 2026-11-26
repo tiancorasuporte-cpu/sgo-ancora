@@ -111,17 +111,23 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
           .reduce((a, b) => sql`${a} and ${b}`)
       : sql`false`;
     const doc = dig.length >= 4 ? sql`regexp_replace(coalesce(t.documento, ''), '\\D', '', 'g') like ${"%" + dig + "%"}` : sql`false`;
+    // Clientes: só quem tem a tag. Fornecedores: a sync da Omie muitas vezes
+    // deixa o parceiro só como Cliente — a cotação precisa achar pelo nome mesmo assim.
     const tagSql =
       tag === "Fornecedor"
-        ? sql`coalesce(t.tags, '[]')::jsonb @> '["Fornecedor"]'::jsonb`
+        ? sql`true`
         : sql`coalesce(t.tags, '[]')::jsonb @> '["Cliente"]'::jsonb`;
+    const ordemTag =
+      tag === "Fornecedor"
+        ? sql`(coalesce(t.tags, '[]')::jsonb @> '["Fornecedor"]'::jsonb) desc, coalesce(t.fantasia, t.razao)`
+        : sql`coalesce(t.fantasia, t.razao)`;
     const rows = await sql<Record<string, unknown>[]>`
       select t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao
       from parceiros t
       where t.situacao = 'Ativo'
         and ${tagSql}
         and (${nome} or ${doc})
-      order by coalesce(t.fantasia, t.razao)
+      order by ${ordemTag}
       limit ${lim}
     `;
     const itens = rows.map((r) => {
@@ -130,6 +136,7 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
       return { ...r, tags };
     });
     if (tag === "Fornecedor" && itens.length < lim) {
+      const ids = new Set(itens.map((r) => Number(r.id)));
       const docs = new Set(itens.map((r) => String(r.documento || "").replace(/\D+/g, "")).filter((d) => d.length >= 8));
       const { listOmieSuppliers } = await import("@/db/suppliers");
       const omie = await listOmieSuppliers({ query: q, activeOnly: true, limit: lim });
@@ -137,19 +144,33 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
         if (itens.length >= lim) break;
         const docOmie = String(s.cnpjCpf || "").replace(/\D+/g, "");
         if (docOmie.length >= 8 && docs.has(docOmie)) continue;
-        itens.push({
-          id: s.id,
-          documento: s.cnpjCpf,
-          tipo_pessoa: docOmie.length === 11 ? "PF" : docOmie.length === 14 ? "PJ" : null,
-          razao: s.razaoSocial,
-          fantasia: s.nomeFantasia || s.razaoSocial,
-          tags: ["Fornecedor"],
-          telefone: null,
-          contato: null,
-          email: null,
-          cidade: null,
-          situacao: "Ativo",
-        });
+        // Só usa parceiro já existente no SGO; o id da omie_suppliers não serve na cotação.
+        const digDoc = docOmie.length >= 8 ? docOmie : "";
+        const existentes = digDoc
+          ? await sql<Record<string, unknown>[]>`
+              select t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao
+              from parceiros t
+              where t.situacao = 'Ativo'
+                and regexp_replace(coalesce(t.documento, ''), '\\D', '', 'g') = ${digDoc}
+              limit 1
+            `
+          : await sql<Record<string, unknown>[]>`
+              select t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao
+              from parceiros t
+              where t.situacao = 'Ativo'
+                and (
+                  t.razao ilike ${s.razaoSocial}
+                  or coalesce(t.fantasia, '') ilike ${s.nomeFantasia || s.razaoSocial}
+                )
+              limit 1
+            `;
+        const row = existentes[0];
+        if (!row || ids.has(Number(row.id))) continue;
+        ids.add(Number(row.id));
+        let tags: string[] = [];
+        try { tags = JSON.parse(String(row.tags || "[]")) as string[]; } catch { tags = []; }
+        if (!tags.includes("Fornecedor")) tags = [...tags, "Fornecedor"];
+        itens.push({ ...row, tags });
       }
     }
     return Response.json({ itens });
