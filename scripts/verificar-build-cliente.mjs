@@ -44,9 +44,33 @@ for (const arquivo of obrigatorios) {
 const servidor = [
   ["/api/os/faturar-omie", "rota de enviar a OS para a Omie"],
   ['["Fornecedor"]', "busca de fornecedor no cadastro"],
+  ["/api/cadastros/busca", "rota de busca de cadastros"],
 ];
 for (const [marca, nome] of servidor) {
   if (!contem(serverBlob, marca)) faltando.push(`servidor: ${nome} → “${marca}”`);
+}
+
+// Regressões que já quebraram orçamentos/compras em produção: a busca precisa
+// rodar no Shadow DOM da tela isolada, não reaproveitar o SGOBusca da janela.
+const clienteCritico = [
+  ["__sgoDoc", "busca isolada por tela (Shadow DOM)"],
+  ["SGOBusca&&window.SGOBusca.__sgoDoc===document", "não reusar SGOBusca da janela principal"],
+  ['tipo:"cliente"', "orçamentos liga busca de cliente"],
+  ['tipo:"produto"', "orçamentos liga busca de produto"],
+  ["cadastros/busca", "autocomplete chama a API de cadastros"],
+  ["composed:true", "evento sgo-busca atravessa o Shadow DOM"],
+];
+for (const [marca, nome] of clienteCritico) {
+  if (!contem(clientBlob, marca)) faltando.push(`navegador: ${nome} → “${marca}”`);
+}
+
+const fonteBusca = join(root, "src", "sgo", "telas", "_comum", "busca-cadastros.js");
+const textoBusca = readFileSync(fonteBusca, "utf8");
+if (!textoBusca.includes("__sgoDoc")) {
+  faltando.push("src/sgo/telas/_comum/busca-cadastros.js perdeu o isolamento __sgoDoc");
+}
+if (!textoBusca.includes("composed:true")) {
+  faltando.push("src/sgo/telas/_comum/busca-cadastros.js perdeu composed:true no evento sgo-busca");
 }
 
 if (faltando.length) {
@@ -56,7 +80,9 @@ if (faltando.length) {
   process.exit(1);
 }
 
-console.log(`Build do navegador conferido: ${obrigatorios.length} trechos presentes.`);
+console.log(
+  `Build do navegador conferido: ${obrigatorios.length} telas + busca de orçamentos/cadastros.`,
+);
 
 function listar(dir) {
   const saida = [];
