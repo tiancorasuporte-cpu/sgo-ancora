@@ -16,6 +16,29 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function syncStageTimeoutMs() {
+  const raw = process.env["OMIE_SYNC_STAGE_TIMEOUT_MS"]?.trim();
+  const parsed = raw ? Number(raw) : 12 * 60_000;
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 12 * 60_000;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timeout ${label} após ${Math.round(ms / 1000)}s`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function syncMovimentosFinanceiros(app: OmieAppConfig, from: Date, to: Date) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
@@ -173,6 +196,8 @@ export async function syncOmieApp(
   const breakdown: Record<string, number> = {};
   const errors: string[] = [];
 
+  const stageTimeoutMs = syncStageTimeoutMs();
+
   try {
     const tasks: Array<[string, (app: OmieAppConfig, from: Date, to: Date) => Promise<number>]> = [
       ["movimentos", syncMovimentosFinanceiros],
@@ -182,17 +207,22 @@ export async function syncOmieApp(
     for (const [name, fn] of tasks) {
       onStage?.(name);
       try {
-        breakdown[name] = await fn(app, from, to);
+        breakdown[name] = await withTimeout(fn(app, from, to), stageTimeoutMs, `${app.name}/${name}`);
         await sleep(1_500);
       } catch (error) {
         breakdown[name] = 0;
         errors.push(`${name}: ${error instanceof Error ? error.message : "erro"}`);
+        console.warn("[sync] etapa falhou", app.id, name, error);
       }
     }
 
     onStage?.("notas");
     try {
-      const invoiceResult = await syncInvoiceDocuments(app, from, to);
+      const invoiceResult = await withTimeout(
+        syncInvoiceDocuments(app, from, to),
+        stageTimeoutMs,
+        `${app.name}/notas`,
+      );
       breakdown.nfe = invoiceResult.nfe;
       breakdown.nfse = invoiceResult.nfse;
       errors.push(...invoiceResult.errors);
@@ -200,13 +230,16 @@ export async function syncOmieApp(
       breakdown.nfe = 0;
       breakdown.nfse = 0;
       errors.push(`notas: ${error instanceof Error ? error.message : "erro"}`);
+      console.warn("[sync] etapa falhou", app.id, "notas", error);
     }
 
     const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
     await finishSyncLog(logId, total, errors.length ? errors.join(" | ") : null);
+    console.info("[sync] app done", app.id, app.name, { total, errors: errors.length });
     return {
       ok: true as const,
       appId: app.id,
+      appName: app.name,
       itemsFound: total,
       breakdown,
       errors,
@@ -214,7 +247,8 @@ export async function syncOmieApp(
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha na sincronização";
     await finishSyncLog(logId, 0, message);
-    return { ok: false as const, appId: app.id, error: message };
+    console.error("[sync] app failed", app.id, app.name, message);
+    return { ok: false as const, appId: app.id, appName: app.name, error: message };
   }
 }
 
@@ -251,9 +285,10 @@ export async function syncAllOmieApps(
     const app = apps[index]!;
     if (index > 0) {
       report(`Aguardando próxima empresa (${app.name})...`, app, index);
-      await sleep(8_000);
+      await sleep(3_000);
     }
 
+    console.info("[sync] app start", app.id, app.name, `${index + 1}/${apps.length}`);
     results.push(
       await syncOmieApp(app, daysBack, daysAhead, (stage) => {
         completedUnits += 1;
@@ -273,10 +308,19 @@ export async function syncAllOmieApps(
     console.warn("[sync] cleanup notas", error);
   }
   completedUnits = totalUnits;
+  const failed = results.filter((r) => !r.ok || ("errors" in r && r.errors.length > 0));
   onProgress?.({
     percent: 100,
-    label: "Sincronização concluída",
+    label:
+      failed.length > 0
+        ? `Concluído com avisos (${failed.length}/${apps.length} empresa(s))`
+        : "Sincronização concluída",
     appTotal: apps.length,
+  });
+  console.info("[sync] all apps done", {
+    apps: apps.length,
+    ok: results.filter((r) => r.ok).length,
+    failed: failed.length,
   });
   return { ok: true as const, results };
 }

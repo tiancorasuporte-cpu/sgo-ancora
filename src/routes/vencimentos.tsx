@@ -481,7 +481,8 @@ function VencimentosPage() {
                       : "Sincronização iniciada em segundo plano...",
                   });
 
-                  const deadline = Date.now() + 8 * 60_000;
+                  // 3 empresas × etapas Omie pode passar de 15–20 min.
+                  const deadline = Date.now() + 30 * 60_000;
                   while (Date.now() < deadline) {
                     await new Promise((r) => setTimeout(r, 1_500));
                     const status = await getSyncDueItemsStatusFn();
@@ -507,6 +508,14 @@ function VencimentosPage() {
                       (sum, item) => sum + (item.itemsFound ?? 0),
                       0,
                     );
+                    const porEmpresa = (result.results ?? []).map((item) => {
+                      const nome = ("appName" in item && item.appName) || item.appId;
+                      if (!item.ok) return `${nome}: falhou`;
+                      const qtd = item.itemsFound ?? 0;
+                      const errs =
+                        "errors" in item && Array.isArray(item.errors) ? item.errors.length : 0;
+                      return errs ? `${nome}: ${qtd} (avisos)` : `${nome}: ${qtd}`;
+                    });
                     const avisos = (result.results ?? [])
                       .flatMap((item) =>
                         "error" in item && item.error
@@ -521,15 +530,15 @@ function VencimentosPage() {
                     setFeedback({
                       type: avisos.length ? "info" : "ok",
                       text: avisos.length
-                        ? `Sync parcial: ${total} boleto(s)/nota(s). ${avisos.slice(0, 3).join(" · ")}`
-                        : `Sincronização concluída: ${total} boleto(s)/nota(s).`,
+                        ? `Sync parcial (${total} docs): ${porEmpresa.join(" · ")}`
+                        : `Sincronização concluída: ${total} docs · ${porEmpresa.join(" · ")}`,
                     });
                     await router.invalidate();
                     return;
                   }
                   setFeedback({
                     type: "info",
-                    text: "Sync ainda rodando no servidor — atualize a página em alguns minutos.",
+                    text: "Sync ainda rodando no servidor — a barra pode ser reaberta; não inicie outro agora.",
                   });
                 } catch (error) {
                   setFeedback({

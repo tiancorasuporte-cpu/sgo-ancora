@@ -168,6 +168,18 @@ function isRateLimitError(message: string) {
   return text.includes("too many requests") || text.includes("429");
 }
 
+function omieRequestTimeoutMs() {
+  const raw = process.env["OMIE_REQUEST_TIMEOUT_MS"]?.trim();
+  const parsed = raw ? Number(raw) : 45_000;
+  return Number.isFinite(parsed) && parsed >= 5_000 ? parsed : 45_000;
+}
+
+function omieMaxPages() {
+  const raw = process.env["OMIE_MAX_PAGES"]?.trim();
+  const parsed = raw ? Number(raw) : 250;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 250;
+}
+
 export async function omieCall<T>(
   app: OmieAppConfig,
   endpoint: string,
@@ -175,25 +187,47 @@ export async function omieCall<T>(
   param: Record<string, unknown> | Record<string, unknown>[],
 ): Promise<T> {
   const retryDelays = [2_000, 5_000, 10_000, 20_000];
+  const timeoutMs = omieRequestTimeoutMs();
 
   for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
     await throttleOmieRequest();
 
-    const response = await fetch(`${OMIE_BASE}${endpoint}`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        call,
-        app_key: app.appKey,
-        app_secret: app.appSecret,
-        param: Array.isArray(param) ? param : [param],
-      }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(`${OMIE_BASE}${endpoint}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          call,
+          app_key: app.appKey,
+          app_secret: app.appSecret,
+          param: Array.isArray(param) ? param : [param],
+        }),
+        signal: controller.signal,
+      });
+      text = await response.text();
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === "AbortError";
+      const message = aborted
+        ? `Omie timeout após ${Math.round(timeoutMs / 1000)}s (${call})`
+        : error instanceof Error
+          ? error.message
+          : "Falha de rede Omie";
+      if (attempt < retryDelays.length) {
+        await sleep(retryDelays[attempt]!);
+        continue;
+      }
+      throw new Error(message);
+    } finally {
+      clearTimeout(timer);
+    }
 
-    const text = await response.text();
     let body: OmieCallResult<T>;
     try {
       body = JSON.parse(text) as OmieCallResult<T>;
@@ -234,12 +268,16 @@ export async function omiePaginate<TResponse extends Record<string, unknown>>(
   const all: unknown[] = [];
   let page = 1;
   let totalPages = 1;
+  const maxPages = omieMaxPages();
 
   while (page <= totalPages) {
+    if (page > maxPages) {
+      throw new Error(`Omie ${call}: limite de ${maxPages} páginas excedido`);
+    }
     const response = await omieCall<TResponse>(app, endpoint, call, buildParam(page));
     const parsed = extract(response);
     all.push(...parsed.items);
-    totalPages = parsed.totalPages || 1;
+    totalPages = Math.max(1, Math.min(parsed.totalPages || 1, maxPages));
     page += 1;
   }
 

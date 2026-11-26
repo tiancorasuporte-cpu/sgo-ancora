@@ -525,6 +525,19 @@ export async function finishSyncLog(id: number, itemsFound: number, error?: stri
   `;
 }
 
+/** Fecha sync_log órfãos (processo morto / hang) antes de um novo ciclo. */
+export async function abandonStaleOpenSyncLogs(reason = "abandonado: sync interrompido/órfão") {
+  const db = await getDb();
+  const rows = await db<{ id: number }[]>`
+    update sync_log
+    set finished_at = now(),
+        error = coalesce(nullif(error, ''), ${reason})
+    where finished_at is null
+    returning id
+  `;
+  return rows.length;
+}
+
 export async function getLastSyncLogs(limit = 10) {
   const db = await getDb();
   return db<

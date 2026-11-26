@@ -76,6 +76,7 @@ process.env.NITRO_PORT = process.env.PORT;
 process.env.HOST ??= "0.0.0.0";
 process.env.NITRO_HOST ??= process.env.HOST;
 process.env.NODE_ENV ??= "production";
+process.env.TZ ??= "America/Sao_Paulo";
 
 // Bun.serve fecha conexões idle em 10s por padrão (máx. 255). Sync Omie
 // passa disso (sleep 8s entre apps + APIs). Nitro 3 beta não lê a env —
