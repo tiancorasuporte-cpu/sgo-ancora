@@ -1674,7 +1674,7 @@ function FacilitiesPage() {
   return (
     <AppShell mobileTitle="Facilities">
       <main className="relative flex-1 p-margin-mobile pb-24 md:p-margin-desktop md:pb-margin-desktop">
-        <div className="mx-auto max-w-6xl space-y-lg">
+        <div className="w-full space-y-lg">
           <PageTitle
             title="Facilities"
             subtitle="Substituições, permutas e horas a pagar por posto."
@@ -3504,7 +3504,7 @@ function FacilitiesPage() {
           )}
 
           {search.tab === "valores" && (
-            <section className="mx-auto w-full max-w-[64rem] space-y-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
+            <section className="w-full space-y-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md md:p-lg">
               <div>
                 <h3 className="text-title-lg text-primary">Valores das horas</h3>
                 <p className="mt-xs text-body-md text-on-surface-variant">

@@ -301,7 +301,7 @@ function FrotaPage() {
 
   return (
     <AppShell mobileTitle="Frota">
-      <div className="mx-auto w-full max-w-6xl space-y-lg p-margin-mobile md:p-margin-desktop">
+      <div className="w-full space-y-lg p-margin-mobile md:p-margin-desktop">
         <PageTitle
           title="Frota"
           subtitle="Controle de veículos, custos e manutenção."

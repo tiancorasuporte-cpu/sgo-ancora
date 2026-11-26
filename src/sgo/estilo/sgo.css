@@ -11,6 +11,28 @@
 .page .tela-tickets .z0,.page .tela-os .z0{min-height:calc(100vh - 150px)!important}
 /* botão "Como usar" é criado pela central de ajuda */
 .btn-ajuda:empty{display:none}
+/* busca na faixa preta (entre título e conta) */
+.band-search{flex:1 1 260px;max-width:440px;min-width:180px;margin:0 8px}
+.band .band-search svg{color:#BDBDBD;top:12px}
+.band .band-search .field{width:100%;padding:10px 12px 10px 36px;border-radius:10px;border:1px solid #3A3A3A;background:#1E1E1E;color:#fff;font:500 13.5px Inter,system-ui,sans-serif}
+.band .band-search .field::placeholder{color:#8A8A8A}
+.band .band-search .field:focus{outline:2px solid #FFD200;outline-offset:1px;border-color:#FFD200}
+@media (max-width:900px){.band-search{flex-basis:100%;max-width:none;order:3;margin:4px 0 0}}
+/* paginação da tela de usuários */
+.usr-pag{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-top:4px}
+.usr-pag-info{font:500 13px Inter,sans-serif;color:#5a5a5a}
+.usr-pag-btns{display:flex;gap:8px;align-items:center}
+.usr-acoes{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.usr-acoes .btn-danger{color:#b42318;border-color:#f3c4c0}
+.usr-acoes .btn-danger:hover{background:#fef3f2}
+.usr-menu{position:relative;display:inline-flex;justify-content:flex-end}
+.usr-menu-btn{min-width:36px;padding:6px 8px!important}
+.usr-menu-drop{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:148px;background:#fff;border:1px solid #E6E6E0;border-radius:10px;box-shadow:0 8px 24px #0000001a;padding:6px;display:flex;flex-direction:column;gap:2px}.usr-menu-drop.usr-menu-drop-open{position:fixed;z-index:4000}
+.usr-menu-drop[hidden]{display:none!important}
+.usr-menu-drop button{all:unset;box-sizing:border-box;cursor:pointer;padding:8px 10px;border-radius:7px;font:600 13px Inter,sans-serif;color:#141414}
+.usr-menu-drop button:hover{background:#F3F3EF}
+.usr-menu-drop button.danger{color:#b42318}
+.usr-menu-drop button.danger:hover{background:#fef3f2}
 /* impressão disparada por uma tela isolada (proposta, relatório): só a tela sai no papel */
 @media print{
 html.sgo-imprimindo-tela .band,html.sgo-imprimindo-tela .side,html.sgo-imprimindo-tela .topbar,html.sgo-imprimindo-tela #btn-ajuda{display:none!important}

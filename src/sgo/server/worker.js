@@ -357,6 +357,22 @@ async function rotaUsuarios(request, env, url, eu) {
   if (!m) return null;
   const id = m[1] ? parseInt(m[1], 10) : null;
   if (!id && request.method === "GET") return json(await carregar(env));
+  if (id && request.method === "DELETE") {
+    const alvo = await env.DB.prepare("SELECT id, perfil, login, nome FROM usuarios WHERE id = ?").bind(id).first();
+    if (!alvo) return json({ erro: "Usu\u00e1rio n\u00e3o encontrado." }, 404);
+    if (alvo.perfil === "superadmin") return json({ erro: "O Super Admin n\u00e3o pode ser apagado." }, 400);
+    if (alvo.id === eu.id) return json({ erro: "Voc\u00ea n\u00e3o pode apagar o seu pr\u00f3prio usu\u00e1rio." }, 400);
+    try { await env.DB.prepare("DELETE FROM usuario_veiculos WHERE usuario_id = ?").bind(id).run(); } catch (_) {}
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM sessoes WHERE usuario_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM usuario_permissoes WHERE usuario_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM usuarios WHERE id = ?").bind(id),
+    ]);
+    try {
+      await env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(Date.now(), eu.login, "usuarios", String(id), alvo.login, ("Usu\u00e1rio apagado \u00b7 " + alvo.nome).slice(0, 300)).run();
+    } catch (_) {}
+    return json({ ok: true });
+  }
   let d;
   try {
     d = await lerJson(request, 2e4);

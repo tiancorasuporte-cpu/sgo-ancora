@@ -37,17 +37,28 @@ type Ctx = {
   avisarAlteracao: () => void;
 };
 
-const SgoCtx = createContext<Ctx>({
+/** Contexto estável (sem a string da busca) — evita re-render de módulos ao digitar. */
+type CtxBase = Omit<Ctx, "busca">;
+
+const SgoCtx = createContext<CtxBase>({
   eu: null,
   definirTitulo: () => undefined,
-  busca: "",
   setBusca: () => undefined,
   registrarBusca: () => undefined,
   avisarAlteracao: () => undefined,
 });
 
-export function useSgo() {
+const SgoBuscaCtx = createContext("");
+
+/** Só dados estáveis da casca (sem a string digitada na busca). */
+export function useSgoBase() {
   return useContext(SgoCtx);
+}
+
+export function useSgo(): Ctx {
+  const base = useSgoBase();
+  const busca = useContext(SgoBuscaCtx);
+  return useMemo(() => ({ ...base, busca }), [base, busca]);
 }
 
 /* ---------------- auxiliares ---------------- */
@@ -162,21 +173,19 @@ export function SgoShell({ children }: { children: ReactNode }) {
     const w = window as unknown as Record<string, unknown>;
     w["SGO_APP"] = { api, avisar, esc };
     w["SGO_TELAS"] = w["SGO_TELAS"] || {};
-    // módulos Usuários e Ramais VoIP (e o softphone flutuante): código original do SGO, executado uma vez
-    if (!w["__sgoModulos"]) {
-      w["__sgoModulos"] = true;
-      for (const [nome, codigo] of [
-        ["usuarios", moduloUsuarios],
-        ["voip", moduloVoip],
-      ] as const) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-implied-eval
-          new Function(codigo + "\n//# sourceURL=sgo-modulo-" + nome + ".js")();
-        } catch (e) {
-          console.error("[sgo] módulo " + nome, e);
-        }
+    // módulos Usuários e Ramais VoIP — reinsere no HMR para não ficar em "Carregando…"
+    for (const [nome, codigo] of [
+      ["usuarios", moduloUsuarios],
+      ["voip", moduloVoip],
+    ] as const) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval
+        new Function(codigo + "\n//# sourceURL=sgo-modulo-" + nome + ".js")();
+      } catch (e) {
+        console.error("[sgo] módulo " + nome, e);
       }
     }
+    window.dispatchEvent(new Event("sgo-modulos"));
     // central de ajuda: conteúdo editável pelo administrador, servido da pasta de arquivos
     if (!document.querySelector('script[data-sgo="/ajuda/app.js"]')) {
       const sc = document.createElement("script");
@@ -185,7 +194,7 @@ export function SgoShell({ children }: { children: ReactNode }) {
       sc.setAttribute("data-sgo", "/ajuda/app.js");
       document.body.appendChild(sc);
     }
-  }, [eu]);
+  }, [eu, moduloUsuarios, moduloVoip]);
 
   useEffect(() => {
     api<SgoEu>("GET", "/api/eu")
@@ -388,16 +397,16 @@ export function SgoShell({ children }: { children: ReactNode }) {
     a.dispatchEvent(new Event("change", { bubbles: true }));
   };
 
-  const ctx = useMemo<Ctx>(
+  const definirTitulo = useCallback((t: string, s?: string) => setTitulo({ t, s: s || "" }), []);
+  const ctxBase = useMemo<CtxBase>(
     () => ({
       eu,
-      definirTitulo: (t, s) => setTitulo({ t, s: s || "" }),
-      busca,
+      definirTitulo,
       setBusca,
       registrarBusca: setBuscaTela,
       avisarAlteracao: carregarContadores,
     }),
-    [eu, busca, carregarContadores],
+    [eu, definirTitulo, carregarContadores],
   );
 
   /* ---------- menu ---------- */
@@ -461,7 +470,8 @@ export function SgoShell({ children }: { children: ReactNode }) {
       .toUpperCase() || "··";
 
   return (
-    <SgoCtx.Provider value={ctx}>
+    <SgoCtx.Provider value={ctxBase}>
+      <SgoBuscaCtx.Provider value={busca}>
       <div className="app">
         <div className="band">
           <a className="band-brand" href="/painel" data-link="" onClick={(e) => navegar(e, "/painel")}>
@@ -486,6 +496,38 @@ export function SgoShell({ children }: { children: ReactNode }) {
                 {titulo.s}
               </span>
             </div>
+            {temBusca ? (
+              <div className="search band-search">
+                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <label htmlFor="g-busca" className="vh">
+                  Buscar no sistema
+                </label>
+                <input
+                  id="g-busca"
+                  className="field"
+                  type="search"
+                  placeholder={seletor ? placeholder : buscaTela || "Buscar nesta tela…"}
+                  value={busca}
+                  onChange={(e) => {
+                    setBusca(e.target.value);
+                    aplicarBusca(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      aplicarBusca(busca, "Enter");
+                    }
+                    if (e.key === "Escape") {
+                      setBusca("");
+                      aplicarBusca("");
+                    }
+                  }}
+                />
+              </div>
+            ) : null}
             <div className="band-actions">
               {/* preenchido pela central de ajuda (/ajuda/app.js) */}
               <button type="button" id="btn-ajuda" className="btn-ajuda" />
@@ -561,39 +603,6 @@ export function SgoShell({ children }: { children: ReactNode }) {
           </nav>
 
           <div className="content">
-            <header className="topbar">
-              <div className="search" style={{ visibility: temBusca ? undefined : "hidden" }}>
-                <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5A5A5A" strokeWidth="2" strokeLinecap="round">
-                  <circle cx="11" cy="11" r="7" />
-                  <path d="M20 20l-3.5-3.5" />
-                </svg>
-                <label htmlFor="g-busca" className="vh">
-                  Buscar no sistema
-                </label>
-                <input
-                  id="g-busca"
-                  className="field"
-                  type="search"
-                  placeholder={seletor ? placeholder : buscaTela || "Buscar nesta tela…"}
-                  style={{ paddingLeft: 36, background: "#F6F6F2", borderColor: "#E0E0DA" }}
-                  value={busca}
-                  onChange={(e) => {
-                    setBusca(e.target.value);
-                    aplicarBusca(e.target.value);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      aplicarBusca(busca, "Enter");
-                    }
-                    if (e.key === "Escape") {
-                      setBusca("");
-                      aplicarBusca("");
-                    }
-                  }}
-                />
-              </div>
-            </header>
             <main className={"page" + (ROTAS[caminho]?.frame ? " page-frame" : "")} id="page" tabIndex={-1}>
               {!eu ? (
                 <div className="loading">Carregando…</div>
@@ -614,6 +623,7 @@ export function SgoShell({ children }: { children: ReactNode }) {
           }}
         />
       ) : null}
+      </SgoBuscaCtx.Provider>
     </SgoCtx.Provider>
   );
 }

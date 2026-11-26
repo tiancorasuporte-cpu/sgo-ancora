@@ -27,35 +27,53 @@ export function PageSection({
 }
 
 /**
- * Banner de título das páginas (padrão Orçamentos):
- * faixa preta, título branco em caixa alta, ações à direita.
+ * Faixa de contexto/ações das páginas.
+ * O título principal fica na faixa preta do SgoShell — por padrão não repetimos o h1 aqui.
  */
 export function PageTitle({
   title,
   subtitle,
   children,
   className,
+  /** Só use true se a tela NÃO tiver título na faixa preta do shell. */
+  showHeading = false,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   children?: ReactNode;
   className?: string;
+  showHeading?: boolean;
 }) {
+  const hasLeft = showHeading || subtitle != null;
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-md rounded-xl bg-primary px-lg py-lg text-on-primary md:px-xl md:py-lg",
+        "flex flex-wrap items-center justify-between gap-md rounded-xl bg-primary px-lg py-md text-on-primary md:px-xl md:py-md",
+        showHeading && "py-lg md:py-lg",
         className,
       )}
     >
-      <div className="min-w-0">
-        <h1 className="text-headline-md font-bold uppercase tracking-wide text-on-primary md:text-headline-lg">
-          {title}
-        </h1>
-        {subtitle != null ? (
-          <p className="mt-xs text-label-md text-white/70 md:text-body-md">{subtitle}</p>
-        ) : null}
-      </div>
+      {hasLeft ? (
+        <div className="min-w-0">
+          {showHeading ? (
+            <h1 className="text-headline-md font-bold uppercase tracking-wide text-on-primary md:text-headline-lg">
+              {title}
+            </h1>
+          ) : null}
+          {subtitle != null ? (
+            <p
+              className={cn(
+                "text-label-md text-white/70 md:text-body-md",
+                showHeading && "mt-xs",
+              )}
+            >
+              {subtitle}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <div className="min-w-0" />
+      )}
       {children ? (
         <div className="flex w-full flex-wrap items-center gap-sm sm:w-auto">{children}</div>
       ) : null}

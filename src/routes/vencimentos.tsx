@@ -7,6 +7,12 @@ import { Icon } from "@/components/Icon";
 import { btnOnPrimaryOutline, btnPrimary, PageTitle } from "@/components/PageChrome";
 import { paginateList, TablePager } from "@/components/TablePager";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   getNotificationSettingsFn,
   getOmieAppsFn,
   getDueItemBoletoViewFn,
@@ -832,48 +838,44 @@ function VencimentosPage() {
                             </div>
                           </td>
                           <td className="px-md py-sm">
-                            <div className="flex flex-wrap gap-xs">
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => viewDocument(item)}
-                                className="inline-flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-sm py-xs text-label-md text-primary hover:bg-surface-container-high disabled:opacity-50"
-                                title={
-                                  item.itemType === "boleto"
-                                    ? "Abrir boleto"
-                                    : `Baixar ${TYPE_LABELS[item.itemType]}`
-                                }
-                              >
-                                <Icon
-                                  name={
-                                    viewingId === item.id
-                                      ? "hourglass_empty"
-                                      : item.itemType === "boleto"
-                                        ? "picture_as_pdf"
-                                        : "download"
-                                  }
-                                  className="text-[16px]"
-                                />
-                                {viewingId === item.id
-                                  ? "..."
-                                  : item.itemType === "boleto"
-                                    ? "Boleto"
-                                    : "PDF"}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => sendAlert(item)}
-                                className="inline-flex items-center gap-xs rounded-lg bg-secondary-container px-sm py-xs text-label-md font-semibold text-on-secondary-container hover:opacity-90 disabled:opacity-50"
-                                title="Enviar alerta WhatsApp"
-                              >
-                                <Icon
-                                  name={sendingId === item.id ? "hourglass_empty" : "send"}
-                                  className="text-[16px]"
-                                />
-                                {sendingId === item.id ? "..." : "Enviar"}
-                              </button>
-                            </div>
+                            <DropdownMenu modal={false}>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  type="button"
+                                  disabled={busy && (viewingId === item.id || sendingId === item.id)}
+                                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-outline-variant bg-white text-on-surface hover:bg-surface-container-high disabled:opacity-50"
+                                  aria-label={`Ações de ${item.clientName || item.documentNumber || "documento"}`}
+                                >
+                                  <Icon
+                                    name={
+                                      viewingId === item.id || sendingId === item.id
+                                        ? "hourglass_empty"
+                                        : "more_vert"
+                                    }
+                                    className="text-[20px]"
+                                  />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="min-w-[11rem]">
+                                <DropdownMenuItem
+                                  disabled={busy}
+                                  onSelect={() => void viewDocument(item)}
+                                >
+                                  <Icon
+                                    name={item.itemType === "boleto" ? "picture_as_pdf" : "download"}
+                                    className="text-[16px]"
+                                  />
+                                  {item.itemType === "boleto" ? "Abrir boleto" : "Baixar PDF"}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={busy}
+                                  onSelect={() => void sendAlert(item)}
+                                >
+                                  <Icon name="send" className="text-[16px]" />
+                                  Enviar WhatsApp
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </td>
                         </tr>
                       );

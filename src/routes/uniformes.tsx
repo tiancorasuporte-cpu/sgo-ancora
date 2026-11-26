@@ -420,7 +420,7 @@ function UniformesPage() {
   return (
     <AppShell mobileTitle="Uniformes">
       <main className="relative flex-1 p-margin-mobile md:p-margin-desktop">
-        <div className="mx-auto max-w-6xl space-y-lg">
+        <div className="w-full space-y-lg">
           <PageTitle
             title="Uniformes"
             subtitle="Estoque, entregas, trocas e devoluções com termo de responsabilidade."
