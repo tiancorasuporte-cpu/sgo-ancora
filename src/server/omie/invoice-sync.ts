@@ -335,9 +335,10 @@ export async function saveDueItemFromMovement(
   return savedPrimary || savedCompanion;
 }
 
-async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date) {
+async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date, enforceDueWindow = true) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
+  const saveWindow = enforceDueWindow ? { from, to } : undefined;
 
   const items = await omiePaginate<{
     pagina?: number;
@@ -440,7 +441,7 @@ async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date) {
             amount: parseAmount(titulo["nValor"] ?? titulo["nValorTitulo"]) ?? defaultAmount,
             status: String(titulo["cStatus"] ?? "") || null,
           },
-          { from, to },
+          saveWindow,
         );
         if (saved) count += 1;
       }
@@ -467,7 +468,7 @@ async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date) {
         amount: defaultAmount,
         status: String(ide["cStatus"] ?? "") || null,
       },
-      { from, to },
+      saveWindow,
     );
     if (saved) count += 1;
   }
@@ -475,9 +476,10 @@ async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date) {
   return count;
 }
 
-async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date) {
+async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date, enforceDueWindow = true) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
+  const saveWindow = enforceDueWindow ? { from, to } : undefined;
 
   const items = await omiePaginate<{
     nPagina?: number;
@@ -544,7 +546,7 @@ async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date) {
         amount: parseAmount(valores["nValorLiquido"] ?? valores["nValorTotalServicos"]),
         status: String(cab["cStatus"] ?? cab["cStatusNFSe"] ?? "").trim() || null,
       },
-      { from, to },
+      saveWindow,
     );
     if (saved) count += 1;
   }
@@ -552,19 +554,25 @@ async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date) {
   return count;
 }
 
-export async function syncInvoiceDocuments(app: OmieAppConfig, from: Date, to: Date) {
+export async function syncInvoiceDocuments(
+  app: OmieAppConfig,
+  from: Date,
+  to: Date,
+  options?: { enforceDueWindow?: boolean },
+) {
   let nfe = 0;
   let nfse = 0;
   const errors: string[] = [];
+  const enforceDueWindow = options?.enforceDueWindow !== false;
 
   try {
-    nfe = await syncNfeInvoices(app, from, to);
+    nfe = await syncNfeInvoices(app, from, to, enforceDueWindow);
   } catch (error) {
     errors.push(`nfe: ${error instanceof Error ? error.message : "erro"}`);
   }
 
   try {
-    nfse = await syncNfseInvoices(app, from, to);
+    nfse = await syncNfseInvoices(app, from, to, enforceDueWindow);
   } catch (error) {
     errors.push(`nfse: ${error instanceof Error ? error.message : "erro"}`);
   }

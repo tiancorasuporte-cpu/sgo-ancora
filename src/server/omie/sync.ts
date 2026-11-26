@@ -324,3 +324,133 @@ export async function syncAllOmieApps(
   });
   return { ok: true as const, results };
 }
+
+/** Movimentos filtrados por data de emissão (não vencimento). */
+async function syncMovimentosPorEmissao(app: OmieAppConfig, from: Date, to: Date) {
+  const fromStr = formatOmieDate(from);
+  const toStr = formatOmieDate(to);
+
+  const items = await omiePaginate<{
+    nPagina?: number;
+    nTotPaginas?: number;
+    movimentos?: Record<string, unknown>[];
+  }>(
+    app,
+    "/financas/mf/",
+    "ListarMovimentos",
+    (page) => ({
+      nPagina: page,
+      nRegPorPagina: 500,
+      cNatureza: "R",
+      cTpLancamento: "CR",
+      dDtEmisDe: fromStr,
+      dDtEmisAte: toStr,
+    }),
+    (response) => ({
+      page: response.nPagina ?? 1,
+      totalPages: response.nTotPaginas ?? 1,
+      items: response.movimentos ?? [],
+    }),
+  );
+
+  let count = 0;
+  for (const raw of items) {
+    const movimento = raw as Record<string, unknown>;
+    const detalhes = (movimento["detalhes"] ?? movimento) as Record<string, unknown>;
+    if (String(detalhes["cNatureza"] ?? "R").toUpperCase() !== "R") continue;
+    // Sem janela de vencimento: título faturado hoje pode vencer depois.
+    if (await saveDueItemFromMovement(app, detalhes)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Sync urgente: só o que foi faturado/emitido hoje (boletos + NFe/NFS-e) nas 3 empresas.
+ * Não substitui o sync completo da tela de Vencimentos.
+ */
+export async function syncTodayFaturamento(onProgress?: SyncProgressHandler) {
+  const apps = listOmieApps();
+  if (apps.length === 0) {
+    return { ok: false as const, error: "Nenhum aplicativo Omie configurado no .env." };
+  }
+
+  const { from, to } = syncWindow(0, 0);
+  const totalUnits = apps.length * 2 + 1;
+  let completedUnits = 0;
+
+  const report = (label: string, app?: OmieAppConfig, appIndex?: number) => {
+    const percent = Math.min(99, Math.round((completedUnits / totalUnits) * 100));
+    onProgress?.({
+      percent,
+      label,
+      appId: app?.id,
+      appName: app?.name,
+      appIndex: appIndex != null ? appIndex + 1 : undefined,
+      appTotal: apps.length,
+    });
+  };
+
+  report("Sync de hoje: iniciando...");
+  const results = [];
+
+  for (let index = 0; index < apps.length; index++) {
+    const app = apps[index]!;
+    if (index > 0) await sleep(2_000);
+    clearClienteCache();
+    const logId = await startSyncLog(app.id);
+    const breakdown: Record<string, number> = {};
+    const errors: string[] = [];
+
+    try {
+      completedUnits += 1;
+      report(`${app.name}: boletos/movimentos emitidos hoje (${index + 1}/${apps.length})`, app, index);
+      try {
+        breakdown.movimentos = await withTimeout(
+          syncMovimentosPorEmissao(app, from, to),
+          syncStageTimeoutMs(),
+          `${app.name}/emissao`,
+        );
+      } catch (error) {
+        breakdown.movimentos = 0;
+        errors.push(`movimentos: ${error instanceof Error ? error.message : "erro"}`);
+      }
+
+      completedUnits += 1;
+      report(`${app.name}: NFe/NFS-e emitidas hoje (${index + 1}/${apps.length})`, app, index);
+      try {
+        const invoiceResult = await withTimeout(
+          syncInvoiceDocuments(app, from, to, { enforceDueWindow: false }),
+          syncStageTimeoutMs(),
+          `${app.name}/notas-hoje`,
+        );
+        breakdown.nfe = invoiceResult.nfe;
+        breakdown.nfse = invoiceResult.nfse;
+        errors.push(...invoiceResult.errors);
+      } catch (error) {
+        breakdown.nfe = 0;
+        breakdown.nfse = 0;
+        errors.push(`notas: ${error instanceof Error ? error.message : "erro"}`);
+      }
+
+      const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
+      await finishSyncLog(logId, total, errors.length ? errors.join(" | ") : null);
+      console.info("[sync-hoje] app done", app.id, { total, breakdown, errors });
+      results.push({
+        ok: true as const,
+        appId: app.id,
+        appName: app.name,
+        itemsFound: total,
+        breakdown,
+        errors,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha na sincronização";
+      await finishSyncLog(logId, 0, message);
+      results.push({ ok: false as const, appId: app.id, appName: app.name, error: message });
+    }
+  }
+
+  completedUnits = totalUnits;
+  onProgress?.({ percent: 100, label: "Sync de hoje concluído", appTotal: apps.length });
+  return { ok: true as const, results };
+}
