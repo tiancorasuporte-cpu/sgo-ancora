@@ -225,7 +225,7 @@
     var st = document.createElement("style"); st.textContent = CSS; document.head.appendChild(st);
     var b = document.getElementById("btn-ajuda");
     if (!b) {
-      var conta = document.querySelector(".topbar .conta"); if (!conta) return;
+      var conta = document.querySelector(".band .conta") || document.querySelector(".topbar .conta"); if (!conta) return;
       b = document.createElement("button"); b.type = "button"; b.id = "btn-ajuda"; b.className = "btn-ajuda";
       conta.parentNode.insertBefore(b, conta);
     }

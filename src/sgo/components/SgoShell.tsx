@@ -486,9 +486,53 @@ export function SgoShell({ children }: { children: ReactNode }) {
                 {titulo.s}
               </span>
             </div>
-            <span className="tag-env" title="Ambiente de teste">
-              Ambiente de teste
-            </span>
+            <div className="band-actions">
+              {/* preenchido pela central de ajuda (/ajuda/app.js) */}
+              <button type="button" id="btn-ajuda" className="btn-ajuda" />
+              <div className="conta">
+                <button
+                  ref={contaBtn}
+                  type="button"
+                  className="conta-btn"
+                  id="conta-btn"
+                  aria-haspopup="menu"
+                  aria-expanded={contaAberta ? "true" : "false"}
+                  aria-controls="conta-menu"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setContaAberta(!contaAberta);
+                  }}
+                >
+                  <span className="conta-txt">
+                    <span id="usuario" className="conta-nome">
+                      {eu ? eu.nome : "…"}
+                    </span>
+                    <span id="usuario-setor" className="conta-setor">
+                      {eu ? (eu.perfil === "superadmin" ? "Super Admin" : eu.setor_nome || (eu.admin ? "Administrador" : "")) : ""}
+                    </span>
+                  </span>
+                  <span className="avatar" id="avatar" aria-hidden="true">
+                    {iniciais}
+                  </span>
+                </button>
+                <div className="conta-menu" id="conta-menu" role="menu" hidden={!contaAberta}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    id="btn-senha"
+                    onClick={() => {
+                      setContaAberta(false);
+                      setTrocarSenha(true);
+                    }}
+                  >
+                    Trocar minha senha
+                  </button>
+                  <button type="button" role="menuitem" id="btn-sair" onClick={sair}>
+                    Sair
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -548,51 +592,6 @@ export function SgoShell({ children }: { children: ReactNode }) {
                     }
                   }}
                 />
-              </div>
-              {/* preenchido pela central de ajuda (/ajuda/app.js) */}
-              <button type="button" id="btn-ajuda" className="btn-ajuda" />
-              <div className="conta">
-                <button
-                  ref={contaBtn}
-                  type="button"
-                  className="conta-btn"
-                  id="conta-btn"
-                  aria-haspopup="menu"
-                  aria-expanded={contaAberta ? "true" : "false"}
-                  aria-controls="conta-menu"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setContaAberta(!contaAberta);
-                  }}
-                >
-                  <span className="conta-txt">
-                    <span id="usuario" className="conta-nome">
-                      {eu ? eu.nome : "…"}
-                    </span>
-                    <span id="usuario-setor" className="conta-setor">
-                      {eu ? (eu.perfil === "superadmin" ? "Super Admin" : eu.setor_nome || (eu.admin ? "Administrador" : "")) : ""}
-                    </span>
-                  </span>
-                  <span className="avatar" id="avatar" aria-hidden="true">
-                    {iniciais}
-                  </span>
-                </button>
-                <div className="conta-menu" id="conta-menu" role="menu" hidden={!contaAberta}>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    id="btn-senha"
-                    onClick={() => {
-                      setContaAberta(false);
-                      setTrocarSenha(true);
-                    }}
-                  >
-                    Trocar minha senha
-                  </button>
-                  <button type="button" role="menuitem" id="btn-sair" onClick={sair}>
-                    Sair
-                  </button>
-                </div>
               </div>
             </header>
             <main className={"page" + (ROTAS[caminho]?.frame ? " page-frame" : "")} id="page" tabIndex={-1}>
