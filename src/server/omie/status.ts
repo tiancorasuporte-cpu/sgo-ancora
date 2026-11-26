@@ -120,6 +120,23 @@ export function isOpenReceivableStatus(status: string | null | undefined) {
   return false;
 }
 
+/**
+ * Status de documento fiscal (NFe/NFS-e) cobrável.
+ * Na NFS-e Omie, "F" = Faturada (autorizada) — não confundir com "F" de título financeiro quitado.
+ */
+export function isOpenFiscalDocumentStatus(status: string | null | undefined) {
+  const value = normalizeOmieStatus(status);
+  if (!value) return true;
+  if (isCancelledReceivableStatus(value)) return false;
+  if (value === "D" || value.includes("DENEG")) return false;
+  if (value === "F" || value === "FATURADA" || value === "AUTORIZADA" || value === "N" || value === "A") {
+    return true;
+  }
+  if (isOpenReceivableStatus(value)) return true;
+  if (isClosedReceivableStatus(value) || isPaidReceivableStatus(value)) return false;
+  return true;
+}
+
 export const OPEN_STATUS_SQL_LIST = [
   "A VENCER",
   "ATRASADO",

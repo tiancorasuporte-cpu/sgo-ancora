@@ -4,6 +4,7 @@ import { upsertDueItem, markStaleOpenDueItems } from "@/db/due-items";
 import type { DueItemType } from "@/db/schema";
 import {
   formatOmieDate,
+  omieCall,
   omiePaginate,
   parseAmount,
   parseOmieDate,
@@ -16,7 +17,11 @@ import {
   pickClientNameFromRecord,
   resolveStoredClientPhone,
 } from "@/server/omie/clients";
-import { isClosedReceivableStatus, isOpenReceivableStatus } from "@/server/omie/status";
+import {
+  isClosedReceivableStatus,
+  isOpenFiscalDocumentStatus,
+  isOpenReceivableStatus,
+} from "@/server/omie/status";
 
 function pickDueDate(item: Record<string, unknown>) {
   return (
@@ -219,10 +224,11 @@ export async function saveReceivableDueItem(
   if (window && !isDueDateInWindow(input.dueDate, window.from, window.to)) return false;
 
   const status = String(input.status ?? "");
-  if (isClosedReceivableStatus(status)) return false;
-  // Notas sem status cobrável não entram como alerta (evita NF já quitada).
-  if ((input.itemType === "nfe" || input.itemType === "nfse") && !isOpenReceivableStatus(status)) {
-    return false;
+  if (input.itemType === "nfe" || input.itemType === "nfse") {
+    // NFS-e Omie usa "F"=Faturada (aberta). Não aplicar a regra financeira de "F"=quitado.
+    if (!isOpenFiscalDocumentStatus(status)) return false;
+  } else {
+    if (isClosedReceivableStatus(status)) return false;
   }
 
   const client = input.clientCode ? await getCliente(app, input.clientCode) : undefined;
@@ -338,28 +344,51 @@ export async function saveDueItemFromMovement(
 async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date, enforceDueWindow = true) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
+  const fromIso = parseOmieDate(fromStr) ?? fromStr;
+  const toIso = parseOmieDate(toStr) ?? toStr;
   const saveWindow = enforceDueWindow ? { from, to } : undefined;
 
-  const items = await omiePaginate<{
-    pagina?: number;
-    total_de_paginas?: number;
-    nfCadastro?: Record<string, unknown>[];
-  }>(
-    app,
-    "/produtos/nfconsultar/",
-    "ListarNF",
-    (page) => ({
+  // ListarNF da Omie ignora filtrar_por_data_* — ordenamos por emissão DESC e
+  // paramos quando a data cair antes da janela (senão varre o histórico inteiro).
+  const items: Record<string, unknown>[] = [];
+  let page = 1;
+  let totalPages = 1;
+  const maxPages = 80;
+  let reachedOlderThanWindow = false;
+
+  while (page <= totalPages && page <= maxPages && !reachedOlderThanWindow) {
+    const response = await omieCall<{
+      pagina?: number;
+      total_de_paginas?: number;
+      nfCadastro?: Record<string, unknown>[];
+    }>(app, "/produtos/nfconsultar/", "ListarNF", {
       pagina: page,
       registros_por_pagina: 50,
       filtrar_por_data_de: fromStr,
       filtrar_por_data_ate: toStr,
-    }),
-    (response) => ({
-      page: response.pagina ?? 1,
-      totalPages: response.total_de_paginas ?? 1,
-      items: response.nfCadastro ?? [],
-    }),
-  );
+      ordenar_por: "DATA_EMISSAO",
+      ordem_decrescente: "S",
+    });
+
+    const batch = response.nfCadastro ?? [];
+    totalPages = Math.max(1, response.total_de_paginas ?? 1);
+
+    for (const raw of batch) {
+      const cadastro = raw as Record<string, unknown>;
+      const ide = (cadastro["ide"] ?? {}) as Record<string, unknown>;
+      const compl = (cadastro["compl"] ?? {}) as Record<string, unknown>;
+      const issueDate = pickIssueDate(ide, cadastro, compl);
+      if (!issueDate) continue;
+      if (issueDate > toIso) continue;
+      if (issueDate < fromIso) {
+        reachedOlderThanWindow = true;
+        break;
+      }
+      items.push(cadastro);
+    }
+
+    page += 1;
+  }
 
   let count = 0;
   for (const raw of items) {
@@ -510,8 +539,16 @@ async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date, enforc
     const valores = (entry["Valores"] ?? entry["valores"] ?? {}) as Record<string, unknown>;
     const os = (entry["OrdemServico"] ?? entry["ordemServico"] ?? {}) as Record<string, unknown>;
 
+    // ListarNFSEs usa Cabecalho.nCodNF (não nCodNFSe).
     const nCodNFSe =
-      Number(cab["nCodNFSe"] ?? cab["nCodigoNFSe"] ?? cab["nCodNF"] ?? entry["nCodNFSe"] ?? 0) || null;
+      Number(
+        cab["nCodNFSe"] ??
+          cab["nCodigoNFSe"] ??
+          cab["nCodNF"] ??
+          entry["nCodNFSe"] ??
+          entry["nCodNF"] ??
+          0,
+      ) || null;
     if (!nCodNFSe) continue;
 
     const documentNumber =
@@ -540,11 +577,14 @@ async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date, enforc
         integrationCode: nfseIntegrationCode(nCodNFSe),
         documentNumber,
         clientCode,
-        clientName: String(cab["cRazaoSocial"] ?? cab["cNome"] ?? "").trim() || null,
+        clientName:
+          String(cab["cRazaoDestinatario"] ?? cab["cRazaoSocial"] ?? cab["cNome"] ?? "").trim() || null,
         dueDate,
         issueDate,
-        amount: parseAmount(valores["nValorLiquido"] ?? valores["nValorTotalServicos"]),
-        status: String(cab["cStatus"] ?? cab["cStatusNFSe"] ?? "").trim() || null,
+        amount: parseAmount(
+          cab["nValorNFSe"] ?? valores["nValorLiquido"] ?? valores["nValorTotalServicos"],
+        ),
+        status: String(cab["cStatusNFSe"] ?? cab["cStatus"] ?? "").trim() || null,
       },
       saveWindow,
     );
