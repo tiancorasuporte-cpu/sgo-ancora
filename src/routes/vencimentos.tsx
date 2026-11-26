@@ -459,17 +459,33 @@ function VencimentosPage() {
                 setFeedback(null);
                 try {
                   const result = await syncDueItemsFn();
-                  if (!result.ok) {
-                    setFeedback({ type: "error", text: result.error });
+                  if (!result?.ok) {
+                    setFeedback({
+                      type: "error",
+                      text:
+                        (result && "error" in result && result.error) ||
+                        "Falha ao sincronizar Omie.",
+                    });
                     return;
                   }
-                  const total = result.results.reduce(
+                  const total = (result.results ?? []).reduce(
                     (sum, item) => sum + (item.itemsFound ?? 0),
                     0,
                   );
+                  const avisos = (result.results ?? [])
+                    .flatMap((item) =>
+                      "error" in item && item.error
+                        ? [item.error]
+                        : "errors" in item && Array.isArray(item.errors)
+                          ? item.errors
+                          : [],
+                    )
+                    .filter(Boolean);
                   setFeedback({
-                    type: "ok",
-                    text: `Sincronização concluída: ${total} boleto(s)/nota(s).`,
+                    type: avisos.length ? "info" : "ok",
+                    text: avisos.length
+                      ? `Sync parcial: ${total} boleto(s)/nota(s). ${avisos.slice(0, 3).join(" · ")}`
+                      : `Sincronização concluída: ${total} boleto(s)/nota(s).`,
                   });
                   await router.invalidate();
                 } catch (error) {

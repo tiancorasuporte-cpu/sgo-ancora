@@ -229,6 +229,95 @@ async function atenderSyncOmieCadastros(request: Request): Promise<Response | nu
   }
 }
 
+/** Razão social + CNPJ das empresas Omie para o cabeçalho do PDF de orçamento. */
+async function atenderOrcamentosEmpresasDoc(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/orcamentos/empresas-doc" || request.method !== "GET") return null;
+  if (request.headers.get("x-sgo") !== "1") {
+    return Response.json({ erro: "Requisição recusada." }, { status: 403 });
+  }
+
+  const { usuarioSgo, ehAdminSgo } = await import("./sessao");
+  const eu = await usuarioSgo(request);
+  if (!eu) return Response.json({ erro: "Faça login para continuar." }, { status: 401 });
+  if (!(ehAdminSgo(eu) || eu.permissoes.includes("com-orc"))) {
+    return Response.json({ erro: "Sem permissão para orçamentos." }, { status: 403 });
+  }
+
+  try {
+    const { listOmieApps } = await import("@/server/omie/client");
+    const { getOmieEmpresaInfo } = await import("@/server/omie/quotes");
+    const apps = listOmieApps();
+    const docId = (app: { id: string; name: string }) => {
+      const n = `${app.name} ${app.id}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (n.includes("angela")) return "angela";
+      if (n.includes("belfer")) return "belfer";
+      if (n.includes("ancora")) return "ancora";
+      return null;
+    };
+    const emailPadrao = "atendimento@ancoraseguranca.com.br";
+    const padrao: Record<
+      string,
+      { id: string; label: string; nome: string; nomePdf: string; cnpj: string; email: string; fantasia: string | null }
+    > = {
+      ancora: {
+        id: "ancora",
+        label: "Âncora",
+        nome: "ANCORA SEGURANCA LTDA",
+        nomePdf: "ANCORA SEGURANCA LTDA",
+        cnpj: "07.836.724/0001-19",
+        email: emailPadrao,
+        fantasia: "ANCORA SEGURANCA PATRIMONIAL",
+      },
+      angela: {
+        id: "angela",
+        label: "Angela",
+        nome: "ANGELA EQUIPAM ELETRONICOS E SERVIÇOS DE MONITORAMENTO LTDA",
+        nomePdf: "ANGELA EQUIPAM ELETRONICOS E SERVIÇOS DE MONITORAMENTO LTDA",
+        cnpj: "08.009.975/0001-92",
+        email: emailPadrao,
+        fantasia: "ANGELA SERVIÇOS DIVERSOS",
+      },
+      belfer: {
+        id: "belfer",
+        label: "Belfer",
+        nome: "AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",
+        nomePdf: "AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",
+        cnpj: "15.699.646/0001-86",
+        email: emailPadrao,
+        fantasia: "ANCORA AUTOMACAO E SEGURANCA ELETRONICA",
+      },
+    };
+    const porId = { ...padrao };
+    await Promise.all(
+      apps.map(async (app) => {
+        const id = docId(app);
+        if (!id || !padrao[id]) return;
+        const info = await getOmieEmpresaInfo(app);
+        const nome = (info.razaoSocial || "").trim();
+        const curto = nome.length < 20 && !/\b(LTDA|EIRELI|ME|EPP|SA|S\/A)\b/i.test(nome);
+        porId[id] = {
+          ...padrao[id],
+          nome: curto || !nome ? padrao[id].nome : nome,
+          nomePdf: (curto || !nome ? padrao[id].nome : nome).toUpperCase(),
+          cnpj: info.cnpj || padrao[id].cnpj,
+          fantasia: info.nomeFantasia || padrao[id].fantasia,
+        };
+      }),
+    );
+    const ordem = ["ancora", "angela", "belfer"];
+    return Response.json({
+      empresas: ordem.map((id) => porId[id]).filter(Boolean),
+    });
+  } catch (e) {
+    console.error("[sgo] orcamentos empresas-doc", e);
+    return Response.json(
+      { erro: e instanceof Error ? e.message : "Falha ao consultar empresas na Omie." },
+      { status: 500 },
+    );
+  }
+}
+
 async function atenderFaturarOsOmie(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/os/faturar-omie" || request.method !== "POST") return null;
@@ -277,6 +366,9 @@ export async function atenderSgo(request: Request): Promise<Response> {
 
   const buscaOmie = await atenderBuscaCadastrosOmie(request);
   if (buscaOmie) return buscaOmie;
+
+  const empresasDoc = await atenderOrcamentosEmpresasDoc(request);
+  if (empresasDoc) return empresasDoc;
 
   const faturar = await atenderFaturarOsOmie(request);
   if (faturar) return faturar;

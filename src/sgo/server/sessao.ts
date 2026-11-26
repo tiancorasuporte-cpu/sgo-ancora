@@ -46,6 +46,9 @@ type UsuarioSgo = {
   comprador?: boolean | number;
   veiculos_ids?: number[];
   permissoes: string[];
+  permissoes_nivel?: Record<string, "ver" | "usar">;
+  setores?: string[];
+  os_transicoes?: { de: number; para: number }[];
 };
 
 let env: { DB: D1Pg; FOTOS: R2Local } | null = null;

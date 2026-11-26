@@ -73,6 +73,35 @@ export function requireOrcamentosOmieApp(): OmieAppConfig {
   return app;
 }
 
+function normAppHint(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/** Resolve app Omie por id/nome (ex.: "angela", "belfer", "ancora"). */
+export function getOmieAppByHint(hint: string): OmieAppConfig | null {
+  const h = normAppHint(String(hint || "").trim());
+  if (!h) return null;
+  return (
+    listOmieApps().find((app) => {
+      const n = normAppHint(`${app.id} ${app.name}`);
+      return n.includes(h) || app.id.toLowerCase() === h;
+    }) ?? null
+  );
+}
+
+export function requireOmieAppByHint(hint: string, label?: string): OmieAppConfig {
+  const app = getOmieAppByHint(hint);
+  if (!app) {
+    throw new Error(
+      `Empresa ${label || hint} não configurada. Inclua o app correspondente em OMIE_APPS.`,
+    );
+  }
+  return app;
+}
+
 export function formatOmieDate(date: Date) {
   const day = String(date.getDate()).padStart(2, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");

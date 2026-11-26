@@ -154,15 +154,30 @@ function looksLikeShortAppLabel(value: string) {
   return v.length < 20 && !/\b(LTDA|EIRELI|ME|EPP|SA|S\/A)\b/i.test(v);
 }
 
-function belferFallback(app: OmieAppConfig): OmieEmpresaInfo | null {
-  const id = app.id.toLowerCase();
-  const name = app.name.toLowerCase();
-  if (!id.includes("belfer") && !name.includes("belfer")) return null;
-  return {
-    razaoSocial: "AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",
-    nomeFantasia: "Belfer",
-    cnpj: "15.699.646/0001-86",
-  };
+function knownEmpresaFallback(app: OmieAppConfig): OmieEmpresaInfo | null {
+  const n = `${app.id} ${app.name}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (n.includes("angela")) {
+    return {
+      razaoSocial: "ANGELA EQUIPAM ELETRONICOS E SERVIÇOS DE MONITORAMENTO LTDA",
+      nomeFantasia: "ANGELA SERVIÇOS DIVERSOS",
+      cnpj: "08.009.975/0001-92",
+    };
+  }
+  if (n.includes("belfer")) {
+    return {
+      razaoSocial: "AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",
+      nomeFantasia: "ANCORA AUTOMACAO E SEGURANCA ELETRONICA",
+      cnpj: "15.699.646/0001-86",
+    };
+  }
+  if (n.includes("ancora")) {
+    return {
+      razaoSocial: "ANCORA SEGURANCA LTDA",
+      nomeFantasia: "ANCORA SEGURANCA PATRIMONIAL",
+      cnpj: "07.836.724/0001-19",
+    };
+  }
+  return null;
 }
 
 function pickEmpresaRow(rows: Record<string, unknown>[]) {
@@ -191,9 +206,18 @@ function parseEmpresaRow(row: Record<string, unknown>, app: OmieAppConfig, fromE
   } satisfies OmieEmpresaInfo;
 }
 
-/** Razão social + CNPJ da empresa Omie (Belfer). Env: OMIE_{ID}_RAZAO_SOCIAL / _CNPJ. */
+function formatEmpresaCnpj(value: string | null | undefined) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 14) {
+    return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+  }
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+/** Razão social + CNPJ da empresa Omie. Env: OMIE_{ID}_RAZAO_SOCIAL / _CNPJ. */
 export async function getOmieEmpresaInfo(app: OmieAppConfig): Promise<OmieEmpresaInfo> {
-  const fallback = belferFallback(app) ?? {
+  const fallback = knownEmpresaFallback(app) ?? {
     razaoSocial: app.name,
     nomeFantasia: app.name,
     cnpj: null as string | null,
@@ -201,9 +225,9 @@ export async function getOmieEmpresaInfo(app: OmieAppConfig): Promise<OmieEmpres
   const fromEnvRazao = (process.env[envEmpresaKey(app.id, "RAZAO_SOCIAL")] ?? "").trim();
   const fromEnvCnpj = (process.env[envEmpresaKey(app.id, "CNPJ")] ?? "").trim();
   const fromEnv: OmieEmpresaInfo = {
-    razaoSocial: fromEnvRazao || fallback.razaoSocial,
+    razaoSocial: looksLikeShortAppLabel(fromEnvRazao) ? fallback.razaoSocial : fromEnvRazao || fallback.razaoSocial,
     nomeFantasia: fallback.nomeFantasia,
-    cnpj: fromEnvCnpj || fallback.cnpj,
+    cnpj: formatEmpresaCnpj(fromEnvCnpj) || fallback.cnpj,
   };
 
   try {
@@ -221,7 +245,13 @@ export async function getOmieEmpresaInfo(app: OmieAppConfig): Promise<OmieEmpres
     const active = pickEmpresaRow(Array.isArray(rows) ? rows : []);
     if (active) {
       const parsed = parseEmpresaRow(active, app, fromEnv);
-      if (!looksLikeShortAppLabel(parsed.razaoSocial)) return parsed;
+      if (!looksLikeShortAppLabel(parsed.razaoSocial)) {
+        return {
+          ...parsed,
+          cnpj: formatEmpresaCnpj(parsed.cnpj) || fromEnv.cnpj,
+          nomeFantasia: parsed.nomeFantasia || fromEnv.nomeFantasia,
+        };
+      }
     }
   } catch {
     // tenta ConsultarEmpresa abaixo
@@ -234,10 +264,16 @@ export async function getOmieEmpresaInfo(app: OmieAppConfig): Promise<OmieEmpres
     const row = (response["empresas_cadastro"] ?? response) as Record<string, unknown>;
     if (row && (row["razao_social"] || row["cnpj"])) {
       const parsed = parseEmpresaRow(row, app, fromEnv);
-      if (!looksLikeShortAppLabel(parsed.razaoSocial)) return parsed;
+      if (!looksLikeShortAppLabel(parsed.razaoSocial)) {
+        return {
+          ...parsed,
+          cnpj: formatEmpresaCnpj(parsed.cnpj) || fromEnv.cnpj,
+          nomeFantasia: parsed.nomeFantasia || fromEnv.nomeFantasia,
+        };
+      }
     }
   } catch {
-    // fallback env / Belfer conhecido
+    // fallback env / empresas conhecidas
   }
 
   return {
@@ -245,7 +281,7 @@ export async function getOmieEmpresaInfo(app: OmieAppConfig): Promise<OmieEmpres
       ? fallback.razaoSocial
       : fromEnv.razaoSocial,
     nomeFantasia: fromEnv.nomeFantasia,
-    cnpj: fromEnv.cnpj,
+    cnpj: formatEmpresaCnpj(fromEnv.cnpj) || fallback.cnpj,
   };
 }
 

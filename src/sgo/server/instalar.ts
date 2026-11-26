@@ -46,7 +46,7 @@ async function instalar() {
   await copiarArquivosIniciais();
 }
 
-/** Colunas/tabelas de Usuários: comprador + vínculo N:N com frota. */
+/** Colunas/tabelas de Usuários: comprador, frota, multi-setor, ver/usar e transições OS. */
 async function garantirExtrasUsuarios(sql: ReturnType<typeof sgoSql>) {
   await sql.unsafe(`
     do $$ begin
@@ -56,6 +56,13 @@ async function garantirExtrasUsuarios(sql: ReturnType<typeof sgoSql>) {
       ) then
         alter table sgo.usuarios add column comprador bigint not null default 0;
       end if;
+      if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'sgo' and table_name = 'usuario_permissoes' and column_name = 'nivel'
+      ) then
+        alter table sgo.usuario_permissoes add column nivel text not null default 'usar';
+        update sgo.usuario_permissoes set nivel = 'usar' where nivel is null or nivel = '';
+      end if;
     end $$;
   `);
   await sql.unsafe(`
@@ -64,6 +71,52 @@ async function garantirExtrasUsuarios(sql: ReturnType<typeof sgoSql>) {
       vehicle_id bigint not null,
       primary key (usuario_id, vehicle_id)
     );
+  `);
+  await sql.unsafe(`
+    create table if not exists sgo.usuario_setores (
+      usuario_id bigint not null references sgo.usuarios(id) on delete cascade,
+      setor_id text not null references sgo.setores(id),
+      primary key (usuario_id, setor_id)
+    );
+  `);
+  // Separado do CREATE: o driver postgres.js pode executar só o 1º statement em unsafe().
+  await sql.unsafe(`
+    insert into sgo.usuario_setores (usuario_id, setor_id)
+      select u.id, u.setor_id from sgo.usuarios u
+      where u.setor_id is not null and u.setor_id <> ''
+        and not exists (
+          select 1 from sgo.usuario_setores x
+          where x.usuario_id = u.id and x.setor_id = u.setor_id
+        );
+  `);
+  await sql.unsafe(`
+    create table if not exists sgo.usuario_os_transicoes (
+      usuario_id bigint not null references sgo.usuarios(id) on delete cascade,
+      de smallint not null check (de between 0 and 7),
+      para smallint not null check (para between 0 and 7),
+      primary key (usuario_id, de, para)
+    );
+  `);
+  // Módulos já existentes no React: tira "Em breve" do menu/cadastro de usuários.
+  await sql.unsafe(`
+    update sgo.menu_itens
+    set destino = 'novo',
+        url = case id
+          when 'cob-venc' then coalesce(nullif(url, ''), '/vencimentos')
+          when 'cob-notif' then coalesce(nullif(url, ''), '/notificacoes')
+          when 'cob-alertas' then coalesce(nullif(url, ''), '/settings')
+          when 'mon-contas' then coalesce(nullif(url, ''), '/contratos')
+          when 'op-facilities' then coalesce(nullif(url, ''), '/facilities')
+          when 'op-terceiros' then coalesce(nullif(url, ''), '/terceiros')
+          when 'op-uniformes' then coalesce(nullif(url, ''), '/uniformes')
+          when 'op-frota' then coalesce(nullif(url, ''), '/frota')
+          else url
+        end
+    where id in (
+      'cob-venc','cob-notif','cob-alertas','mon-contas',
+      'op-facilities','op-terceiros','op-uniformes','op-frota'
+    )
+      and (destino is distinct from 'novo' or url is null or url = '')
   `);
 }
 

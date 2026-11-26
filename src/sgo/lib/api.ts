@@ -2,6 +2,8 @@
  * SGO Âncora — acesso à API do SGO a partir das telas (mesmo contrato da casca original).
  * Toda escrita leva o cabeçalho `x-sgo: 1` (o servidor recusa sem ele).
  */
+export type SgoPermNivel = "ver" | "usar";
+
 export type SgoEu = {
   id: number;
   login: string;
@@ -10,8 +12,16 @@ export type SgoEu = {
   admin: boolean;
   setor: string | null;
   setor_nome: string | null;
+  /** Todos os setores vinculados (multi-setor). */
+  setores?: string[];
   equipe: string | null;
+  /** Itens com qualquer acesso (ver ou usar) — compatível com .includes(). */
   permissoes: string[];
+  permissoes_detalhe?: { id: string; nivel: SgoPermNivel }[];
+  permissoes_nivel?: Record<string, SgoPermNivel>;
+  os_transicoes?: { de: number; para: number }[];
+  os_papeis?: string[];
+  modo_consulta?: boolean;
 };
 
 export type ItemMenu = {
@@ -24,6 +34,22 @@ export type ItemMenu = {
 };
 export type GrupoMenu = { tipo: "grupo"; id: string; titulo: string; ic?: string; itens: ItemMenu[] };
 export type EntradaMenu = (ItemMenu & { tipo: "item" }) | GrupoMenu;
+
+/** Nível de acesso do item de menu (admin = usar). */
+export function nivelPerm(eu: SgoEu | null | undefined, itemId: string | null | undefined): SgoPermNivel | null {
+  if (!eu || !itemId) return null;
+  if (eu.admin) return "usar";
+  const n = eu.permissoes_nivel?.[itemId];
+  if (n === "ver" || n === "usar") return n;
+  if (eu.permissoes?.includes(itemId)) return "usar";
+  return null;
+}
+export function podeVerEu(eu: SgoEu | null | undefined, itemId: string | null | undefined) {
+  return nivelPerm(eu, itemId) != null;
+}
+export function podeUsarEu(eu: SgoEu | null | undefined, itemId: string | null | undefined) {
+  return nivelPerm(eu, itemId) === "usar";
+}
 
 export function irParaLogin() {
   if (typeof window === "undefined") return;

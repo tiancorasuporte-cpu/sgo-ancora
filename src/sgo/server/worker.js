@@ -100,27 +100,103 @@ async function usuarioDaSessao(request, env) {
   }
   u.vendedor = !!u.vendedor;
   u.comprador = !!u.comprador;
-  u.permissoes = await permissoes(env, u);
+  const perm = await carregarPermissoesUsuario(env, u);
+  u.permissoes = perm.ids;
+  u.permissoes_nivel = perm.nivel;
+  u.permissoes_detalhe = perm.detalhe;
   try {
     const { results: veics } = await env.DB.prepare("SELECT vehicle_id FROM usuario_veiculos WHERE usuario_id = ? ORDER BY vehicle_id").bind(u.id).all();
     u.veiculos_ids = (veics || []).map((r) => Number(r.vehicle_id)).filter((n) => n > 0);
   } catch {
     u.veiculos_ids = [];
   }
+  try {
+    const { results: sts } = await env.DB.prepare("SELECT setor_id FROM usuario_setores WHERE usuario_id = ?").bind(u.id).all();
+    u.setores = (sts || []).map((r) => String(r.setor_id)).filter(Boolean);
+  } catch {
+    u.setores = [];
+  }
+  if (!u.setores.length && u.setor_id) u.setores = [String(u.setor_id)];
+  try {
+    const { results: tr } = await env.DB.prepare("SELECT de, para FROM usuario_os_transicoes WHERE usuario_id = ?").bind(u.id).all();
+    u.os_transicoes = (tr || []).map((r) => ({ de: Number(r.de), para: Number(r.para) }));
+  } catch {
+    u.os_transicoes = [];
+  }
   return u;
 }
-async function permissoes(env, u) {
-  if (u.perfil === "tecnico") return [];
+/** Admin = usar tudo. Demais: ver+usar entram em permissoes (compat .includes); nivel em permissoes_nivel. */
+async function carregarPermissoesUsuario(env, u) {
+  if (u.perfil === "tecnico") return { ids: [], nivel: {}, detalhe: [] };
   if (ehAdmin(u)) {
     const { results: results2 } = await env.DB.prepare("SELECT id FROM menu_itens WHERE ativo = 1").all();
-    return results2.map((r) => r.id);
+    const ids = results2.map((r) => r.id);
+    const nivel = {};
+    ids.forEach((id) => { nivel[id] = "usar"; });
+    return { ids, nivel, detalhe: ids.map((id) => ({ id, nivel: "usar" })) };
   }
-  const { results } = await env.DB.prepare("SELECT item_id FROM usuario_permissoes WHERE usuario_id = ?").bind(u.id).all();
-  const lista = results.map((r) => r.item_id).filter((id) => id !== "usuarios");
-  const set = new Set(lista);
-  if (u.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => set.add(x));
-  if (u.comprador) set.add("op-compras");
+  let results = [];
+  try {
+    results = (await env.DB.prepare("SELECT item_id, nivel FROM usuario_permissoes WHERE usuario_id = ?").bind(u.id).all()).results || [];
+  } catch {
+    results = (await env.DB.prepare("SELECT item_id FROM usuario_permissoes WHERE usuario_id = ?").bind(u.id).all()).results || [];
+  }
+  const nivel = {};
+  for (const r of results) {
+    const id = r.item_id;
+    if (!id || id === "usuarios") continue;
+    const n = r.nivel === "ver" ? "ver" : "usar";
+    if (nivel[id] === "usar") continue;
+    nivel[id] = n;
+  }
+  if (u.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => { nivel[x] = "usar"; });
+  if (u.comprador) nivel["op-compras"] = "usar";
+  const ids = Object.keys(nivel);
+  return { ids, nivel, detalhe: ids.map((id) => ({ id, nivel: nivel[id] })) };
+}
+function podeVer(u, item) {
+  if (!u) return false;
+  if (ehAdmin(u)) return true;
+  return (u.permissoes || []).includes(item);
+}
+function podeUsar(u, item) {
+  if (!u) return false;
+  if (ehAdmin(u)) return true;
+  return (u.permissoes_nivel || {})[item] === "usar";
+}
+function podeUsarAlgum(u, itens) {
+  if (!u) return false;
+  if (ehAdmin(u)) return true;
+  return (itens || []).some((i) => podeUsar(u, i));
+}
+/** Papéis do Quadro de OS a partir dos setores do usuário. */
+function papeisOsDoUsuario(u) {
+  if (ehAdmin(u)) return ["Administrador", "Assistência", "Estoque", "Compras"];
+  const set = new Set();
+  const lista = (u && u.setores && u.setores.length ? u.setores : u && u.setor_id ? [u.setor_id] : []);
+  for (const s of lista) {
+    if (s === "estoque") set.add("Estoque");
+    else if (s === "compras") set.add("Compras");
+    else set.add("Assistência");
+  }
+  if (!set.size) set.add("Assistência");
   return [...set];
+}
+var OS_STAGE_MOVER = ["Assistência", "Estoque", "Compras", "Assistência", "Assistência", "Assistência", "Assistência", "Assistência"];
+/** Regra A: setor (papel) + matriz opcional. Estoque também confere (6→7). */
+function podeMoverOsStage(u, de, para, papelAtivo) {
+  if (ehAdmin(u)) return true;
+  de = Number(de);
+  para = Number(para);
+  if (!(de >= 0 && de <= 7 && para >= 0 && para <= 7) || de === para) return false;
+  const papel = papelAtivo || papeisOsDoUsuario(u)[0] || "Assistência";
+  const dono = OS_STAGE_MOVER[de] || "Assistência";
+  let setorOk = papel === dono;
+  if (de === 6 && para === 7 && (papel === "Estoque" || papel === "Assistência")) setorOk = true;
+  if (!setorOk) return false;
+  const tr = u.os_transicoes || [];
+  if (!tr.length) return true;
+  return tr.some((t) => Number(t.de) === de && Number(t.para) === para);
 }
 async function login(request, env) {
   let dados;
@@ -206,17 +282,22 @@ function validarSenha(s) {
 // src/usuarios.js
 var PERFIS = { superadmin: "Super Admin", administrador: "Administrador", usuario: "Usu\xE1rio", tecnico: "T\xE9cnico" };
 async function carregar(env) {
-  const [us, ps, setores, itens] = await env.DB.batch([
+  const [us, setores, itens] = await env.DB.batch([
     env.DB.prepare(`SELECT id, login, nome, email, setor_id, perfil, equipe, ativo, ultimo_acesso, bloqueado_ate, vendedor, comprador
                       FROM usuarios ORDER BY perfil = 'superadmin' DESC, nome COLLATE NOCASE`),
-    env.DB.prepare("SELECT usuario_id, item_id FROM usuario_permissoes"),
     env.DB.prepare("SELECT id, nome FROM setores WHERE ativo = 1 ORDER BY nome"),
     env.DB.prepare("SELECT id, grupo, titulo, ordem, pai, destino FROM menu_itens WHERE ativo = 1 ORDER BY ordem")
   ]);
+  let psRows = [];
+  try {
+    psRows = (await env.DB.prepare("SELECT usuario_id, item_id, nivel FROM usuario_permissoes").all()).results || [];
+  } catch {
+    psRows = (await env.DB.prepare("SELECT usuario_id, item_id FROM usuario_permissoes").all()).results || [];
+  }
   const perm = /* @__PURE__ */ new Map();
-  for (const p of ps.results) {
+  for (const p of psRows) {
     if (!perm.has(p.usuario_id)) perm.set(p.usuario_id, []);
-    perm.get(p.usuario_id).push(p.item_id);
+    perm.get(p.usuario_id).push({ id: p.item_id, nivel: p.nivel === "ver" ? "ver" : "usar" });
   }
   let veiculos = [];
   let links = [];
@@ -244,15 +325,44 @@ async function carregar(env) {
     if (!porUser.has(l.usuario_id)) porUser.set(l.usuario_id, []);
     porUser.get(l.usuario_id).push(Number(l.vehicle_id));
   }
+  let setorLinks = [];
+  try {
+    setorLinks = (await env.DB.prepare("SELECT usuario_id, setor_id FROM usuario_setores").all()).results || [];
+  } catch (_) {
+    setorLinks = [];
+  }
+  const setoresPorUser = /* @__PURE__ */ new Map();
+  for (const l of setorLinks) {
+    if (!setoresPorUser.has(l.usuario_id)) setoresPorUser.set(l.usuario_id, []);
+    setoresPorUser.get(l.usuario_id).push(String(l.setor_id));
+  }
+  let osTr = [];
+  try {
+    osTr = (await env.DB.prepare("SELECT usuario_id, de, para FROM usuario_os_transicoes").all()).results || [];
+  } catch (_) {
+    osTr = [];
+  }
+  const trPorUser = /* @__PURE__ */ new Map();
+  for (const t of osTr) {
+    if (!trPorUser.has(t.usuario_id)) trPorUser.set(t.usuario_id, []);
+    trPorUser.get(t.usuario_id).push({ de: Number(t.de), para: Number(t.para) });
+  }
   return {
-    usuarios: us.results.map((u) => ({
-      ...u,
-      ativo: !!u.ativo,
-      vendedor: !!u.vendedor,
-      comprador: !!u.comprador,
-      veiculos_ids: porUser.get(u.id) || [],
-      permissoes: perm.get(u.id) || [],
-    })),
+    usuarios: us.results.map((u) => {
+      const setores_ids = setoresPorUser.get(u.id) || (u.setor_id ? [String(u.setor_id)] : []);
+      const detalhe = perm.get(u.id) || [];
+      return {
+        ...u,
+        ativo: !!u.ativo,
+        vendedor: !!u.vendedor,
+        comprador: !!u.comprador,
+        veiculos_ids: porUser.get(u.id) || [],
+        setores_ids,
+        permissoes: detalhe.map((x) => x.id),
+        permissoes_detalhe: detalhe,
+        os_transicoes: trPorUser.get(u.id) || [],
+      };
+    }),
     setores: setores.results,
     itens: itens.results,
     perfis: PERFIS,
@@ -261,17 +371,65 @@ async function carregar(env) {
       ...a,
       ativo: !!a.ativo,
     })),
+    os_etapas: [
+      "OS aberta", "Em separação", "Compras", "Aguardando agendamento",
+      "Agendado", "Em execução", "Executado", "Finalizado",
+    ],
   };
+}
+function limparPermissoesEntrada(raw) {
+  const out = /* @__PURE__ */ new Map();
+  if (!Array.isArray(raw)) return [];
+  for (const item of raw) {
+    if (item == null) continue;
+    if (typeof item === "string") {
+      const id = String(item).trim();
+      if (id) out.set(id, "usar");
+      continue;
+    }
+    const id = String(item.id || item.item_id || "").trim();
+    if (!id) continue;
+    const n = item.nivel === "ver" ? "ver" : "usar";
+    if (out.get(id) === "usar") continue;
+    out.set(id, n);
+  }
+  return [...out.entries()].map(([id, nivel]) => ({ id, nivel }));
 }
 function limpar(d) {
   const veiculos_ids = Array.isArray(d.veiculos_ids)
     ? [...new Set(d.veiculos_ids.map((x) => parseInt(x, 10)).filter((n) => n > 0))]
     : [];
+  let setores_ids = Array.isArray(d.setores_ids)
+    ? [...new Set(d.setores_ids.map((x) => String(x || "").trim()).filter(Boolean))]
+    : [];
+  let setor_id = String(d.setor_id || "").trim() || null;
+  if (setor_id && !setores_ids.includes(setor_id)) setores_ids = [setor_id, ...setores_ids];
+  if (!setor_id && setores_ids.length) setor_id = setores_ids[0];
+  const os_transicoes = Array.isArray(d.os_transicoes)
+    ? d.os_transicoes
+        .map((t) => {
+          if (typeof t === "string" && t.includes(">")) {
+            const [a, b] = t.split(">");
+            return { de: parseInt(a, 10), para: parseInt(b, 10) };
+          }
+          return { de: parseInt(t.de, 10), para: parseInt(t.para, 10) };
+        })
+        .filter((t) => t.de >= 0 && t.de <= 7 && t.para >= 0 && t.para <= 7 && t.de !== t.para)
+    : [];
+  const uniqTr = [];
+  const seenTr = new Set();
+  for (const t of os_transicoes) {
+    const k = t.de + ">" + t.para;
+    if (seenTr.has(k)) continue;
+    seenTr.add(k);
+    uniqTr.push(t);
+  }
   return {
     login: String(d.login || "").trim().toLowerCase(),
     nome: String(d.nome || "").trim(),
     email: String(d.email || "").trim() || null,
-    setor_id: String(d.setor_id || "").trim() || null,
+    setor_id,
+    setores_ids,
     perfil: String(d.perfil || "usuario"),
     equipe: String(d.equipe || "").trim() || null,
     ativo: d.ativo === false ? 0 : 1,
@@ -279,14 +437,16 @@ function limpar(d) {
     comprador: d.comprador ? 1 : 0,
     veiculos_ids,
     senha: d.senha ? String(d.senha) : "",
-    permissoes: Array.isArray(d.permissoes) ? d.permissoes.map(String) : [],
+    permissoes_detalhe: limparPermissoesEntrada(d.permissoes_detalhe || d.permissoes),
+    os_transicoes: uniqTr,
   };
 }
 function enriquecerPermissoesFlags(v) {
-  const p = new Set(v.permissoes || []);
-  if (v.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => p.add(x));
-  if (v.comprador) p.add("op-compras");
-  v.permissoes = [...p];
+  const map = /* @__PURE__ */ new Map((v.permissoes_detalhe || []).map((p) => [p.id, p.nivel]));
+  if (v.vendedor) ["com-crm", "com-leads", "com-orc"].forEach((x) => map.set(x, "usar"));
+  if (v.comprador) map.set("op-compras", "usar");
+  v.permissoes_detalhe = [...map.entries()].map(([id, nivel]) => ({ id, nivel }));
+  v.permissoes = v.permissoes_detalhe.map((p) => p.id);
   return v;
 }
 async function gravarVeiculosUsuario(env, usuarioId, perfil, veiculosIds, flags) {
@@ -332,6 +492,10 @@ async function validar(env, v, eu, alvo) {
     const s = await env.DB.prepare("SELECT id FROM setores WHERE id = ?").bind(v.setor_id).first();
     if (!s) return "Setor inv\xE1lido.";
   }
+  for (const sid of v.setores_ids || []) {
+    const s = await env.DB.prepare("SELECT id FROM setores WHERE id = ?").bind(sid).first();
+    if (!s) return "Setor inv\xE1lido: " + sid;
+  }
   const dup = await env.DB.prepare("SELECT id FROM usuarios WHERE login = ? COLLATE NOCASE AND id <> ?").bind(v.login, alvo ? alvo.id : 0).first();
   if (dup) return "J\xE1 existe um usu\xE1rio com esse nome de acesso.";
   if (alvo && alvo.perfil === "superadmin" && eu.perfil !== "superadmin") return "S\xF3 o Super Admin pode alterar o pr\xF3prio cadastro.";
@@ -343,14 +507,41 @@ async function validar(env, v, eu, alvo) {
   }
   return null;
 }
-async function gravarPermissoes(env, id, lista) {
+async function gravarPermissoes(env, id, detalhe) {
   const { results } = await env.DB.prepare("SELECT id FROM menu_itens WHERE ativo = 1").all();
   const validos = new Set(results.map((r) => r.id));
   const ops = [env.DB.prepare("DELETE FROM usuario_permissoes WHERE usuario_id = ?").bind(id)];
-  for (const item of new Set(lista)) {
-    if (validos.has(item) && item !== "usuarios") ops.push(env.DB.prepare("INSERT INTO usuario_permissoes (usuario_id, item_id) VALUES (?, ?)").bind(id, item));
+  const visto = new Set();
+  for (const p of detalhe || []) {
+    const item = typeof p === "string" ? p : p.id;
+    const nivel = typeof p === "string" ? "usar" : p.nivel === "ver" ? "ver" : "usar";
+    if (!validos.has(item) || item === "usuarios" || visto.has(item)) continue;
+    visto.add(item);
+    ops.push(env.DB.prepare("INSERT INTO usuario_permissoes (usuario_id, item_id, nivel) VALUES (?, ?, ?)").bind(id, item, nivel));
   }
   await env.DB.batch(ops);
+}
+async function gravarSetoresUsuario(env, id, setoresIds, principal) {
+  const ids = Array.isArray(setoresIds) ? [...new Set(setoresIds.map(String).filter(Boolean))] : [];
+  if (principal && !ids.includes(principal)) ids.unshift(principal);
+  try {
+    await env.DB.prepare("DELETE FROM usuario_setores WHERE usuario_id = ?").bind(id).run();
+    for (const sid of ids) {
+      await env.DB.prepare("INSERT INTO usuario_setores (usuario_id, setor_id) VALUES (?, ?)").bind(id, sid).run();
+    }
+  } catch (e) {
+    console.error("[sgo] usuario_setores", e);
+  }
+}
+async function gravarOsTransicoes(env, id, lista) {
+  try {
+    await env.DB.prepare("DELETE FROM usuario_os_transicoes WHERE usuario_id = ?").bind(id).run();
+    for (const t of lista || []) {
+      await env.DB.prepare("INSERT INTO usuario_os_transicoes (usuario_id, de, para) VALUES (?, ?, ?)").bind(id, t.de, t.para).run();
+    }
+  } catch (e) {
+    console.error("[sgo] usuario_os_transicoes", e);
+  }
 }
 async function rotaUsuarios(request, env, url, eu) {
   const m = url.pathname.match(/^\/api\/usuarios(?:\/(\d+))?$/);
@@ -363,6 +554,8 @@ async function rotaUsuarios(request, env, url, eu) {
     if (alvo.perfil === "superadmin") return json({ erro: "O Super Admin n\u00e3o pode ser apagado." }, 400);
     if (alvo.id === eu.id) return json({ erro: "Voc\u00ea n\u00e3o pode apagar o seu pr\u00f3prio usu\u00e1rio." }, 400);
     try { await env.DB.prepare("DELETE FROM usuario_veiculos WHERE usuario_id = ?").bind(id).run(); } catch (_) {}
+    try { await env.DB.prepare("DELETE FROM usuario_setores WHERE usuario_id = ?").bind(id).run(); } catch (_) {}
+    try { await env.DB.prepare("DELETE FROM usuario_os_transicoes WHERE usuario_id = ?").bind(id).run(); } catch (_) {}
     await env.DB.batch([
       env.DB.prepare("DELETE FROM sessoes WHERE usuario_id = ?").bind(id),
       env.DB.prepare("DELETE FROM usuario_permissoes WHERE usuario_id = ?").bind(id),
@@ -389,7 +582,9 @@ async function rotaUsuarios(request, env, url, eu) {
       "INSERT INTO usuarios (login, nome, email, setor_id, perfil, equipe, ativo, vendedor, comprador, senha_hash, senha_salt, senha_iter) VALUES (?,?,?,?,?,?,?,?,?,?,?,100000)"
     ).bind(v.login, v.nome, v.email, v.setor_id, v.perfil, v.equipe, v.ativo, v.vendedor, v.comprador, await hashSenha(v.senha, salt), salt).run();
     const novo = r.meta.last_row_id;
-    await gravarPermissoes(env, novo, v.perfil === "tecnico" ? [] : v.permissoes);
+    await gravarPermissoes(env, novo, v.perfil === "tecnico" ? [] : v.permissoes_detalhe);
+    await gravarSetoresUsuario(env, novo, v.setores_ids, v.setor_id);
+    await gravarOsTransicoes(env, novo, v.perfil === "tecnico" ? [] : v.os_transicoes);
     await gravarVeiculosUsuario(env, novo, v.perfil, v.veiculos_ids, v);
     return json({ ok: true, id: novo });
   }
@@ -413,7 +608,9 @@ async function rotaUsuarios(request, env, url, eu) {
     if (v.senha || !v.ativo || v.perfil !== alvo.perfil) ops.push(env.DB.prepare("DELETE FROM sessoes WHERE usuario_id = ?").bind(id));
     if (d.desbloquear) ops.push(env.DB.prepare("UPDATE usuarios SET tentativas = 0, bloqueado_ate = 0 WHERE id = ?").bind(id));
     await env.DB.batch(ops);
-    if (alvo.perfil !== "superadmin") await gravarPermissoes(env, id, v.perfil === "tecnico" ? [] : v.permissoes);
+    if (alvo.perfil !== "superadmin") await gravarPermissoes(env, id, v.perfil === "tecnico" ? [] : v.permissoes_detalhe);
+    await gravarSetoresUsuario(env, id, v.setores_ids, v.setor_id);
+    await gravarOsTransicoes(env, id, v.perfil === "tecnico" ? [] : v.os_transicoes);
     await gravarVeiculosUsuario(env, id, v.perfil, v.veiculos_ids, v);
     return json({ ok: true });
   }
@@ -460,7 +657,7 @@ async function rotaAuxiliares(request, env, url) {
 var COLECOES = {
   os: {
     tabela: "ordens_servico",
-    extra: (d) => ({ stage: Number.isInteger(d.stage) ? d.stage : 0 }),
+    extra: (d) => { const s = Math.trunc(Number(d.stage)); return { stage: Number.isFinite(s) && s >= 0 ? s : 0 }; },
     numero: (n) => String(n).padStart(5, "0"),
     parse: (num) => parseInt(num, 10) || 0
   },
@@ -484,7 +681,7 @@ async function proximoNumero(env, col) {
   const max = results.reduce((m, r) => Math.max(m, c.parse(r.num)), 0);
   return c.numero(max + 1);
 }
-async function salvarDoc(env, request, col, id, email) {
+async function salvarDoc(env, request, col, id, email, usuario) {
   const c = COLECOES[col];
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) return json({ erro: "Identificador inv\xE1lido" }, 400);
   const corpo = await request.text();
@@ -501,7 +698,19 @@ async function salvarDoc(env, request, col, id, email) {
   dados.id = id;
   const agora = Date.now();
   const extra = c.extra(dados);
-  const atual = await env.DB.prepare(`SELECT versao, num FROM ${c.tabela} WHERE id = ?`).bind(id).first();
+  const atual = await env.DB.prepare(
+    col === "os"
+      ? `SELECT versao, num, stage FROM ${c.tabela} WHERE id = ?`
+      : `SELECT versao, num FROM ${c.tabela} WHERE id = ?`,
+  ).bind(id).first();
+  if (col === "os" && usuario && atual && Number.isInteger(Number(dados.stage)) && Number(dados.stage) !== Number(atual.stage)) {
+    const papel = String(entrada.papel_os || entrada.role || "").trim();
+    const papeis = papeisOsDoUsuario(usuario);
+    const papelAtivo = papeis.includes(papel) ? papel : papeis[0];
+    if (!podeMoverOsStage(usuario, atual.stage, dados.stage, papelAtivo)) {
+      return json({ erro: "Voc\xEA n\xE3o pode mover esta OS de " + (Number(atual.stage) + 1) + " para " + (Number(dados.stage) + 1) + " com o seu setor/libera\xE7\xE3o." }, 403);
+    }
+  }
   const ultimo = (lista) => Array.isArray(lista) && lista.length ? lista[lista.length - 1] : null;
   const h2 = col === "os" ? ultimo(dados.hist) : ultimo(dados.tl);
   const acao = h2 ? String(h2.acao || h2.titulo || "").slice(0, 300) : null;
@@ -638,7 +847,8 @@ async function historicoOs(env, url) {
   }
   return json({ itens });
 }
-async function rotaDocs(request, env, url, email) {
+async function rotaDocs(request, env, url, usuario) {
+  const email = typeof usuario === "string" ? usuario : usuario && usuario.login;
   if (url.pathname === "/api/os/historico" && request.method === "GET") {
     try { return await historicoOs(env, url); }
     catch { return json({ erro: "Falha no banco de dados" }, 500); }
@@ -652,8 +862,22 @@ async function rotaDocs(request, env, url, email) {
       const agora = Date.now();
       return json({ docs: await listarDocs(env, col, desde ? desde - 2e3 : 0), agora });
     }
-    if (id && request.method === "DELETE" && col === "os") return await excluirOsDoc(env, id, email);
-    if (id && request.method === "PUT") return await salvarDoc(env, request, col, id, email);
+    if (id && request.method === "DELETE" && col === "os") {
+      if (usuario && typeof usuario === "object" && !podeUsar(usuario, "at-os") && !ehAdmin(usuario)) {
+        return json({ erro: "Seu acesso \xE9 s\xF3 consulta nesta \xE1rea." }, 403);
+      }
+      return await excluirOsDoc(env, id, email);
+    }
+    if (id && request.method === "PUT") {
+      if (usuario && typeof usuario === "object" && !ehAdmin(usuario)) {
+        const okOs = col === "os" && (podeUsar(usuario, "at-os") || podeUsar(usuario, "at-agenda"));
+        const okTk = col === "tickets" && podeUsar(usuario, "tickets");
+        if (!okOs && !okTk) {
+          return json({ erro: "Seu acesso \xE9 s\xF3 consulta nesta \xE1rea. Pe\xE7a libera\xE7\xE3o de uso ao administrador." }, 403);
+        }
+      }
+      return await salvarDoc(env, request, col, id, email, typeof usuario === "object" ? usuario : null);
+    }
     return json({ erro: "M\xE9todo n\xE3o permitido" }, 405);
   } catch (e) {
     return json({ erro: "Falha no banco de dados" }, 500);
@@ -1370,7 +1594,7 @@ var EST_TIPOS = {
   contagem: "Contagem / ajuste", compra: "Entrada de compra", retirada: "Retirada do técnico", devolucao: "Devolução do técnico",
   os_saida: "Saída para a OS", os_cliente: "Aplicado no cliente", os_retorno: "Sobra da OS devolvida", os_estorno: "Estorno de OS", os_transfer: "Troca de equipe na OS"
 };
-var estPode = (u, k) => ehAdmin(u) || EST_PERM[k].some((p) => u.permissoes.includes(p));
+var estPode = (u, k, write) => ehAdmin(u) || EST_PERM[k].some((p) => (write ? podeUsar(u, p) : podeVer(u, p)));
 var estQ = (v) => Math.round((Number(v) || 0) * 1e3) / 1e3;
 function estTxt(v, max) { return String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max); }
 async function estEquipes(env) {
@@ -1635,7 +1859,7 @@ async function estoqueRotas(request, env, url, u) {
     return json({ tipos: EST_TIPOS, nomes, itens: results });
   }
   if (c === "/api/estoque/contagem" && m === "POST") {
-    if (!estPode(u, "emp")) return json({ erro: "Sem permissão para ajustar o estoque da empresa." }, 403);
+    if (!estPode(u, "emp", true)) return json({ erro: "Sem permissão para ajustar o estoque da empresa." }, 403);
     let b = {}; try { b = await request.json(); } catch {}
     const lista = (Array.isArray(b.itens) ? b.itens : []).slice(0, 300).map((i) => ({ produto_id: parseInt(i.produto_id, 10), contado: estQ(i.contado) })).filter((i) => i.produto_id > 0 && i.contado >= 0);
     if (!lista.length) return json({ erro: "Informe pelo menos uma quantidade contada." }, 400);
@@ -1657,7 +1881,7 @@ async function estoqueRotas(request, env, url, u) {
     return json({ itens: results.map((r) => estDocSaida(r, nomes)) });
   }
   if (c === "/api/estoque/retiradas" && m === "POST") {
-    if (!estPode(u, "tec")) return json({ erro: "Sem permissão para lançar retirada." }, 403);
+    if (!estPode(u, "tec", true)) return json({ erro: "Sem permissão para lançar retirada." }, 403);
     let b = {}; try { b = await request.json(); } catch {}
     const eqId = parseInt(b.equipe_id, 10);
     if (!nomes["eq:" + eqId]) return json({ erro: "Escolha a equipe técnica." }, 400);
@@ -1668,7 +1892,7 @@ async function estoqueRotas(request, env, url, u) {
   }
   const dm = c.match(/^\/api\/estoque\/docs\/(ed-[a-z0-9]{8,32})\/(cancelar|conferir)$/);
   if (dm && m === "POST") {
-    if (!estPode(u, "tec")) return json({ erro: "Sem permissão." }, 403);
+    if (!estPode(u, "tec", true)) return json({ erro: "Sem permissão." }, 403);
     const r = await env.DB.prepare("SELECT * FROM estoque_docs WHERE id = ?").bind(dm[1]).first();
     if (!r) return json({ erro: "Documento não encontrado." }, 404);
     const doc = estDocSaida(r, nomes), agora = Date.now();
@@ -2601,7 +2825,7 @@ async function rotaTecnico(request, env, url, u) {
 // src/voip.js — softphone (WebRTC) integrado ao SGO
 var VOIP_ARQS = { "ancora-softphone.html": "text/html; charset=utf-8", "ancora-phone-widget.js": "application/javascript; charset=utf-8" };
 var VOIP_CFG_PADRAO = { wss: "wss://192.168.10.80:8089/ws", domain: "192.168.10.80", ice: "[]", dtmf: "RFC2833", expires: "300", contact_transport: "", contatos_padrao: "" };
-var voipAdmin = (u) => ehAdmin(u) || u.permissoes.includes("voip");
+var voipAdmin = (u, write) => ehAdmin(u) || (write ? podeUsar(u, "voip") : podeVer(u, "voip"));
 function voipB64(u8) { let s = ""; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s); }
 async function voipChave(env) {
   if (!env.VOIP_KEY) throw new Error("VOIP_KEY ausente");
@@ -2772,7 +2996,7 @@ async function voipRotas(request, env, url, u) {
 
 // src/crm.js — CRM Comercial (oportunidades, integração com o Quadro de OS, comissões)
 var CRM_PERM = { crm: "com-crm", rel: "com-crm-rel", com: "com-comissoes" };
-var crmPode = (u, k) => ehAdmin(u) || u.permissoes.includes(CRM_PERM[k]);
+var crmPode = (u, k, write) => ehAdmin(u) || (write ? podeUsar(u, CRM_PERM[k]) : podeVer(u, CRM_PERM[k]));
 var CRM_ETAPAS = ["montar", "montado", "enviado", "acao2", "acao3", "aprovado", "final"];
 var CRM_CONTRATOS_PADRAO = [
   { id: "portaria", nome: "Portaria remota", modo: "mensal", venda: 3, equipe: 2 }, { id: "hibrida", nome: "Portaria híbrida", modo: "mensal", venda: 3, equipe: 2 },
@@ -2857,6 +3081,8 @@ async function crmCriarOS(env, op, u) {
   let itens;
   const svs = od && od.mensal && od.mensal.itens ? od.mensal.itens : [];
   const txtMensal = svs.length ? ". Serviço mensal: " + svs.map((s) => (s.qtd > 1 ? (Math.round(s.qtd) || 1) + "x " : "") + s.descricao).join(", ") + (od.mensal.prazo_meses ? " · contrato de " + od.mensal.prazo_meses + " meses" : "") : "";
+  const comOd = od && od.comodato && od.comodato.ativo ? od.comodato : null;
+  const txtComodato = comOd ? ". Comodato Angela · " + (comOd.meses || "?") + " meses · mensalidade " + Number(comOd.mensalidade || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) + " (" + String(comOd.pct_mes).replace(".", ",") + "% a.m. + " + String(comOd.pct_depreciacao).replace(".", ",") + "% depr.)" : "";
   if (od) {
     itens = (od.itens || []).filter((i) => i.tipo !== "servico").map((i) => ({ qtd: (Math.round(i.qtd) || 1) + "x", nome: (String(i.descricao || "") + (i.obs ? " (" + i.obs + ")" : "")).slice(0, 120), st: "pendente", prev: "" }));
     if (!itens.length) svs.forEach((s) => itens.push({ qtd: (Math.round(s.qtd) || 1) + "x", nome: (s.descricao + " (serviço mensal" + (s.obs ? " · " + s.obs : "") + ")").slice(0, 120), st: "pendente", prev: "" }));
@@ -2867,12 +3093,13 @@ async function crmCriarOS(env, op, u) {
     const num = await proximoNumero(env, "os"), id = "os-" + aleatorio(6);
     const dados = {
       id, num, tipo: "pedido", sub: null, orc, cliente: op.cliente || "", cidade: op.cidade || "—",
-      obs: "Oportunidade " + op.cod + " fechada no CRM (" + tipoTxt + ")" + txtMensal + (op.descricao ? ". " + op.descricao : ""),
-      servico: "Instalação conforme orçamento " + orc + (op.servico ? " · " + op.servico : ""),
+      obs: "Oportunidade " + op.cod + " fechada no CRM (" + tipoTxt + ")" + txtMensal + txtComodato + (op.descricao ? ". " + op.descricao : ""),
+      servico: "Instalação conforme orçamento " + orc + (op.servico ? " · " + op.servico : "") + (comOd ? " · comodato Angela" : ""),
       stage: 0, agenda: "A agendar", tecnico: null, pending: null, itens,
-      hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir da oportunidade " + op.cod + " (CRM · cliente fechou · orçamento " + orc + ")" }],
+      hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir da oportunidade " + op.cod + " (CRM · cliente fechou · orçamento " + orc + ")" + (comOd ? " · comodato Angela" : "") }],
       crm: { id: op.id, cod: op.cod }
     };
+    if (comOd) { dados.comodato = comOd; dados.omieEmpresa = "angela"; }
     if (orcRow) dados.orcamento = { id: orcRow.id, num: orcRow.num };
     if (od) { const prodOrc = orcProdutos(od); dados.servicosOrc = orcServicos(od); dados.produtosOrc = prodOrc.itens; dados.descontoProd = prodOrc.desconto; }
     try {
@@ -3030,10 +3257,14 @@ async function crmTela(env) {
   return new Response(obj.body, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...SEG } });
 }
 
-var CAD_PERM={parceiros:"cad-parceiros",produtos:"cad-produtos"};var cadPode=(u,k)=>ehAdmin(u)||u.permissoes.includes(CAD_PERM[k]);var CAD_TAGS_PADRAO=["Cliente","Fornecedor","Transportadora","Funcionário","Belfer"];function cadNorm(s){return String(s==null?"":s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}var soDig=s=>String(s==null?"":s).replace(/\D+/g,"");var cadTxt=(v,max)=>v==null||v===""?null:String(v).replace(/\s+/g," ").trim().slice(0,max||200)||null;function cadNum(v){if(v==null||v==="")return null;if(typeof v==="number")return isFinite(v)?v:null;let s=String(v).replace(/[^\d.,-]/g,"");if(!s)return null;if(s.indexOf(",")>=0)s=s.replace(/\./g,"").replace(",",".");const n=parseFloat(s);return isFinite(n)?n:null}function cadTags(v){let arr=Array.isArray(v)?v:String(v||"").split(",");const out=[];for(const t of arr){const x=String(t||"").replace(/\s+/g," ").trim().slice(0,30);if(x&&!out.some(o=>o.toLowerCase()===x.toLowerCase()))out.push(x)}return out.slice(0,12)}function cadBuscaParceiro(p){return cadNorm([p.razao,p.fantasia,p.documento,p.contato,p.cidade,p.email,p.telefone,(p.tags||[]).join(" ")].join(" "))}function cadBuscaProduto(p){return cadNorm([p.codigo,p.descricao,p.marca,p.modelo,p.ean,p.caracteristicas,p.familia].join(" "))}function cadLimpaParceiro(d){const doc=soDig(d.documento);const p={documento:doc||null,tipo_pessoa:doc.length===11?"PF":doc.length===14?"PJ":null,razao:cadTxt(d.razao,160),fantasia:cadTxt(d.fantasia,160),tags:cadTags(d.tags),situacao:d.situacao==="Inativo"?"Inativo":"Ativo",telefone:cadTxt(d.telefone,80),contato:cadTxt(d.contato,120),email:cadTxt(d.email,200),cidade:cadTxt(d.cidade,80),uf:cadTxt(d.uf,2),endereco:cadTxt(d.endereco,200),bairro:cadTxt(d.bairro,100),cep:cadTxt(d.cep,10),ie:cadTxt(d.ie,30),im:cadTxt(d.im,30),obs:cadTxt(d.obs,1e3)};if(p.uf)p.uf=p.uf.toUpperCase();return p}function cadLimpaProduto(d){return{codigo:cadTxt(d.codigo,40),descricao:cadTxt(d.descricao,200),familia:cadTxt(d.familia,60),unidade:(cadTxt(d.unidade,6)||"UN").toUpperCase(),ncm:cadTxt(d.ncm,12),cest:cadTxt(d.cest,12),ean:cadTxt(d.ean,20),marca:cadTxt(d.marca,60),modelo:cadTxt(d.modelo,60),preco_venda:cadNum(d.preco_venda),custo:cadNum(d.custo),estoque:cadNum(d.estoque)||0,garantia_dias:cadNum(d.garantia_dias)==null?null:Math.round(cadNum(d.garantia_dias)),tipo_item:cadTxt(d.tipo_item,60),caracteristicas:cadTxt(d.caracteristicas,500),situacao:d.situacao==="Inativo"?"Inativo":"Ativo"}}var PARC_COLS=["documento","tipo_pessoa","razao","fantasia","tags","situacao","telefone","contato","email","cidade","uf","endereco","bairro","cep","ie","im","obs"];var PROD_COLS=["codigo","descricao","familia","unidade","ncm","cest","ean","marca","modelo","preco_venda","custo","estoque","garantia_dias","tipo_item","caracteristicas","situacao"];function cadSaidaParceiro(r){if(!r)return r;const o=Object.assign({},r);try{o.tags=JSON.parse(r.tags||"[]")}catch{o.tags=[]}try{o.extra=JSON.parse(r.extra||"{}")}catch{o.extra={}}delete o.busca;return o}function cadSaidaProduto(r){if(!r)return r;const o=Object.assign({},r);try{o.extra=JSON.parse(r.extra||"{}")}catch{o.extra={}}delete o.busca;return o}function cadWhereBusca(q,alias){const pal=cadNorm(q).split(" ").filter(Boolean).slice(0,6);const sql=pal.map(()=>`${alias}.busca LIKE ?`).join(" AND ");return{sql:sql,args:pal.map(p=>"%"+p+"%")}}async function cadUltimasCompras(env,ids){const out={};if(!ids.length)return out;const marc=ids.map(()=>"?").join(",");const{results:results}=await env.DB.prepare(`SELECT h.produto_id, h.preco, h.fornecedor_nome, h.data FROM compras_historico h\n      WHERE h.produto_id IN (${marc})\n        AND h.id = (SELECT h2.id FROM compras_historico h2 WHERE h2.produto_id = h.produto_id ORDER BY h2.data DESC, h2.id DESC LIMIT 1)`).bind(...ids).all();for(const r of results)out[r.produto_id]={preco:r.preco,fornecedor:r.fornecedor_nome,data:r.data};return out}async function cadBusca(env,url){const tipo=url.searchParams.get("tipo")||"produto";const q=(url.searchParams.get("q")||"").slice(0,80);const lim=Math.min(30,Math.max(1,parseInt(url.searchParams.get("limite")||"12",10)||12));const w=cadWhereBusca(q,"t");if(tipo==="produto"){const qn=cadNorm(q);const{results:results}=await env.DB.prepare(`SELECT t.id, t.codigo, t.descricao, t.unidade, t.estoque, t.preco_venda, t.custo, t.marca, t.modelo, t.situacao\n         FROM produtos t WHERE t.situacao = 'Ativo' ${w.sql?"AND "+w.sql:""}\n        ORDER BY (t.origem = 'omie') DESC, (lower(t.codigo) = ?) DESC, (lower(t.descricao) = ?) DESC, (lower(t.descricao) LIKE ?) DESC, (t.busca LIKE ?) DESC, length(t.descricao), t.descricao COLLATE NOCASE LIMIT ?`).bind(...w.args,String(q).trim().toLowerCase(),String(q).trim().toLowerCase(),String(q).trim().toLowerCase()+"%",qn+"%",lim).all();return json({itens:results})}const tag=tipo==="cliente"?"Cliente":tipo==="fornecedor"?"Fornecedor":tipo==="transportadora"?"Transportadora":null;const exigeTag=!!(tag&&tag!=="Fornecedor");const{results:results}=await env.DB.prepare(`SELECT t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao\n       FROM parceiros t\n      WHERE t.situacao = 'Ativo' ${exigeTag?"AND EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = ?)":""} ${w.sql?"AND "+w.sql:""}\n      ORDER BY (t.origem = 'omie') DESC, ${tag==="Fornecedor"?"CASE WHEN EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = 'Fornecedor') THEN 0 ELSE 1 END,":""} COALESCE(t.fantasia, t.razao) COLLATE NOCASE LIMIT ?`).bind(...exigeTag?[tag]:[],...w.args,lim).all();return json({itens:results.map(cadSaidaParceiro)})}async function cadListar(env,url,tipo){const q=(url.searchParams.get("q")||"").slice(0,80);const pag=Math.max(1,parseInt(url.searchParams.get("pagina")||"1",10)||1);const por=50;const sit=url.searchParams.get("situacao")||"Ativo";const w=cadWhereBusca(q,"t");const cond=[],args=[];if(sit!=="todos"){cond.push("t.situacao = ?");args.push(sit==="Inativo"?"Inativo":"Ativo")}if(w.sql){cond.push(w.sql);args.push(...w.args)}if(tipo==="parceiros"){const tags=(url.searchParams.get("tags")||"").split(",").map(s=>s.trim()).filter(Boolean).slice(0,5);for(const t of tags){cond.push("EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = ?)");args.push(t)}}if(tipo==="produtos"&&url.searchParams.get("estoque")==="1")cond.push("t.estoque > 0");const where=cond.length?"WHERE "+cond.join(" AND "):"";const tabela=tipo==="parceiros"?"parceiros":"produtos";const ordem=tipo==="parceiros"?"COALESCE(t.fantasia, t.razao) COLLATE NOCASE":"t.descricao COLLATE NOCASE";const[lista,total]=await env.DB.batch([env.DB.prepare(`SELECT t.* FROM ${tabela} t ${where} ORDER BY ${ordem} LIMIT ? OFFSET ?`).bind(...args,por,(pag-1)*por),env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tabela} t ${where}`).bind(...args)]);const out={total:total.results[0].n,pagina:pag,por:por,itens:[]};if(tipo==="parceiros"){out.itens=lista.results.map(cadSaidaParceiro);const{results:results}=await env.DB.prepare("SELECT j.value AS tag, COUNT(*) AS n FROM parceiros p, json_each(p.tags) j GROUP BY j.value ORDER BY n DESC").all();const vistas=results.map(r=>({tag:r.tag,n:r.n}));for(const t of CAD_TAGS_PADRAO)if(!vistas.some(v=>v.tag===t))vistas.push({tag:t,n:0});out.tags=vistas}else{out.itens=lista.results.map(cadSaidaProduto);const ult=await cadUltimasCompras(env,out.itens.map(p=>p.id));out.itens.forEach(p=>p.ultima=ult[p.id]||null)}return json(out)}async function cadSalvar(env,request,u,tipo,id){let d;try{d=await lerJson(request,2e4)}catch{return json({erro:"Dados inválidos"},400)}const agora=Date.now();if(tipo==="parceiros"){const p=cadLimpaParceiro(d);if(!p.razao)return json({erro:"Informe a razão social ou o nome."},400);if(!p.tags.length)return json({erro:"Marque pelo menos uma tag (Cliente, Fornecedor…)."},400);const busca=cadBuscaParceiro(p);const vals=PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]);if(!id){const r=await env.DB.prepare(`INSERT INTO parceiros (${PARC_COLS.join(",")}, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PARC_COLS.map(()=>"?").join(",")},?,?,?,?,?)`).bind(...vals,busca,"sgo",agora,agora,u.login).run();const novo=await env.DB.prepare("SELECT * FROM parceiros WHERE id = ?").bind(r.meta.last_row_id).first();return json({item:cadSaidaParceiro(novo)},201)}const r=await env.DB.prepare(`UPDATE parceiros SET ${PARC_COLS.map(c=>c+" = ?").join(", ")}, busca = ?, atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ? AND versao = ?`).bind(...vals,busca,agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou este cadastro. Abra de novo para ver a versão atual."},409);return json({item:cadSaidaParceiro(await env.DB.prepare("SELECT * FROM parceiros WHERE id = ?").bind(id).first())})}const p=cadLimpaProduto(d);if(!p.codigo||!p.descricao)return json({erro:"Informe o código e a descrição."},400);const busca=cadBuscaProduto(p);const vals=PROD_COLS.map(c=>p[c]);try{if(!id){const r=await env.DB.prepare(`INSERT INTO produtos (${PROD_COLS.join(",")}, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PROD_COLS.map(()=>"?").join(",")},?,?,?,?,?)`).bind(...vals,busca,"sgo",agora,agora,u.login).run();return json({item:cadSaidaProduto(await env.DB.prepare("SELECT * FROM produtos WHERE id = ?").bind(r.meta.last_row_id).first())},201)}const r=await env.DB.prepare(`UPDATE produtos SET ${PROD_COLS.map(c=>c+" = ?").join(", ")}, busca = ?, atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ? AND versao = ?`).bind(...vals,busca,agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou este produto. Abra de novo para ver a versão atual."},409);return json({item:cadSaidaProduto(await env.DB.prepare("SELECT * FROM produtos WHERE id = ?").bind(id).first())})}catch(e){if(/UNIQUE/i.test(String(e&&e.message)))return json({erro:"Já existe um produto com o código "+p.codigo+"."},409);throw e}}async function cadImportar(env,request,u){let d;try{d=await lerJson(request,9e5)}catch{return json({erro:"Arquivo grande demais para um lote"},413)}const tipo=d.tipo==="produtos"?"produtos":"parceiros";if(!cadPode(u,tipo))return json({erro:"Sem permissão para importar "+(tipo==="produtos"?"produtos":"clientes e fornecedores")+"."},403);const linhas=Array.isArray(d.linhas)?d.linhas.slice(0,600):[];const agora=Date.now();let novos=0,atualizados=0,ignorados=0;const ops=[];if(tipo==="produtos"){const{results:results}=await env.DB.prepare("SELECT id, codigo FROM produtos").all();const porCod=new Map(results.map(r=>[r.codigo.toLowerCase(),r.id]));for(const l of linhas){const p=cadLimpaProduto(l);if(!p.codigo||!p.descricao){ignorados++;continue}const extra=JSON.stringify(l.extra||{});const busca=cadBuscaProduto(p);const ex=porCod.get(p.codigo.toLowerCase());if(ex){ops.push(env.DB.prepare(`UPDATE produtos SET ${PROD_COLS.filter(c=>c!=="custo").map(c=>c+" = ?").join(", ")}, custo = COALESCE(?, custo), extra = ?, busca = ?, origem = 'omie', atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ?`).bind(...PROD_COLS.filter(c=>c!=="custo").map(c=>p[c]),p.custo,extra,busca,agora,u.login,ex));atualizados++}else{ops.push(env.DB.prepare(`INSERT INTO produtos (${PROD_COLS.join(",")}, extra, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PROD_COLS.map(()=>"?").join(",")},?,?,'omie',?,?,?)`).bind(...PROD_COLS.map(c=>p[c]),extra,busca,agora,agora,u.login));porCod.set(p.codigo.toLowerCase(),-1);novos++}}}else{const{results:results}=await env.DB.prepare("SELECT id, documento, endereco, razao, tags FROM parceiros").all();const chave=(doc,end,raz)=>doc?doc+"|"+cadNorm(end):"s|"+cadNorm(raz);const mapa=new Map(results.map(r=>[chave(r.documento,r.endereco,r.razao),r]));for(const l of linhas){const p=cadLimpaParceiro(l);if(!p.razao){ignorados++;continue}const k=chave(p.documento,p.endereco,p.razao);const ex=mapa.get(k);const extra=JSON.stringify(l.extra||{});if(ex){let tagsAnt=[];try{tagsAnt=JSON.parse(ex.tags||"[]")}catch{}p.tags=cadTags(tagsAnt.concat(p.tags));const busca=cadBuscaParceiro(p);ops.push(env.DB.prepare(`UPDATE parceiros SET ${PARC_COLS.map(c=>c+" = ?").join(", ")}, extra = ?, busca = ?, origem = 'omie', atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ?`).bind(...PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]),extra,busca,agora,u.login,ex.id));ex.tags=JSON.stringify(p.tags);atualizados++}else{const busca=cadBuscaParceiro(p);ops.push(env.DB.prepare(`INSERT INTO parceiros (${PARC_COLS.join(",")}, extra, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PARC_COLS.map(()=>"?").join(",")},?,?,'omie',?,?,?)`).bind(...PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]),extra,busca,agora,agora,u.login));mapa.set(k,{id:-1,tags:JSON.stringify(p.tags)});novos++}}}for(let i=0;i<ops.length;i+=80)await env.DB.batch(ops.slice(i,i+80));await env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"cadastros",tipo,null,`Importação Omie: ${novos} novos, ${atualizados} atualizados, ${ignorados} ignorados`).run();return json({ok:true,novos:novos,atualizados:atualizados,ignorados:ignorados})}async function cadRotas(request,env,url,u){const p=url.pathname,m=request.method;if(p==="/api/cadastros/busca"&&m==="GET")return cadBusca(env,url);if(p==="/api/cadastros/importar"&&m==="POST")return cadImportar(env,request,u);const r=p.match(/^\/api\/cadastros\/(parceiros|produtos)(?:\/(\d+))?$/);if(!r)return json({erro:"Não encontrado"},404);const tipo=r[1],id=r[2]?parseInt(r[2],10):null;if(m==="GET"&&id){const row=await env.DB.prepare(`SELECT * FROM ${tipo} WHERE id = ?`).bind(id).first();if(!row)return json({erro:"Não encontrado"},404);return json({item:tipo==="parceiros"?cadSaidaParceiro(row):cadSaidaProduto(row)})}if(!cadPode(u,tipo)&&!(m==="GET"&&u.permissoes.includes("op-compras")))return json({erro:"Sem permissão para esta área."},403);if(m==="GET")return cadListar(env,url,tipo);if(m==="POST"&&!id)return cadSalvar(env,request,u,tipo,null);if(m==="PUT"&&id)return cadSalvar(env,request,u,tipo,id);return json({erro:"Não encontrado"},404)}var COMPRAS_PERM="op-compras";var cmpPode=u=>ehAdmin(u)||u.permissoes.includes(COMPRAS_PERM);var cmpHoje=()=>isoDia(Date.now());function cmpAddUteis(iso,n){const[a,mm,dd]=iso.split("-").map(Number);const d=new Date(Date.UTC(a,mm-1,dd));let c=0;while(c<n){d.setUTCDate(d.getUTCDate()+1);const w=d.getUTCDay();if(w!==0&&w!==6)c++}return d.toISOString().slice(0,10)}var cmpQtd=q=>Math.max(1,parseInt(String(q==null?"":q).replace(/\D+/g,""),10)||1);async function cmpProxNum(env,tabela,pre,dig){const r=await env.DB.prepare(`SELECT MAX(CAST(substr(num, ${pre.length+2}) AS INTEGER)) AS n FROM ${tabela}`).first();return pre+"-"+String((r&&r.n||0)+1).padStart(dig||4,"0")}async function cmpCatalogo(env){const[p,v]=await env.DB.batch([env.DB.prepare("SELECT id, codigo, descricao, unidade, estoque, custo, preco_venda FROM produtos"),env.DB.prepare("SELECT chave, produto_id FROM compras_vinculos")]);const porId=new Map,porDesc=new Map,porCod=new Map;for(const r of p.results){porId.set(r.id,r);porDesc.set(cadNorm(r.descricao),r.id);porCod.set(String(r.codigo).toLowerCase(),r.id)}const vinc=new Map(v.results.map(r=>[r.chave,r.produto_id]));const resolver=nome=>{const n=cadNorm(nome);if(vinc.has(n)&&porId.has(vinc.get(n)))return vinc.get(n);if(porDesc.has(n))return porDesc.get(n);const m=String(nome||"").match(/\[(?:c[oó]d\.?\s*)?([^\]]{1,40})\]\s*$/i);if(m&&porCod.has(m[1].trim().toLowerCase()))return porCod.get(m[1].trim().toLowerCase());return null};return{porId:porId,resolver:resolver}}async function cmpCotacoesAbertas(env){const{results:results}=await env.DB.prepare("SELECT id, num, dados FROM compras_cotacoes WHERE status = 'aberta'").all();return results.map(r=>({id:r.id,num:r.num,dados:JSON.parse(r.dados)}))}async function cmpFila(env){const[osR,scR,cotR,pedR]=await env.DB.batch([env.DB.prepare("SELECT id, num, stage, dados, atualizado_em FROM ordens_servico WHERE stage BETWEEN 1 AND 3"),env.DB.prepare("SELECT * FROM compras_solicitacoes WHERE status IN ('aberto','cotacao','comprado') ORDER BY criado_em DESC LIMIT 300"),env.DB.prepare("SELECT id, num, status, dados, criado_em, atualizado_em FROM compras_cotacoes ORDER BY criado_em DESC LIMIT 60"),env.DB.prepare("SELECT * FROM compras_pedidos ORDER BY criado_em DESC LIMIT 60")]);const cat=await cmpCatalogo(env);const naCot=new Map;for(const c of cotR.results){if(c.status!=="aberta")continue;const d=JSON.parse(c.dados);for(const l of d.linhas||[])for(const o of l.origem||[])naCot.set(o.tipo==="os"?"os:"+o.os_id+":"+o.idx:"sc:"+o.id,c.num)}const prodInfo=pid=>{const p=pid?cat.porId.get(pid):null;return p?{id:p.id,codigo:p.codigo,descricao:p.descricao,unidade:p.unidade,estoque:p.estoque,custo:p.custo}:null};const origens=[];for(const r of osR.results){let d;try{d=JSON.parse(r.dados)}catch{continue}const itens=[];(d.itens||[]).forEach((it,idx)=>{if(it.st!=="comprar"&&it.st!=="comprado")return;const k="os:"+r.id+":"+idx;const st=it.st==="comprado"?"comprado":naCot.has(k)?"cotacao":"aberto";itens.push({chave:k,idx:idx,qtd:cmpQtd(it.qtd),nome:it.nome,st:st,cot:naCot.get(k)||null,prev:it.prev||null,produto:prodInfo(cat.resolver(it.nome))})});if(!itens.length)continue;origens.push({tipo:"os",id:r.id,num:"OS "+r.num,cliente:d.cliente||"",cidade:d.cidade||"",agenda:d.agDate||d.agenda||"",desde:r.atualizado_em,osTipo:d.tipo,itens:itens})}for(const r of scR.results){const d=JSON.parse(r.dados);const k="sc:"+r.id;origens.push({tipo:"sc",id:r.id,num:r.num,cliente:d.titulo||"",solicitante:d.solicitante,setor:d.setor,motivo:d.motivo||"",precisa:d.precisa||"",urgente:!!d.urgente,desde:r.criado_em,destino:d.destino,itens:[{chave:k,qtd:d.qtd,nome:d.descricao,st:r.status==="comprado"?"comprado":naCot.has(k)?"cotacao":"aberto",cot:naCot.get(k)||null,prev:r.prev,produto:prodInfo(d.produto_id),un:d.unidade}]})}const cotacoes=cotR.results.map(c=>{const d=JSON.parse(c.dados);const resp=(d.forn||[]).map((f,i)=>(d.linhas||[]).filter(l=>cadNum((d.precos[l.k]||[])[i])!=null).length);return{id:c.id,num:c.num,status:c.status,criado_em:c.criado_em,origens:[...new Set((d.linhas||[]).flatMap(l=>(l.origem||[]).map(o=>o.num)))],produtos:(d.linhas||[]).length,forn:(d.forn||[]).map((f,i)=>({nome:f.nome,respondeu:resp[i]})),total:d.totalEscolha||null}});const pedidos=pedR.results.map(p=>Object.assign({},p,{dados:JSON.parse(p.dados)}));return json({hoje:cmpHoje(),origens:origens,cotacoes:cotacoes,pedidos:pedidos})}async function cmpCriarSC(env,request,u){let d;try{d=await lerJson(request,8e3)}catch{return json({erro:"Dados inválidos"},400)}const qtd=Math.round(cadNum(d.qtd)||0);if(!(qtd>0))return json({erro:"Informe a quantidade."},400);let prod=null;if(d.produto_id)prod=await env.DB.prepare("SELECT id, codigo, descricao, unidade FROM produtos WHERE id = ?").bind(parseInt(d.produto_id,10)).first();const descricao=prod?prod.descricao:cadTxt(d.descricao,160);if(!descricao)return json({erro:"Escolha o produto ou descreva o que comprar."},400);const solicitante=cadTxt(d.solicitante,80)||u.nome;let titulo="Reposição do estoque",os=null;if(d.destino==="interno")titulo="Uso interno · "+(cadTxt(d.setor,40)||"");else if(d.destino==="os"&&d.os_id){os=await env.DB.prepare("SELECT id, num, json_extract(dados,'$.cliente') AS cli FROM ordens_servico WHERE id = ?").bind(String(d.os_id)).first();if(os)titulo="Para a OS "+os.num+" · "+(os.cli||"")}const dados={produto_id:prod?prod.id:null,descricao:descricao,unidade:prod?prod.unidade:(cadTxt(d.unidade,6)||"UN").toUpperCase(),qtd:qtd,solicitante:solicitante,setor:cadTxt(d.setor,40),destino:os?"os":d.destino==="interno"?"interno":"estoque",os_id:os?os.id:null,os_num:os?os.num:null,titulo:titulo,precisa:/^\d{4}-\d{2}-\d{2}$/.test(d.precisa||"")?d.precisa:null,urgente:!!d.urgente,motivo:cadTxt(d.motivo,400)};const agora=Date.now();for(let t=0;t<3;t++){const num=await cmpProxNum(env,"compras_solicitacoes","SC");const id="sc-"+aleatorio(6);try{await env.DB.batch([env.DB.prepare("INSERT INTO compras_solicitacoes (id, num, status, dados, criado_em, criado_por, atualizado_em) VALUES (?,?,'aberto',?,?,?,?)").bind(id,num,JSON.stringify(dados),agora,u.login,agora),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,num,"Solicitação de compra: "+qtd+" "+descricao)]);return json({id:id,num:num},201)}catch(e){if(!/UNIQUE/i.test(String(e&&e.message)))throw e}}throw new Error("num")}async function cmpAcaoSC(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const novo=d.acao==="cancelar"?"cancelado":d.acao==="recebido"?"recebido":null;if(!novo)return json({erro:"Ação inválida"},400);const de=novo==="cancelado"?"('aberto')":"('comprado')";const r=await env.DB.prepare(`UPDATE compras_solicitacoes SET status = ?, atualizado_em = ? WHERE id = ? AND status IN ${de}`).bind(novo,Date.now(),id).run();if(!r.meta.changes)return json({erro:novo==="cancelado"?"Só dá para cancelar solicitação que ainda não entrou em cotação.":"Esta solicitação não está aguardando entrega."},409);return json({ok:true})}async function cmpVincular(env,request,u){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const chave=cadNorm(d.nome);const pid=parseInt(d.produto_id,10);if(!chave)return json({erro:"Dados inválidos"},400);if(!pid){await env.DB.prepare("DELETE FROM compras_vinculos WHERE chave = ?").bind(chave).run();return json({ok:true})}await env.DB.prepare("INSERT INTO compras_vinculos (chave, produto_id, atualizado_em) VALUES (?,?,?) ON CONFLICT(chave) DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = excluded.atualizado_em").bind(chave,pid,Date.now()).run();return json({ok:true})}async function cmpMontarCotacao(env,request,u){let d;try{d=await lerJson(request,3e4)}catch{return json({erro:"Dados inválidos"},400)}const chaves=Array.isArray(d.itens)?d.itens.slice(0,300).map(String):[];if(!chaves.length)return json({erro:"Selecione os itens."},400);const cat=await cmpCatalogo(env);const abertas=await cmpCotacoesAbertas(env);const ocupados=new Set;for(const c of abertas)for(const l of c.dados.linhas||[])for(const o of l.origem||[])ocupados.add(o.tipo==="os"?"os:"+o.os_id+":"+o.idx:"sc:"+o.id);const novos=[];const osCache=new Map;for(const k of chaves){if(ocupados.has(k))continue;let m=k.match(/^os:([A-Za-z0-9_-]+):(\d+)$/);if(m){if(!osCache.has(m[1]))osCache.set(m[1],await env.DB.prepare("SELECT id, num, dados FROM ordens_servico WHERE id = ?").bind(m[1]).first());const os=osCache.get(m[1]);if(!os)continue;const it=(JSON.parse(os.dados).itens||[])[+m[2]];if(!it||it.st!=="comprar")continue;novos.push({origem:{tipo:"os",os_id:os.id,num:"OS "+os.num,idx:+m[2],qtd:cmpQtd(it.qtd),nome:it.nome},produto_id:cat.resolver(it.nome),nome:it.nome,qtd:cmpQtd(it.qtd)});continue}m=k.match(/^sc:([A-Za-z0-9_-]+)$/);if(m){const sc=await env.DB.prepare("SELECT id, num, status, dados FROM compras_solicitacoes WHERE id = ?").bind(m[1]).first();if(!sc||sc.status!=="aberto")continue;const sd=JSON.parse(sc.dados);novos.push({origem:{tipo:"sc",id:sc.id,num:sc.num,qtd:sd.qtd,nome:sd.descricao},produto_id:sd.produto_id||null,nome:sd.descricao,qtd:sd.qtd,un:sd.unidade})}}if(!novos.length)return json({erro:"Esses itens já estão em cotação ou não estão mais marcados como “A comprar”."},409);const agora=Date.now();let cot=d.cot_id?abertas.find(c=>c.id===d.cot_id):null;let versao=1,num,id;if(cot){const row=await env.DB.prepare("SELECT versao FROM compras_cotacoes WHERE id = ?").bind(cot.id).first();versao=row.versao;num=cot.num;id=cot.id}const dados=cot?cot.dados:{forn:[0,1,2].map(()=>({parceiro_id:null,nome:"",prazo:"",frete:"",pgto:"",validade:""})),linhas:[],precos:{},esc:{},imp:{},obs:""};let seq=dados.linhas.reduce((mx,l)=>Math.max(mx,parseInt(String(l.k).slice(1),10)||0),0);for(const n of novos){const chaveLinha=n.produto_id?"p"+n.produto_id:"t"+cadNorm(n.nome);let l=dados.linhas.find(x=>(x.produto_id?"p"+x.produto_id:"t"+cadNorm(x.nome))===chaveLinha);if(!l){const p=n.produto_id?cat.porId.get(n.produto_id):null;l={k:"L"+ ++seq,produto_id:n.produto_id||null,nome:p?p.descricao:n.nome,un:p?p.unidade:n.un||"UN",qtd:0,origem:[]};dados.linhas.push(l)}l.qtd+=n.qtd;l.origem.push(n.origem)}if(cot){const r=await env.DB.prepare("UPDATE compras_cotacoes SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(dados),agora,u.login,id,versao).run();if(!r.meta.changes)return json({erro:"A cotação foi alterada por outra pessoa. Tente de novo."},409)}else{for(let t=0;t<3;t++){num=await cmpProxNum(env,"compras_cotacoes","COT");id="cot-"+aleatorio(6);try{await env.DB.prepare("INSERT INTO compras_cotacoes (id, num, status, dados, versao, criado_em, criado_por, atualizado_em, atualizado_por) VALUES (?,?,'aberta',?,1,?,?,?,?)").bind(id,num,JSON.stringify(dados),agora,u.login,agora,u.login).run();break}catch(e){if(!/UNIQUE/i.test(String(e&&e.message)))throw e;num=null}}if(!num)throw new Error("num")}const scIds=novos.filter(n=>n.origem.tipo==="sc").map(n=>n.origem.id);const ops=scIds.map(sid=>env.DB.prepare("UPDATE compras_solicitacoes SET status = 'cotacao', cot_id = ?, atualizado_em = ? WHERE id = ?").bind(id,agora,sid));ops.push(env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,num,(cot?"Itens somados à cotação: ":"Cotação criada com ")+novos.length+" item(ns)"));await env.DB.batch(ops);return json({id:id,num:num,adicionados:novos.length,ignorados:chaves.length-novos.length})}async function cmpDetalheCotacao(env,id){const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);const dados=JSON.parse(c.dados);const ids=[...new Set(dados.linhas.map(l=>l.produto_id).filter(Boolean))];const prods={};if(ids.length){const{results:results}=await env.DB.prepare(`SELECT id, codigo, descricao, unidade, estoque, custo, preco_venda FROM produtos WHERE id IN (${ids.map(()=>"?").join(",")})`).bind(...ids).all();for(const r of results)prods[r.id]=r}const ult=await cadUltimasCompras(env,ids);const fids=(dados.forn||[]).map(f=>f.parceiro_id).filter(Boolean);let depara=[];if(fids.length){depara=(await env.DB.prepare(`SELECT fornecedor_id, chave, produto_id FROM compras_depara WHERE fornecedor_id IN (${fids.map(()=>"?").join(",")})`).bind(...fids).all()).results}const fornInfo={};if(fids.length){const{results:results}=await env.DB.prepare(`SELECT id, razao, fantasia, documento, email, telefone, contato FROM parceiros WHERE id IN (${fids.map(()=>"?").join(",")})`).bind(...fids).all();for(const r of results)fornInfo[r.id]=r}return json({id:c.id,num:c.num,status:c.status,versao:c.versao,criado_em:c.criado_em,criado_por:c.criado_por,dados:dados,produtos:prods,ultimas:ult,depara:depara,fornInfo:fornInfo,hoje:cmpHoje()})}async function cmpSalvarCotacao(env,request,u,id){let d;try{d=await lerJson(request,2e5)}catch{return json({erro:"Dados inválidos"},400)}const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);if(c.status!=="aberta")return json({erro:"Esta cotação já foi aprovada."},409);const atual=JSON.parse(c.dados),novo=d.dados||{};const f3=(novo.forn||atual.forn).slice(0,3).map(f=>({parceiro_id:f.parceiro_id?parseInt(f.parceiro_id,10):null,nome:cadTxt(f.nome,120)||"",prazo:cadTxt(f.prazo,6)||"",frete:cadTxt(f.frete,20)||"",pgto:cadTxt(f.pgto,60)||"",validade:cadTxt(f.validade,40)||""}));while(f3.length<3)f3.push({parceiro_id:null,nome:"",prazo:"",frete:"",pgto:"",validade:""});const ks=new Set(atual.linhas.map(l=>l.k));const precos={},esc={},imp={};for(const k of ks){const p=(novo.precos||{})[k];if(Array.isArray(p))precos[k]=[0,1,2].map(i=>cadTxt(p[i],20)||"");const e=(novo.esc||{})[k];if(e===0||e===1||e===2)esc[k]=e;for(const i of[0,1,2])if((novo.imp||{})[k+"_"+i])imp[k+"_"+i]=1}const linhas=atual.linhas.map(l=>{const nl=(novo.linhas||[]).find(x=>x.k===l.k);if(nl&&"produto_id"in nl){const pid=nl.produto_id?parseInt(nl.produto_id,10):null;if(pid!==l.produto_id)Object.assign(l,{produto_id:pid,nome:cadTxt(nl.nome,200)||l.nome,un:cadTxt(nl.un,6)||l.un})}return l});const dados=Object.assign(atual,{forn:f3,precos:precos,esc:esc,imp:imp,linhas:linhas,obs:cadTxt(novo.obs,1e3)||"",totalEscolha:cadNum(novo.totalEscolha)});const agora=Date.now();const r=await env.DB.prepare("UPDATE compras_cotacoes SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(dados),agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou esta cotação. Atualizando…"},409);return json({ok:true,versao:(parseInt(d.versao,10)||0)+1})}async function cmpDepara(env,request,u){let d;try{d=await lerJson(request,5e4)}catch{return json({erro:"Dados inválidos"},400)}const fid=parseInt(d.fornecedor_id,10);if(!fid)return json({ok:true,salvos:0});const agora=Date.now();const ops=(Array.isArray(d.itens)?d.itens:[]).slice(0,300).filter(i=>i&&i.chave&&parseInt(i.produto_id,10)).map(i=>env.DB.prepare("INSERT INTO compras_depara (fornecedor_id, chave, produto_id, atualizado_em) VALUES (?,?,?,?) ON CONFLICT(fornecedor_id, chave) DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = excluded.atualizado_em").bind(fid,String(i.chave).slice(0,200),parseInt(i.produto_id,10),agora));if(ops.length)await env.DB.batch(ops);return json({ok:true,salvos:ops.length})}async function cmpAprovar(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{d={}}const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);if(c.status!=="aberta")return json({erro:"Esta cotação já foi aprovada."},409);if(d.versao!=null&&parseInt(d.versao,10)!==c.versao)return json({erro:"A cotação mudou desde que você abriu. Atualizando…"},409);const dados=JSON.parse(c.dados);const escolha={};const semPreco=[];for(const l of dados.linhas){const pr=(dados.precos[l.k]||[]).map(cadNum);let e=dados.esc[l.k];if(e==null||pr[e]==null){e=null;pr.forEach((v,i)=>{if(v!=null&&(e==null||v<pr[e]))e=i})}if(e==null)semPreco.push(l.nome);else escolha[l.k]={i:e,preco:pr[e]}}if(semPreco.length)return json({erro:"Faltam preços em "+semPreco.length+" item(ns): "+semPreco.slice(0,3).join(", ")},400);for(const i of[0,1,2]){if(dados.linhas.some(l=>escolha[l.k].i===i)&&!String(dados.forn[i].nome||"").trim())return json({erro:"Informe o nome do Fornecedor "+"ABC"[i]+"."},400)}const hoje=cmpHoje(),agora=Date.now(),q=rotulo(agora);const pedidos=[],ops=[],prevPorLinha={};let base=await cmpProxNum(env,"compras_pedidos","PC");let nBase=parseInt(base.slice(3),10);for(const i of[0,1,2]){const ls=dados.linhas.filter(l=>escolha[l.k].i===i);if(!ls.length)continue;const f=dados.forn[i];const prazo=parseInt(f.prazo,10)||0;const prev=cmpAddUteis(hoje,prazo);const frete=cadNum(f.frete)||0;const itens=ls.map(l=>{prevPorLinha[l.k]={prev:prev,pedido:null,forn:f.nome};const preco=escolha[l.k].preco;return{k:l.k,produto_id:l.produto_id,nome:l.nome,un:l.un,qtd:l.qtd,preco:preco,total:Math.round(preco*l.qtd*100)/100,destinos:l.origem.map(o=>({num:o.num,qtd:o.qtd}))}});const total=Math.round((itens.reduce((s,x)=>s+x.total,0)+frete)*100)/100;const pid="pc-"+aleatorio(6),num="PC-"+String(nBase++).padStart(4,"0");ls.forEach(l=>prevPorLinha[l.k].pedido=num);const pd={fornecedor:f.nome,parceiro_id:f.parceiro_id,prazo:prazo,frete:frete,pgto:f.pgto,validade:f.validade,cot_num:c.num,itens:itens,enviado:null};pedidos.push({id:pid,num:num,fornecedor:f.nome,total:total,prev:prev});ops.push(env.DB.prepare("INSERT INTO compras_pedidos (id, num, cot_id, fornecedor_id, status, prev, total, dados, criado_em, criado_por, atualizado_em) VALUES (?,?,?,?,'aguardando',?,?,?,?,?,?)").bind(pid,num,c.id,f.parceiro_id||null,prev,total,JSON.stringify(pd),agora,u.login,agora));for(const it of itens)if(it.produto_id)ops.push(env.DB.prepare("INSERT INTO compras_historico (produto_id, fornecedor_id, fornecedor_nome, preco, qtd, data, pedido_id) VALUES (?,?,?,?,?,?,?)").bind(it.produto_id,f.parceiro_id||null,f.nome,it.preco,it.qtd,hoje,pid))}dados.pedidos=pedidos.map(p=>p.num);const trava=await env.DB.prepare("UPDATE compras_cotacoes SET status = 'aprovada', dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ? AND status = 'aberta'").bind(JSON.stringify(dados),agora,u.login,c.id,c.versao).run();if(!trava.meta.changes)return json({erro:"A cotação mudou desde que você abriu. Atualizando…"},409);for(const l of dados.linhas)for(const o of l.origem)if(o.tipo==="sc")ops.push(env.DB.prepare("UPDATE compras_solicitacoes SET status = 'comprado', prev = ?, atualizado_em = ? WHERE id = ?").bind(prevPorLinha[l.k].prev,agora,o.id));ops.push(env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",c.id,c.num,"Cotação aprovada · pedidos "+dados.pedidos.join(", ")));await env.DB.batch(ops);const porOS=new Map;for(const l of dados.linhas)for(const o of l.origem)if(o.tipo==="os"){if(!porOS.has(o.os_id))porOS.set(o.os_id,[]);porOS.get(o.os_id).push({idx:o.idx,nome:o.nome,...prevPorLinha[l.k]})}const avisos=[];for(const[osId,its]of porOS){let ok=false;for(let t=0;t<4&&!ok;t++){const row=await env.DB.prepare("SELECT id, num, versao, dados FROM ordens_servico WHERE id = ?").bind(osId).first();if(!row)break;const od=JSON.parse(row.dados);let n=0;const peds=new Set;for(const x of its){const it=(od.itens||[])[x.idx];if(!it||it.nome!==x.nome||it.st!=="comprar"){avisos.push("OS "+row.num+": “"+x.nome+"” mudou na OS e não foi marcado como comprado");continue}od.itens[x.idx]=Object.assign({},it,{st:"comprado",prev:x.prev,pc:x.pedido});n++;peds.add(x.pedido+" ("+x.forn+", chega "+x.prev.slice(8,10)+"/"+x.prev.slice(5,7)+")")}if(!n){ok=true;break}od.hist=(od.hist||[]).concat([{quando:q,quem:u.nome,acao:"Compras: "+n+(n===1?" item comprado":" itens comprados")+" · pedido "+[...peds].join(", ")}]);const r=await env.DB.batch([env.DB.prepare("UPDATE ordens_servico SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(od),agora,u.login,osId,row.versao),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"os",osId,row.num,"Compras: "+n+" item(ns) comprado(s) · cotação "+c.num)]);ok=!!r[0].meta.changes}}return json({ok:true,pedidos:pedidos,avisos:avisos})}async function cmpCancelarCotacao(env,u,id){const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c||c.status!=="aberta")return json({erro:"Só dá para cancelar cotação aberta."},409);const agora=Date.now();await env.DB.batch([env.DB.prepare("UPDATE compras_cotacoes SET status = 'cancelada', atualizado_em = ?, atualizado_por = ? WHERE id = ?").bind(agora,u.login,id),env.DB.prepare("UPDATE compras_solicitacoes SET status = 'aberto', cot_id = NULL, atualizado_em = ? WHERE cot_id = ? AND status = 'cotacao'").bind(agora,id),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,c.num,"Cotação cancelada · itens voltaram para a fila")]);return json({ok:true})}async function cmpAcaoPedido(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const novo=d.acao==="entregue"?"entregue":d.acao==="cancelar"?"cancelado":null;if(!novo)return json({erro:"Ação inválida"},400);const p=await env.DB.prepare("SELECT * FROM compras_pedidos WHERE id = ?").bind(id).first();if(!p||p.status!=="aguardando")return json({erro:"Este pedido não está aguardando entrega."},409);const agora=Date.now();const ops=[env.DB.prepare("UPDATE compras_pedidos SET status = ?, atualizado_em = ? WHERE id = ?").bind(novo,agora,id),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,p.num,novo==="entregue"?"Pedido entregue":"Pedido cancelado")];if(novo==="entregue"&&p.cot_id){const cot=await env.DB.prepare("SELECT dados FROM compras_cotacoes WHERE id = ?").bind(p.cot_id).first();const pd=JSON.parse(p.dados);const ks=new Set((pd.itens||[]).map(i=>i.k));if(cot)for(const l of JSON.parse(cot.dados).linhas||[])if(ks.has(l.k))for(const o of l.origem)if(o.tipo==="sc")ops.push(env.DB.prepare("UPDATE compras_solicitacoes SET status = 'recebido', atualizado_em = ? WHERE id = ? AND status = 'comprado'").bind(agora,o.id))}await env.DB.batch(ops);return json({ok:true})}async function cmpRotas(request,env,url,u){if(!cmpPode(u))return json({erro:"Sem permissão para esta área."},403);const p=url.pathname,m=request.method;if(p==="/api/compras/fila"&&m==="GET")return cmpFila(env);if(p==="/api/compras/solicitacoes"&&m==="POST")return cmpCriarSC(env,request,u);let r=p.match(/^\/api\/compras\/solicitacoes\/([A-Za-z0-9_-]+)$/);if(r&&m==="PUT")return cmpAcaoSC(env,request,u,r[1]);if(p==="/api/compras/vincular"&&m==="POST")return cmpVincular(env,request,u);if(p==="/api/compras/depara"&&m==="POST")return cmpDepara(env,request,u);if(p==="/api/compras/cotacoes"&&m==="POST")return cmpMontarCotacao(env,request,u);r=p.match(/^\/api\/compras\/cotacoes\/([A-Za-z0-9_-]+)(?:\/(aprovar|cancelar))?$/);if(r){if(!r[2]&&m==="GET")return cmpDetalheCotacao(env,r[1]);if(!r[2]&&m==="PUT")return cmpSalvarCotacao(env,request,u,r[1]);if(r[2]==="aprovar"&&m==="POST")return cmpAprovar(env,request,u,r[1]);if(r[2]==="cancelar"&&m==="POST")return cmpCancelarCotacao(env,u,r[1])}r=p.match(/^\/api\/compras\/pedidos\/([A-Za-z0-9_-]+)$/);if(r&&m==="PUT")return cmpAcaoPedido2(env,request,u,r[1]);return json({erro:"Não encontrado"},404)}async function telaR2(env,nome){const obj=env.FOTOS?await env.FOTOS.get("telas/"+nome+".html"):null;if(!obj)return new Response("Tela ainda não enviada.",{status:404,headers:{"content-type":"text/plain; charset=utf-8",...SEG}});return new Response(obj.body,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache",...SEG}})}
+var CAD_PERM={parceiros:"cad-parceiros",produtos:"cad-produtos"};var cadPode=(u,k,write)=>ehAdmin(u)||(write?podeUsar(u,CAD_PERM[k]):podeVer(u,CAD_PERM[k]));var CAD_TAGS_PADRAO=["Cliente","Fornecedor","Transportadora","Funcionário","Belfer"];function cadNorm(s){return String(s==null?"":s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}var soDig=s=>String(s==null?"":s).replace(/\D+/g,"");var cadTxt=(v,max)=>v==null||v===""?null:String(v).replace(/\s+/g," ").trim().slice(0,max||200)||null;function cadNum(v){if(v==null||v==="")return null;if(typeof v==="number")return isFinite(v)?v:null;let s=String(v).replace(/[^\d.,-]/g,"");if(!s)return null;if(s.indexOf(",")>=0)s=s.replace(/\./g,"").replace(",",".");const n=parseFloat(s);return isFinite(n)?n:null}function cadTags(v){let arr=Array.isArray(v)?v:String(v||"").split(",");const out=[];for(const t of arr){const x=String(t||"").replace(/\s+/g," ").trim().slice(0,30);if(x&&!out.some(o=>o.toLowerCase()===x.toLowerCase()))out.push(x)}return out.slice(0,12)}function cadBuscaParceiro(p){return cadNorm([p.razao,p.fantasia,p.documento,p.contato,p.cidade,p.email,p.telefone,(p.tags||[]).join(" ")].join(" "))}function cadBuscaProduto(p){return cadNorm([p.codigo,p.descricao,p.marca,p.modelo,p.ean,p.caracteristicas,p.familia].join(" "))}function cadLimpaParceiro(d){const doc=soDig(d.documento);const p={documento:doc||null,tipo_pessoa:doc.length===11?"PF":doc.length===14?"PJ":null,razao:cadTxt(d.razao,160),fantasia:cadTxt(d.fantasia,160),tags:cadTags(d.tags),situacao:d.situacao==="Inativo"?"Inativo":"Ativo",telefone:cadTxt(d.telefone,80),contato:cadTxt(d.contato,120),email:cadTxt(d.email,200),cidade:cadTxt(d.cidade,80),uf:cadTxt(d.uf,2),endereco:cadTxt(d.endereco,200),bairro:cadTxt(d.bairro,100),cep:cadTxt(d.cep,10),ie:cadTxt(d.ie,30),im:cadTxt(d.im,30),obs:cadTxt(d.obs,1e3)};if(p.uf)p.uf=p.uf.toUpperCase();return p}function cadLimpaProduto(d){return{codigo:cadTxt(d.codigo,40),descricao:cadTxt(d.descricao,200),familia:cadTxt(d.familia,60),unidade:(cadTxt(d.unidade,6)||"UN").toUpperCase(),ncm:cadTxt(d.ncm,12),cest:cadTxt(d.cest,12),ean:cadTxt(d.ean,20),marca:cadTxt(d.marca,60),modelo:cadTxt(d.modelo,60),preco_venda:cadNum(d.preco_venda),custo:cadNum(d.custo),estoque:cadNum(d.estoque)||0,garantia_dias:cadNum(d.garantia_dias)==null?null:Math.round(cadNum(d.garantia_dias)),tipo_item:cadTxt(d.tipo_item,60),caracteristicas:cadTxt(d.caracteristicas,500),situacao:d.situacao==="Inativo"?"Inativo":"Ativo"}}var PARC_COLS=["documento","tipo_pessoa","razao","fantasia","tags","situacao","telefone","contato","email","cidade","uf","endereco","bairro","cep","ie","im","obs"];var PROD_COLS=["codigo","descricao","familia","unidade","ncm","cest","ean","marca","modelo","preco_venda","custo","estoque","garantia_dias","tipo_item","caracteristicas","situacao"];function cadSaidaParceiro(r){if(!r)return r;const o=Object.assign({},r);try{o.tags=JSON.parse(r.tags||"[]")}catch{o.tags=[]}try{o.extra=JSON.parse(r.extra||"{}")}catch{o.extra={}}delete o.busca;return o}function cadSaidaProduto(r){if(!r)return r;const o=Object.assign({},r);try{o.extra=JSON.parse(r.extra||"{}")}catch{o.extra={}}delete o.busca;return o}function cadWhereBusca(q,alias){const pal=cadNorm(q).split(" ").filter(Boolean).slice(0,6);const sql=pal.map(()=>`${alias}.busca LIKE ?`).join(" AND ");return{sql:sql,args:pal.map(p=>"%"+p+"%")}}async function cadUltimasCompras(env,ids){const out={};if(!ids.length)return out;const marc=ids.map(()=>"?").join(",");const{results:results}=await env.DB.prepare(`SELECT h.produto_id, h.preco, h.fornecedor_nome, h.data FROM compras_historico h\n      WHERE h.produto_id IN (${marc})\n        AND h.id = (SELECT h2.id FROM compras_historico h2 WHERE h2.produto_id = h.produto_id ORDER BY h2.data DESC, h2.id DESC LIMIT 1)`).bind(...ids).all();for(const r of results)out[r.produto_id]={preco:r.preco,fornecedor:r.fornecedor_nome,data:r.data};return out}async function cadBusca(env,url){const tipo=url.searchParams.get("tipo")||"produto";const q=(url.searchParams.get("q")||"").slice(0,80);const lim=Math.min(30,Math.max(1,parseInt(url.searchParams.get("limite")||"12",10)||12));const w=cadWhereBusca(q,"t");if(tipo==="produto"){const qn=cadNorm(q);const{results:results}=await env.DB.prepare(`SELECT t.id, t.codigo, t.descricao, t.unidade, t.estoque, t.preco_venda, t.custo, t.marca, t.modelo, t.situacao\n         FROM produtos t WHERE t.situacao = 'Ativo' ${w.sql?"AND "+w.sql:""}\n        ORDER BY (t.origem = 'omie') DESC, (lower(t.codigo) = ?) DESC, (lower(t.descricao) = ?) DESC, (lower(t.descricao) LIKE ?) DESC, (t.busca LIKE ?) DESC, length(t.descricao), t.descricao COLLATE NOCASE LIMIT ?`).bind(...w.args,String(q).trim().toLowerCase(),String(q).trim().toLowerCase(),String(q).trim().toLowerCase()+"%",qn+"%",lim).all();return json({itens:results})}const tag=tipo==="cliente"?"Cliente":tipo==="fornecedor"?"Fornecedor":tipo==="transportadora"?"Transportadora":null;const exigeTag=!!(tag&&tag!=="Fornecedor");const{results:results}=await env.DB.prepare(`SELECT t.id, t.documento, t.tipo_pessoa, t.razao, t.fantasia, t.tags, t.telefone, t.contato, t.email, t.cidade, t.uf, t.endereco, t.bairro, t.situacao\n       FROM parceiros t\n      WHERE t.situacao = 'Ativo' ${exigeTag?"AND EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = ?)":""} ${w.sql?"AND "+w.sql:""}\n      ORDER BY (t.origem = 'omie') DESC, ${tag==="Fornecedor"?"CASE WHEN EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = 'Fornecedor') THEN 0 ELSE 1 END,":""} COALESCE(t.fantasia, t.razao) COLLATE NOCASE LIMIT ?`).bind(...exigeTag?[tag]:[],...w.args,lim).all();return json({itens:results.map(cadSaidaParceiro)})}async function cadListar(env,url,tipo){const q=(url.searchParams.get("q")||"").slice(0,80);const pag=Math.max(1,parseInt(url.searchParams.get("pagina")||"1",10)||1);const por=50;const sit=url.searchParams.get("situacao")||"Ativo";const w=cadWhereBusca(q,"t");const cond=[],args=[];if(sit!=="todos"){cond.push("t.situacao = ?");args.push(sit==="Inativo"?"Inativo":"Ativo")}if(w.sql){cond.push(w.sql);args.push(...w.args)}if(tipo==="parceiros"){const tags=(url.searchParams.get("tags")||"").split(",").map(s=>s.trim()).filter(Boolean).slice(0,5);for(const t of tags){cond.push("EXISTS (SELECT 1 FROM json_each(t.tags) j WHERE j.value = ?)");args.push(t)}}if(tipo==="produtos"&&url.searchParams.get("estoque")==="1")cond.push("t.estoque > 0");const where=cond.length?"WHERE "+cond.join(" AND "):"";const tabela=tipo==="parceiros"?"parceiros":"produtos";const ordem=tipo==="parceiros"?"COALESCE(t.fantasia, t.razao) COLLATE NOCASE":"t.descricao COLLATE NOCASE";const[lista,total]=await env.DB.batch([env.DB.prepare(`SELECT t.* FROM ${tabela} t ${where} ORDER BY ${ordem} LIMIT ? OFFSET ?`).bind(...args,por,(pag-1)*por),env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tabela} t ${where}`).bind(...args)]);const out={total:total.results[0].n,pagina:pag,por:por,itens:[]};if(tipo==="parceiros"){out.itens=lista.results.map(cadSaidaParceiro);const{results:results}=await env.DB.prepare("SELECT j.value AS tag, COUNT(*) AS n FROM parceiros p, json_each(p.tags) j GROUP BY j.value ORDER BY n DESC").all();const vistas=results.map(r=>({tag:r.tag,n:r.n}));for(const t of CAD_TAGS_PADRAO)if(!vistas.some(v=>v.tag===t))vistas.push({tag:t,n:0});out.tags=vistas}else{out.itens=lista.results.map(cadSaidaProduto);const ult=await cadUltimasCompras(env,out.itens.map(p=>p.id));out.itens.forEach(p=>p.ultima=ult[p.id]||null)}return json(out)}async function cadSalvar(env,request,u,tipo,id){let d;try{d=await lerJson(request,2e4)}catch{return json({erro:"Dados inválidos"},400)}const agora=Date.now();if(tipo==="parceiros"){const p=cadLimpaParceiro(d);if(!p.razao)return json({erro:"Informe a razão social ou o nome."},400);if(!p.tags.length)return json({erro:"Marque pelo menos uma tag (Cliente, Fornecedor…)."},400);const busca=cadBuscaParceiro(p);const vals=PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]);if(!id){const r=await env.DB.prepare(`INSERT INTO parceiros (${PARC_COLS.join(",")}, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PARC_COLS.map(()=>"?").join(",")},?,?,?,?,?)`).bind(...vals,busca,"sgo",agora,agora,u.login).run();const novo=await env.DB.prepare("SELECT * FROM parceiros WHERE id = ?").bind(r.meta.last_row_id).first();return json({item:cadSaidaParceiro(novo)},201)}const r=await env.DB.prepare(`UPDATE parceiros SET ${PARC_COLS.map(c=>c+" = ?").join(", ")}, busca = ?, atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ? AND versao = ?`).bind(...vals,busca,agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou este cadastro. Abra de novo para ver a versão atual."},409);return json({item:cadSaidaParceiro(await env.DB.prepare("SELECT * FROM parceiros WHERE id = ?").bind(id).first())})}const p=cadLimpaProduto(d);if(!p.codigo||!p.descricao)return json({erro:"Informe o código e a descrição."},400);const busca=cadBuscaProduto(p);const vals=PROD_COLS.map(c=>p[c]);try{if(!id){const r=await env.DB.prepare(`INSERT INTO produtos (${PROD_COLS.join(",")}, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PROD_COLS.map(()=>"?").join(",")},?,?,?,?,?)`).bind(...vals,busca,"sgo",agora,agora,u.login).run();return json({item:cadSaidaProduto(await env.DB.prepare("SELECT * FROM produtos WHERE id = ?").bind(r.meta.last_row_id).first())},201)}const r=await env.DB.prepare(`UPDATE produtos SET ${PROD_COLS.map(c=>c+" = ?").join(", ")}, busca = ?, atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ? AND versao = ?`).bind(...vals,busca,agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou este produto. Abra de novo para ver a versão atual."},409);return json({item:cadSaidaProduto(await env.DB.prepare("SELECT * FROM produtos WHERE id = ?").bind(id).first())})}catch(e){if(/UNIQUE/i.test(String(e&&e.message)))return json({erro:"Já existe um produto com o código "+p.codigo+"."},409);throw e}}async function cadImportar(env,request,u){let d;try{d=await lerJson(request,9e5)}catch{return json({erro:"Arquivo grande demais para um lote"},413)}const tipo=d.tipo==="produtos"?"produtos":"parceiros";if(!cadPode(u,tipo))return json({erro:"Sem permissão para importar "+(tipo==="produtos"?"produtos":"clientes e fornecedores")+"."},403);const linhas=Array.isArray(d.linhas)?d.linhas.slice(0,600):[];const agora=Date.now();let novos=0,atualizados=0,ignorados=0;const ops=[];if(tipo==="produtos"){const{results:results}=await env.DB.prepare("SELECT id, codigo FROM produtos").all();const porCod=new Map(results.map(r=>[r.codigo.toLowerCase(),r.id]));for(const l of linhas){const p=cadLimpaProduto(l);if(!p.codigo||!p.descricao){ignorados++;continue}const extra=JSON.stringify(l.extra||{});const busca=cadBuscaProduto(p);const ex=porCod.get(p.codigo.toLowerCase());if(ex){ops.push(env.DB.prepare(`UPDATE produtos SET ${PROD_COLS.filter(c=>c!=="custo").map(c=>c+" = ?").join(", ")}, custo = COALESCE(?, custo), extra = ?, busca = ?, origem = 'omie', atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ?`).bind(...PROD_COLS.filter(c=>c!=="custo").map(c=>p[c]),p.custo,extra,busca,agora,u.login,ex));atualizados++}else{ops.push(env.DB.prepare(`INSERT INTO produtos (${PROD_COLS.join(",")}, extra, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PROD_COLS.map(()=>"?").join(",")},?,?,'omie',?,?,?)`).bind(...PROD_COLS.map(c=>p[c]),extra,busca,agora,agora,u.login));porCod.set(p.codigo.toLowerCase(),-1);novos++}}}else{const{results:results}=await env.DB.prepare("SELECT id, documento, endereco, razao, tags FROM parceiros").all();const chave=(doc,end,raz)=>doc?doc+"|"+cadNorm(end):"s|"+cadNorm(raz);const mapa=new Map(results.map(r=>[chave(r.documento,r.endereco,r.razao),r]));for(const l of linhas){const p=cadLimpaParceiro(l);if(!p.razao){ignorados++;continue}const k=chave(p.documento,p.endereco,p.razao);const ex=mapa.get(k);const extra=JSON.stringify(l.extra||{});if(ex){let tagsAnt=[];try{tagsAnt=JSON.parse(ex.tags||"[]")}catch{}p.tags=cadTags(tagsAnt.concat(p.tags));const busca=cadBuscaParceiro(p);ops.push(env.DB.prepare(`UPDATE parceiros SET ${PARC_COLS.map(c=>c+" = ?").join(", ")}, extra = ?, busca = ?, origem = 'omie', atualizado_em = ?, atualizado_por = ?, versao = versao + 1 WHERE id = ?`).bind(...PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]),extra,busca,agora,u.login,ex.id));ex.tags=JSON.stringify(p.tags);atualizados++}else{const busca=cadBuscaParceiro(p);ops.push(env.DB.prepare(`INSERT INTO parceiros (${PARC_COLS.join(",")}, extra, busca, origem, criado_em, atualizado_em, atualizado_por) VALUES (${PARC_COLS.map(()=>"?").join(",")},?,?,'omie',?,?,?)`).bind(...PARC_COLS.map(c=>c==="tags"?JSON.stringify(p.tags):p[c]),extra,busca,agora,agora,u.login));mapa.set(k,{id:-1,tags:JSON.stringify(p.tags)});novos++}}}for(let i=0;i<ops.length;i+=80)await env.DB.batch(ops.slice(i,i+80));await env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"cadastros",tipo,null,`Importação Omie: ${novos} novos, ${atualizados} atualizados, ${ignorados} ignorados`).run();return json({ok:true,novos:novos,atualizados:atualizados,ignorados:ignorados})}async function cadRotas(request,env,url,u){const p=url.pathname,m=request.method;if(p==="/api/cadastros/busca"&&m==="GET")return cadBusca(env,url);if(p==="/api/cadastros/importar"&&m==="POST")return cadImportar(env,request,u);const r=p.match(/^\/api\/cadastros\/(parceiros|produtos)(?:\/(\d+))?$/);if(!r)return json({erro:"Não encontrado"},404);const tipo=r[1],id=r[2]?parseInt(r[2],10):null;if(m==="GET"&&id){const row=await env.DB.prepare(`SELECT * FROM ${tipo} WHERE id = ?`).bind(id).first();if(!row)return json({erro:"Não encontrado"},404);return json({item:tipo==="parceiros"?cadSaidaParceiro(row):cadSaidaProduto(row)})}if(!cadPode(u,tipo)&&!(m==="GET"&&u.permissoes.includes("op-compras")))return json({erro:"Sem permissão para esta área."},403);if(m==="GET")return cadListar(env,url,tipo);if(m==="POST"&&!id)return cadSalvar(env,request,u,tipo,null);if(m==="PUT"&&id)return cadSalvar(env,request,u,tipo,id);return json({erro:"Não encontrado"},404)}var COMPRAS_PERM="op-compras";var cmpPode=u=>ehAdmin(u)||u.permissoes.includes(COMPRAS_PERM);var cmpHoje=()=>isoDia(Date.now());function cmpAddUteis(iso,n){const[a,mm,dd]=iso.split("-").map(Number);const d=new Date(Date.UTC(a,mm-1,dd));let c=0;while(c<n){d.setUTCDate(d.getUTCDate()+1);const w=d.getUTCDay();if(w!==0&&w!==6)c++}return d.toISOString().slice(0,10)}var cmpQtd=q=>Math.max(1,parseInt(String(q==null?"":q).replace(/\D+/g,""),10)||1);async function cmpProxNum(env,tabela,pre,dig){const r=await env.DB.prepare(`SELECT MAX(CAST(substr(num, ${pre.length+2}) AS INTEGER)) AS n FROM ${tabela}`).first();return pre+"-"+String((r&&r.n||0)+1).padStart(dig||4,"0")}async function cmpCatalogo(env){const[p,v]=await env.DB.batch([env.DB.prepare("SELECT id, codigo, descricao, unidade, estoque, custo, preco_venda FROM produtos"),env.DB.prepare("SELECT chave, produto_id FROM compras_vinculos")]);const porId=new Map,porDesc=new Map,porCod=new Map;for(const r of p.results){porId.set(r.id,r);porDesc.set(cadNorm(r.descricao),r.id);porCod.set(String(r.codigo).toLowerCase(),r.id)}const vinc=new Map(v.results.map(r=>[r.chave,r.produto_id]));const resolver=nome=>{const n=cadNorm(nome);if(vinc.has(n)&&porId.has(vinc.get(n)))return vinc.get(n);if(porDesc.has(n))return porDesc.get(n);const m=String(nome||"").match(/\[(?:c[oó]d\.?\s*)?([^\]]{1,40})\]\s*$/i);if(m&&porCod.has(m[1].trim().toLowerCase()))return porCod.get(m[1].trim().toLowerCase());return null};return{porId:porId,resolver:resolver}}async function cmpCotacoesAbertas(env){const{results:results}=await env.DB.prepare("SELECT id, num, dados FROM compras_cotacoes WHERE status = 'aberta'").all();return results.map(r=>({id:r.id,num:r.num,dados:JSON.parse(r.dados)}))}async function cmpFila(env){const[osR,scR,cotR,pedR]=await env.DB.batch([env.DB.prepare("SELECT id, num, stage, dados, atualizado_em FROM ordens_servico WHERE stage < 7"),env.DB.prepare("SELECT * FROM compras_solicitacoes WHERE status IN ('aberto','cotacao','comprado') ORDER BY criado_em DESC LIMIT 300"),env.DB.prepare("SELECT id, num, status, dados, criado_em, atualizado_em FROM compras_cotacoes ORDER BY criado_em DESC LIMIT 60"),env.DB.prepare("SELECT * FROM compras_pedidos ORDER BY criado_em DESC LIMIT 60")]);const cat=await cmpCatalogo(env);const naCot=new Map;for(const c of cotR.results){if(c.status!=="aberta")continue;const d=JSON.parse(c.dados);for(const l of d.linhas||[])for(const o of l.origem||[])naCot.set(o.tipo==="os"?"os:"+o.os_id+":"+o.idx:"sc:"+o.id,c.num)}const prodInfo=pid=>{const p=pid?cat.porId.get(pid):null;return p?{id:p.id,codigo:p.codigo,descricao:p.descricao,unidade:p.unidade,estoque:p.estoque,custo:p.custo}:null};const origens=[];for(const r of osR.results){let d;try{d=JSON.parse(r.dados)}catch{continue}const stageOs=Number.isFinite(Number(d.stage))?Number(d.stage):Number(r.stage);if(!(stageOs>=1&&stageOs<=3))continue;const itens=[];(d.itens||[]).forEach((it,idx)=>{if(it.st!=="comprar"&&it.st!=="comprado")return;const k="os:"+r.id+":"+idx;const st=it.st==="comprado"?"comprado":naCot.has(k)?"cotacao":"aberto";itens.push({chave:k,idx:idx,qtd:cmpQtd(it.qtd),nome:it.nome,st:st,cot:naCot.get(k)||null,prev:it.prev||null,produto:prodInfo(cat.resolver(it.nome))})});if(!itens.length)continue;origens.push({tipo:"os",id:r.id,num:"OS "+r.num,cliente:d.cliente||"",cidade:d.cidade||"",agenda:d.agDate||d.agenda||"",desde:r.atualizado_em,osTipo:d.tipo,itens:itens})}for(const r of scR.results){const d=JSON.parse(r.dados);const k="sc:"+r.id;origens.push({tipo:"sc",id:r.id,num:r.num,cliente:d.titulo||"",solicitante:d.solicitante,setor:d.setor,motivo:d.motivo||"",precisa:d.precisa||"",urgente:!!d.urgente,desde:r.criado_em,destino:d.destino,itens:[{chave:k,qtd:d.qtd,nome:d.descricao,st:r.status==="comprado"?"comprado":naCot.has(k)?"cotacao":"aberto",cot:naCot.get(k)||null,prev:r.prev,produto:prodInfo(d.produto_id),un:d.unidade}]})}const cotacoes=cotR.results.map(c=>{const d=JSON.parse(c.dados);const resp=(d.forn||[]).map((f,i)=>(d.linhas||[]).filter(l=>cadNum((d.precos[l.k]||[])[i])!=null).length);return{id:c.id,num:c.num,status:c.status,criado_em:c.criado_em,empresa:d.empresa||"angela",origens:[...new Set((d.linhas||[]).flatMap(l=>(l.origem||[]).map(o=>o.num)))],produtos:(d.linhas||[]).length,forn:(d.forn||[]).map((f,i)=>({nome:f.nome,respondeu:resp[i]})),total:d.totalEscolha||null}});const pedidos=pedR.results.map(p=>Object.assign({},p,{dados:JSON.parse(p.dados)}));return json({hoje:cmpHoje(),origens:origens,cotacoes:cotacoes,pedidos:pedidos})}async function cmpCriarSC(env,request,u){let d;try{d=await lerJson(request,8e3)}catch{return json({erro:"Dados inválidos"},400)}const qtd=Math.round(cadNum(d.qtd)||0);if(!(qtd>0))return json({erro:"Informe a quantidade."},400);let prod=null;if(d.produto_id)prod=await env.DB.prepare("SELECT id, codigo, descricao, unidade FROM produtos WHERE id = ?").bind(parseInt(d.produto_id,10)).first();const descricao=prod?prod.descricao:cadTxt(d.descricao,160);if(!descricao)return json({erro:"Escolha o produto ou descreva o que comprar."},400);const solicitante=cadTxt(d.solicitante,80)||u.nome;let titulo="Reposição do estoque",os=null;if(d.destino==="interno")titulo="Uso interno · "+(cadTxt(d.setor,40)||"");else if(d.destino==="os"&&d.os_id){os=await env.DB.prepare("SELECT id, num, json_extract(dados,'$.cliente') AS cli FROM ordens_servico WHERE id = ?").bind(String(d.os_id)).first();if(os)titulo="Para a OS "+os.num+" · "+(os.cli||"")}const dados={produto_id:prod?prod.id:null,descricao:descricao,unidade:prod?prod.unidade:(cadTxt(d.unidade,6)||"UN").toUpperCase(),qtd:qtd,solicitante:solicitante,setor:cadTxt(d.setor,40),destino:os?"os":d.destino==="interno"?"interno":"estoque",os_id:os?os.id:null,os_num:os?os.num:null,titulo:titulo,precisa:/^\d{4}-\d{2}-\d{2}$/.test(d.precisa||"")?d.precisa:null,urgente:!!d.urgente,motivo:cadTxt(d.motivo,400)};const agora=Date.now();for(let t=0;t<3;t++){const num=await cmpProxNum(env,"compras_solicitacoes","SC");const id="sc-"+aleatorio(6);try{await env.DB.batch([env.DB.prepare("INSERT INTO compras_solicitacoes (id, num, status, dados, criado_em, criado_por, atualizado_em) VALUES (?,?,'aberto',?,?,?,?)").bind(id,num,JSON.stringify(dados),agora,u.login,agora),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,num,"Solicitação de compra: "+qtd+" "+descricao)]);return json({id:id,num:num},201)}catch(e){if(!/UNIQUE/i.test(String(e&&e.message)))throw e}}throw new Error("num")}async function cmpAcaoSC(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const novo=d.acao==="cancelar"?"cancelado":d.acao==="recebido"?"recebido":null;if(!novo)return json({erro:"Ação inválida"},400);const de=novo==="cancelado"?"('aberto')":"('comprado')";const r=await env.DB.prepare(`UPDATE compras_solicitacoes SET status = ?, atualizado_em = ? WHERE id = ? AND status IN ${de}`).bind(novo,Date.now(),id).run();if(!r.meta.changes)return json({erro:novo==="cancelado"?"Só dá para cancelar solicitação que ainda não entrou em cotação.":"Esta solicitação não está aguardando entrega."},409);return json({ok:true})}async function cmpVincular(env,request,u){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const chave=cadNorm(d.nome);const pid=parseInt(d.produto_id,10);if(!chave)return json({erro:"Dados inválidos"},400);if(!pid){await env.DB.prepare("DELETE FROM compras_vinculos WHERE chave = ?").bind(chave).run();return json({ok:true})}await env.DB.prepare("INSERT INTO compras_vinculos (chave, produto_id, atualizado_em) VALUES (?,?,?) ON CONFLICT(chave) DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = excluded.atualizado_em").bind(chave,pid,Date.now()).run();return json({ok:true})}async function cmpMontarCotacao(env,request,u){let d;try{d=await lerJson(request,3e4)}catch{return json({erro:"Dados inválidos"},400)}const chaves=Array.isArray(d.itens)?d.itens.slice(0,300).map(String):[];if(!chaves.length)return json({erro:"Selecione os itens."},400);const cat=await cmpCatalogo(env);const abertas=await cmpCotacoesAbertas(env);const ocupados=new Set;for(const c of abertas)for(const l of c.dados.linhas||[])for(const o of l.origem||[])ocupados.add(o.tipo==="os"?"os:"+o.os_id+":"+o.idx:"sc:"+o.id);const novos=[];const osCache=new Map;for(const k of chaves){if(ocupados.has(k))continue;let m=k.match(/^os:([A-Za-z0-9_-]+):(\d+)$/);if(m){if(!osCache.has(m[1]))osCache.set(m[1],await env.DB.prepare("SELECT id, num, dados FROM ordens_servico WHERE id = ?").bind(m[1]).first());const os=osCache.get(m[1]);if(!os)continue;const it=(JSON.parse(os.dados).itens||[])[+m[2]];if(!it||it.st!=="comprar")continue;novos.push({origem:{tipo:"os",os_id:os.id,num:"OS "+os.num,idx:+m[2],qtd:cmpQtd(it.qtd),nome:it.nome},produto_id:cat.resolver(it.nome),nome:it.nome,qtd:cmpQtd(it.qtd)});continue}m=k.match(/^sc:([A-Za-z0-9_-]+)$/);if(m){const sc=await env.DB.prepare("SELECT id, num, status, dados FROM compras_solicitacoes WHERE id = ?").bind(m[1]).first();if(!sc||sc.status!=="aberto")continue;const sd=JSON.parse(sc.dados);novos.push({origem:{tipo:"sc",id:sc.id,num:sc.num,qtd:sd.qtd,nome:sd.descricao},produto_id:sd.produto_id||null,nome:sd.descricao,qtd:sd.qtd,un:sd.unidade})}}if(!novos.length)return json({erro:"Esses itens já estão em cotação ou não estão mais marcados como “A comprar”."},409);const agora=Date.now();let cot=d.cot_id?abertas.find(c=>c.id===d.cot_id):null;let versao=1,num,id;if(cot){const row=await env.DB.prepare("SELECT versao FROM compras_cotacoes WHERE id = ?").bind(cot.id).first();versao=row.versao;num=cot.num;id=cot.id}const empOk=v=>{const x=String(v||"").toLowerCase();return x==="angela"||x==="belfer"||x==="ancora"?x:null};
+const dados=cot?cot.dados:{forn:[0,1,2].map(()=>({parceiro_id:null,nome:"",prazo:"",frete:"",pgto:"",validade:""})),linhas:[],precos:{},esc:{},imp:{},obs:"",empresa:empOk(d.empresa)||"angela"};
+if(cot&&!dados.empresa)dados.empresa="angela";let seq=dados.linhas.reduce((mx,l)=>Math.max(mx,parseInt(String(l.k).slice(1),10)||0),0);for(const n of novos){const chaveLinha=n.produto_id?"p"+n.produto_id:"t"+cadNorm(n.nome);let l=dados.linhas.find(x=>(x.produto_id?"p"+x.produto_id:"t"+cadNorm(x.nome))===chaveLinha);if(!l){const p=n.produto_id?cat.porId.get(n.produto_id):null;l={k:"L"+ ++seq,produto_id:n.produto_id||null,nome:p?p.descricao:n.nome,un:p?p.unidade:n.un||"UN",qtd:0,origem:[]};dados.linhas.push(l)}l.qtd+=n.qtd;l.origem.push(n.origem)}if(cot){const r=await env.DB.prepare("UPDATE compras_cotacoes SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(dados),agora,u.login,id,versao).run();if(!r.meta.changes)return json({erro:"A cotação foi alterada por outra pessoa. Tente de novo."},409)}else{for(let t=0;t<3;t++){num=await cmpProxNum(env,"compras_cotacoes","COT");id="cot-"+aleatorio(6);try{await env.DB.prepare("INSERT INTO compras_cotacoes (id, num, status, dados, versao, criado_em, criado_por, atualizado_em, atualizado_por) VALUES (?,?,'aberta',?,1,?,?,?,?)").bind(id,num,JSON.stringify(dados),agora,u.login,agora,u.login).run();break}catch(e){if(!/UNIQUE/i.test(String(e&&e.message)))throw e;num=null}}if(!num)throw new Error("num")}const scIds=novos.filter(n=>n.origem.tipo==="sc").map(n=>n.origem.id);const ops=scIds.map(sid=>env.DB.prepare("UPDATE compras_solicitacoes SET status = 'cotacao', cot_id = ?, atualizado_em = ? WHERE id = ?").bind(id,agora,sid));ops.push(env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,num,(cot?"Itens somados à cotação: ":"Cotação criada com ")+novos.length+" item(ns)"));await env.DB.batch(ops);return json({id:id,num:num,adicionados:novos.length,ignorados:chaves.length-novos.length})}async function cmpDetalheCotacao(env,id){const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);const dados=JSON.parse(c.dados);const ids=[...new Set(dados.linhas.map(l=>l.produto_id).filter(Boolean))];const prods={};if(ids.length){const{results:results}=await env.DB.prepare(`SELECT id, codigo, descricao, unidade, estoque, custo, preco_venda FROM produtos WHERE id IN (${ids.map(()=>"?").join(",")})`).bind(...ids).all();for(const r of results)prods[r.id]=r}const ult=await cadUltimasCompras(env,ids);const fids=(dados.forn||[]).map(f=>f.parceiro_id).filter(Boolean);let depara=[];if(fids.length){depara=(await env.DB.prepare(`SELECT fornecedor_id, chave, produto_id FROM compras_depara WHERE fornecedor_id IN (${fids.map(()=>"?").join(",")})`).bind(...fids).all()).results}const fornInfo={};if(fids.length){const{results:results}=await env.DB.prepare(`SELECT id, razao, fantasia, documento, email, telefone, contato FROM parceiros WHERE id IN (${fids.map(()=>"?").join(",")})`).bind(...fids).all();for(const r of results)fornInfo[r.id]=r}return json({id:c.id,num:c.num,status:c.status,versao:c.versao,criado_em:c.criado_em,criado_por:c.criado_por,dados:dados,produtos:prods,ultimas:ult,depara:depara,fornInfo:fornInfo,hoje:cmpHoje()})}async function cmpSalvarCotacao(env,request,u,id){let d;try{d=await lerJson(request,2e5)}catch{return json({erro:"Dados inválidos"},400)}const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);if(c.status!=="aberta")return json({erro:"Esta cotação já foi aprovada."},409);const atual=JSON.parse(c.dados),novo=d.dados||{};const f3=(novo.forn||atual.forn).slice(0,3).map(f=>({parceiro_id:f.parceiro_id?parseInt(f.parceiro_id,10):null,nome:cadTxt(f.nome,120)||"",prazo:cadTxt(f.prazo,6)||"",frete:cadTxt(f.frete,20)||"",pgto:cadTxt(f.pgto,60)||"",validade:cadTxt(f.validade,40)||""}));while(f3.length<3)f3.push({parceiro_id:null,nome:"",prazo:"",frete:"",pgto:"",validade:""});const ks=new Set(atual.linhas.map(l=>l.k));const precos={},esc={},imp={};for(const k of ks){const p=(novo.precos||{})[k];if(Array.isArray(p))precos[k]=[0,1,2].map(i=>cadTxt(p[i],20)||"");const e=(novo.esc||{})[k];if(e===0||e===1||e===2)esc[k]=e;for(const i of[0,1,2])if((novo.imp||{})[k+"_"+i])imp[k+"_"+i]=1}const linhas=atual.linhas.map(l=>{const nl=(novo.linhas||[]).find(x=>x.k===l.k);if(nl&&"produto_id"in nl){const pid=nl.produto_id?parseInt(nl.produto_id,10):null;if(pid!==l.produto_id)Object.assign(l,{produto_id:pid,nome:cadTxt(nl.nome,200)||l.nome,un:cadTxt(nl.un,6)||l.un})}return l});const empN=String(novo.empresa||atual.empresa||"angela").toLowerCase();
+const empresa=empN==="angela"||empN==="belfer"||empN==="ancora"?empN:"angela";
+const dados=Object.assign(atual,{forn:f3,precos:precos,esc:esc,imp:imp,linhas:linhas,obs:cadTxt(novo.obs,1e3)||"",totalEscolha:cadNum(novo.totalEscolha),empresa});const agora=Date.now();const r=await env.DB.prepare("UPDATE compras_cotacoes SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(dados),agora,u.login,id,parseInt(d.versao,10)||0).run();if(!r.meta.changes)return json({erro:"Outra pessoa alterou esta cotação. Atualizando…"},409);return json({ok:true,versao:(parseInt(d.versao,10)||0)+1})}async function cmpDepara(env,request,u){let d;try{d=await lerJson(request,5e4)}catch{return json({erro:"Dados inválidos"},400)}const fid=parseInt(d.fornecedor_id,10);if(!fid)return json({ok:true,salvos:0});const agora=Date.now();const ops=(Array.isArray(d.itens)?d.itens:[]).slice(0,300).filter(i=>i&&i.chave&&parseInt(i.produto_id,10)).map(i=>env.DB.prepare("INSERT INTO compras_depara (fornecedor_id, chave, produto_id, atualizado_em) VALUES (?,?,?,?) ON CONFLICT(fornecedor_id, chave) DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = excluded.atualizado_em").bind(fid,String(i.chave).slice(0,200),parseInt(i.produto_id,10),agora));if(ops.length)await env.DB.batch(ops);return json({ok:true,salvos:ops.length})}async function cmpAprovar(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{d={}}const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c)return json({erro:"Cotação não encontrada"},404);if(c.status!=="aberta")return json({erro:"Esta cotação já foi aprovada."},409);if(d.versao!=null&&parseInt(d.versao,10)!==c.versao)return json({erro:"A cotação mudou desde que você abriu. Atualizando…"},409);const dados=JSON.parse(c.dados);const escolha={};const semPreco=[];for(const l of dados.linhas){const pr=(dados.precos[l.k]||[]).map(cadNum);let e=dados.esc[l.k];if(e==null||pr[e]==null){e=null;pr.forEach((v,i)=>{if(v!=null&&(e==null||v<pr[e]))e=i})}if(e==null)semPreco.push(l.nome);else escolha[l.k]={i:e,preco:pr[e]}}if(semPreco.length)return json({erro:"Faltam preços em "+semPreco.length+" item(ns): "+semPreco.slice(0,3).join(", ")},400);for(const i of[0,1,2]){if(dados.linhas.some(l=>escolha[l.k].i===i)&&!String(dados.forn[i].nome||"").trim())return json({erro:"Informe o nome do Fornecedor "+"ABC"[i]+"."},400)}const hoje=cmpHoje(),agora=Date.now(),q=rotulo(agora);const pedidos=[],ops=[],prevPorLinha={};let base=await cmpProxNum(env,"compras_pedidos","PC");let nBase=parseInt(base.slice(3),10);for(const i of[0,1,2]){const ls=dados.linhas.filter(l=>escolha[l.k].i===i);if(!ls.length)continue;const f=dados.forn[i];const prazo=parseInt(f.prazo,10)||0;const prev=cmpAddUteis(hoje,prazo);const frete=cadNum(f.frete)||0;const itens=ls.map(l=>{prevPorLinha[l.k]={prev:prev,pedido:null,forn:f.nome};const preco=escolha[l.k].preco;return{k:l.k,produto_id:l.produto_id,nome:l.nome,un:l.un,qtd:l.qtd,preco:preco,total:Math.round(preco*l.qtd*100)/100,destinos:l.origem.map(o=>({num:o.num,qtd:o.qtd}))}});const total=Math.round((itens.reduce((s,x)=>s+x.total,0)+frete)*100)/100;const pid="pc-"+aleatorio(6),num="PC-"+String(nBase++).padStart(4,"0");ls.forEach(l=>prevPorLinha[l.k].pedido=num);const pd={fornecedor:f.nome,parceiro_id:f.parceiro_id,prazo:prazo,frete:frete,pgto:f.pgto,validade:f.validade,cot_num:c.num,empresa:dados.empresa||"angela",itens:itens,enviado:null};pedidos.push({id:pid,num:num,fornecedor:f.nome,total:total,prev:prev});ops.push(env.DB.prepare("INSERT INTO compras_pedidos (id, num, cot_id, fornecedor_id, status, prev, total, dados, criado_em, criado_por, atualizado_em) VALUES (?,?,?,?,'aguardando',?,?,?,?,?,?)").bind(pid,num,c.id,f.parceiro_id||null,prev,total,JSON.stringify(pd),agora,u.login,agora));for(const it of itens)if(it.produto_id)ops.push(env.DB.prepare("INSERT INTO compras_historico (produto_id, fornecedor_id, fornecedor_nome, preco, qtd, data, pedido_id) VALUES (?,?,?,?,?,?,?)").bind(it.produto_id,f.parceiro_id||null,f.nome,it.preco,it.qtd,hoje,pid))}dados.pedidos=pedidos.map(p=>p.num);const trava=await env.DB.prepare("UPDATE compras_cotacoes SET status = 'aprovada', dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ? AND status = 'aberta'").bind(JSON.stringify(dados),agora,u.login,c.id,c.versao).run();if(!trava.meta.changes)return json({erro:"A cotação mudou desde que você abriu. Atualizando…"},409);for(const l of dados.linhas)for(const o of l.origem)if(o.tipo==="sc")ops.push(env.DB.prepare("UPDATE compras_solicitacoes SET status = 'comprado', prev = ?, atualizado_em = ? WHERE id = ?").bind(prevPorLinha[l.k].prev,agora,o.id));ops.push(env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",c.id,c.num,"Cotação aprovada · pedidos "+dados.pedidos.join(", ")));await env.DB.batch(ops);const porOS=new Map;for(const l of dados.linhas)for(const o of l.origem)if(o.tipo==="os"){if(!porOS.has(o.os_id))porOS.set(o.os_id,[]);porOS.get(o.os_id).push({idx:o.idx,nome:o.nome,...prevPorLinha[l.k]})}const avisos=[];for(const[osId,its]of porOS){let ok=false;for(let t=0;t<4&&!ok;t++){const row=await env.DB.prepare("SELECT id, num, versao, dados FROM ordens_servico WHERE id = ?").bind(osId).first();if(!row)break;const od=JSON.parse(row.dados);let n=0;const peds=new Set;for(const x of its){const it=(od.itens||[])[x.idx];if(!it||it.nome!==x.nome||it.st!=="comprar"){avisos.push("OS "+row.num+": “"+x.nome+"” mudou na OS e não foi marcado como comprado");continue}od.itens[x.idx]=Object.assign({},it,{st:"comprado",prev:x.prev,pc:x.pedido});n++;peds.add(x.pedido+" ("+x.forn+", chega "+x.prev.slice(8,10)+"/"+x.prev.slice(5,7)+")")}if(!n){ok=true;break}od.hist=(od.hist||[]).concat([{quando:q,quem:u.nome,acao:"Compras: "+n+(n===1?" item comprado":" itens comprados")+" · pedido "+[...peds].join(", ")}]);const r=await env.DB.batch([env.DB.prepare("UPDATE ordens_servico SET dados = ?, versao = versao + 1, atualizado_em = ?, atualizado_por = ? WHERE id = ? AND versao = ?").bind(JSON.stringify(od),agora,u.login,osId,row.versao),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"os",osId,row.num,"Compras: "+n+" item(ns) comprado(s) · cotação "+c.num)]);ok=!!r[0].meta.changes}}return json({ok:true,pedidos:pedidos,avisos:avisos})}async function cmpCancelarCotacao(env,u,id){const c=await env.DB.prepare("SELECT * FROM compras_cotacoes WHERE id = ?").bind(id).first();if(!c||c.status!=="aberta")return json({erro:"Só dá para cancelar cotação aberta."},409);const agora=Date.now();await env.DB.batch([env.DB.prepare("UPDATE compras_cotacoes SET status = 'cancelada', atualizado_em = ?, atualizado_por = ? WHERE id = ?").bind(agora,u.login,id),env.DB.prepare("UPDATE compras_solicitacoes SET status = 'aberto', cot_id = NULL, atualizado_em = ? WHERE cot_id = ? AND status = 'cotacao'").bind(agora,id),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,c.num,"Cotação cancelada · itens voltaram para a fila")]);return json({ok:true})}async function cmpAcaoPedido(env,request,u,id){let d;try{d=await lerJson(request,2e3)}catch{return json({erro:"Dados inválidos"},400)}const novo=d.acao==="entregue"?"entregue":d.acao==="cancelar"?"cancelado":null;if(!novo)return json({erro:"Ação inválida"},400);const p=await env.DB.prepare("SELECT * FROM compras_pedidos WHERE id = ?").bind(id).first();if(!p||p.status!=="aguardando")return json({erro:"Este pedido não está aguardando entrega."},409);const agora=Date.now();const ops=[env.DB.prepare("UPDATE compras_pedidos SET status = ?, atualizado_em = ? WHERE id = ?").bind(novo,agora,id),env.DB.prepare("INSERT INTO auditoria (quando, email, colecao, doc_id, num, acao) VALUES (?,?,?,?,?,?)").bind(agora,u.login,"compras",id,p.num,novo==="entregue"?"Pedido entregue":"Pedido cancelado")];if(novo==="entregue"&&p.cot_id){const cot=await env.DB.prepare("SELECT dados FROM compras_cotacoes WHERE id = ?").bind(p.cot_id).first();const pd=JSON.parse(p.dados);const ks=new Set((pd.itens||[]).map(i=>i.k));if(cot)for(const l of JSON.parse(cot.dados).linhas||[])if(ks.has(l.k))for(const o of l.origem)if(o.tipo==="sc")ops.push(env.DB.prepare("UPDATE compras_solicitacoes SET status = 'recebido', atualizado_em = ? WHERE id = ? AND status = 'comprado'").bind(agora,o.id))}await env.DB.batch(ops);return json({ok:true})}async function cmpRotas(request,env,url,u){if(!cmpPode(u))return json({erro:"Sem permissão para esta área."},403);const p=url.pathname,m=request.method;if(p==="/api/compras/fila"&&m==="GET")return cmpFila(env);if(p==="/api/compras/solicitacoes"&&m==="POST")return cmpCriarSC(env,request,u);let r=p.match(/^\/api\/compras\/solicitacoes\/([A-Za-z0-9_-]+)$/);if(r&&m==="PUT")return cmpAcaoSC(env,request,u,r[1]);if(p==="/api/compras/vincular"&&m==="POST")return cmpVincular(env,request,u);if(p==="/api/compras/depara"&&m==="POST")return cmpDepara(env,request,u);if(p==="/api/compras/cotacoes"&&m==="POST")return cmpMontarCotacao(env,request,u);r=p.match(/^\/api\/compras\/cotacoes\/([A-Za-z0-9_-]+)(?:\/(aprovar|cancelar))?$/);if(r){if(!r[2]&&m==="GET")return cmpDetalheCotacao(env,r[1]);if(!r[2]&&m==="PUT")return cmpSalvarCotacao(env,request,u,r[1]);if(r[2]==="aprovar"&&m==="POST")return cmpAprovar(env,request,u,r[1]);if(r[2]==="cancelar"&&m==="POST")return cmpCancelarCotacao(env,u,r[1])}r=p.match(/^\/api\/compras\/pedidos\/([A-Za-z0-9_-]+)$/);if(r&&m==="PUT")return cmpAcaoPedido2(env,request,u,r[1]);return json({erro:"Não encontrado"},404)}async function telaR2(env,nome){const obj=env.FOTOS?await env.FOTOS.get("telas/"+nome+".html"):null;if(!obj)return new Response("Tela ainda não enviada.",{status:404,headers:{"content-type":"text/plain; charset=utf-8",...SEG}});return new Response(obj.body,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache",...SEG}})}
 // ===== Orçamento de postos (Comercial) =====
 var POSTO_PERM = "com-postos";
-var postoPode = (u) => ehAdmin(u) || u.permissoes.includes(POSTO_PERM);
+var postoPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, POSTO_PERM) : podeVer(u, POSTO_PERM));
 var postoAno = () => new Date(Date.now() - 3 * 3600e3).getUTCFullYear();
 function postoSaida(r, completo) {
   const o = { id: r.id, num: r.num, parceiro_id: r.parceiro_id, cliente: r.cliente, valor_mensal: r.valor_mensal, qtd: r.qtd, total: r.total, versao: r.versao, criado_em: r.criado_em, criado_por: r.criado_por, atualizado_em: r.atualizado_em, atualizado_por: r.atualizado_por };
@@ -3130,7 +3361,7 @@ async function postoRotas(request, env, url, u) {
 
 // ===== Orçamentos de produtos (Comercial) e Levantamentos técnicos (L.T.) =====
 var ORC_PERM = "com-orc";
-var orcPode = (u) => ehAdmin(u) || u.permissoes.includes(ORC_PERM);
+var orcPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, ORC_PERM) : podeVer(u, ORC_PERM));
 var orcAno = () => new Date(Date.now() - 3 * 3600e3).getUTCFullYear();
 var orcHoje = () => new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
 var orcR2 = (v) => Math.round((+v || 0) * 100) / 100;
@@ -3296,15 +3527,43 @@ async function orcMontar(env, d) {
   });
   const mensalTotal = orcR2(servicos.reduce((s, i) => s + i.total, 0));
   const prazoMeses = Math.min(240, Math.max(0, parseInt(Ms.prazo_meses, 10) || 0));
+  const Cs = D.comodato && typeof D.comodato === "object" ? D.comodato : {};
+  const cAtivo = !!Cs.ativo;
+  let comodato = null;
+  if (cAtivo) {
+    if (!itens.length) return { erro: "Comodato exige produtos/serviços de execução no orçamento (base do valor)." };
+    const pctMes = Math.min(100, Math.max(0, +String(Cs.pct_mes).replace(",", ".") || 0));
+    const meses = Math.min(240, Math.max(1, parseInt(Cs.meses, 10) || 0));
+    const pctDep = Math.min(100, Math.max(0, +String(Cs.pct_depreciacao).replace(",", ".") || 0));
+    if (!(pctMes >= 1)) return { erro: "A porcentagem ao mês do comodato não pode ser menor que 1%." };
+    if (!(pctDep >= 10)) return { erro: "A depreciação do comodato não pode ser menor que 10%." };
+    if (!(meses > 0)) return { erro: "Informe a quantidade de meses do contrato de comodato." };
+    const taxa = orcR2(total * (pctMes / 100) * meses);
+    const parcela = Math.ceil((total + taxa) / meses);
+    const mensalidade = Math.round(parcela * (1 + pctDep / 100));
+    comodato = {
+      ativo: true,
+      pct_mes: pctMes,
+      meses,
+      pct_depreciacao: pctDep,
+      valor_base: total,
+      taxa,
+      parcela,
+      mensalidade,
+      empresa: "angela",
+    };
+  }
   const cliente = { razao: p.razao, fantasia: p.fantasia, documento: p.documento, tipo_pessoa: p.tipo_pessoa, endereco: p.endereco, bairro: p.bairro, cidade: p.cidade, uf: p.uf, cep: p.cep, telefone: p.telefone, email: p.email, contato: p.contato, ie: p.ie };
   const dados = {
     cliente, itens, subtotal, desconto: descGeral, total,
     validade: /^\d{4}-\d{2}-\d{2}$/.test(D.validade || "") ? D.validade : "",
     pagamento: cadTxt(D.pagamento, 200) || "", prazo: cadTxt(D.prazo, 200) || "", garantia: cadTxt(D.garantia, 200) || "",
     obs: String(D.obs || "").slice(0, 3000), ocultarItens: !!D.ocultarItens, ocultarTotal: !!D.ocultarTotal, ref: cadTxt(D.ref, 160) || "",
-    mensal: mAtivo ? { ativo: true, itens: servicos, total: mensalTotal, prazo_meses: prazoMeses || null, inicio: cadTxt(Ms.inicio, 200) || "" } : null
+    mensal: mAtivo ? { ativo: true, itens: servicos, total: mensalTotal, prazo_meses: prazoMeses || null, inicio: cadTxt(Ms.inicio, 200) || "" } : null,
+    comodato,
+    empresaDoc: comodato ? "angela" : (cadTxt(D.empresaDoc, 20) || null)
   };
-  return { pid, nome: p.fantasia || p.razao, dados, total, itens, mensal: mAtivo ? mensalTotal : 0 };
+  return { pid, nome: p.fantasia || p.razao, dados, total, itens, mensal: mAtivo ? mensalTotal : (comodato ? comodato.mensalidade : 0) };
 }
 async function orcVincular(env, itens) {
   const agora = Date.now();
@@ -3461,6 +3720,8 @@ async function orcRotas(request, env, url, u) {
       const itens = (d.itens || []).filter((i) => i.tipo !== "servico").map((i) => ({ qtd: (Math.round(i.qtd) || 1) + "x", nome: (String(i.descricao || "") + (i.obs ? " (" + i.obs + ")" : "")).slice(0, 120), st: "pendente", prev: "" }));
       const svs = d.mensal && d.mensal.itens ? d.mensal.itens : [];
       const txtMensal = svs.length ? "Serviço mensal: " + svs.map((s) => (s.qtd > 1 ? (Math.round(s.qtd) || 1) + "x " : "") + s.descricao).join(", ") + (d.mensal.prazo_meses ? " · contrato de " + d.mensal.prazo_meses + " meses" : "") : "";
+      const comOd = d.comodato && d.comodato.ativo ? d.comodato : null;
+      const txtComodato = comOd ? "Comodato Angela · " + (comOd.meses || "?") + " meses · mensalidade " + Number(comOd.mensalidade || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "";
       if (!itens.length) svs.forEach((s) => itens.push({ qtd: (Math.round(s.qtd) || 1) + "x", nome: (s.descricao + " (serviço mensal" + (s.obs ? " · " + s.obs : "") + ")").slice(0, 120), st: "pendente", prev: "" }));
       const cid = d.cliente && d.cliente.cidade ? String(d.cliente.cidade).replace(/\s*\([A-Z]{2}\)\s*$/, "") : "";
       let os = null;
@@ -3468,11 +3729,12 @@ async function orcRotas(request, env, url, u) {
         const num = await proximoNumero(env, "os"), oid = "os-" + aleatorio(6);
         const dados = {
           id: oid, num, tipo: "pedido", sub: null, orc: atual.num, cliente: atual.cliente, cidade: cid || "—",
-          obs: "Orçamento " + atual.num + " aprovado · autorizado por " + por + (txtMensal ? ". " + txtMensal : "") + (d.obs ? ". " + String(d.obs).slice(0, 300) : ""),
-          servico: ((d.itens || []).length ? "Instalação" : "Ativação do serviço mensal") + " conforme orçamento " + atual.num, stage: 0, agenda: "A agendar", tecnico: null, pending: null, itens,
-          hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir do orçamento " + atual.num + " (Comercial · enviado ao pedido · autorizado por " + por + (docMeta ? " · documento " + docMeta.nome : "") + ")" }],
+          obs: "Orçamento " + atual.num + " aprovado · autorizado por " + por + (txtMensal ? ". " + txtMensal : "") + (txtComodato ? ". " + txtComodato : "") + (d.obs ? ". " + String(d.obs).slice(0, 300) : ""),
+          servico: ((d.itens || []).length ? "Instalação" : "Ativação do serviço mensal") + " conforme orçamento " + atual.num + (comOd ? " · comodato Angela" : ""), stage: 0, agenda: "A agendar", tecnico: null, pending: null, itens,
+          hist: [{ quando: q, quem: u.nome, acao: "OS aberta a partir do orçamento " + atual.num + " (Comercial · enviado ao pedido · autorizado por " + por + (docMeta ? " · documento " + docMeta.nome : "") + ")" + (comOd ? " · comodato Angela" : "") }],
           orcamento: { id: atual.id, num: atual.num }, autorizacao, servicosOrc: orcServicos(d), produtosOrc: orcProdutos(d).itens, descontoProd: orcProdutos(d).desconto
         };
+        if (comOd) { dados.comodato = comOd; dados.omieEmpresa = "angela"; }
         try {
           await env.DB.batch([
             env.DB.prepare("INSERT INTO ordens_servico (id, num, stage, dados, versao, atualizado_em, atualizado_por) VALUES (?,?,0,?,1,?,?)").bind(oid, num, JSON.stringify(dados), agora, u.login),
@@ -3516,7 +3778,7 @@ async function orcRotas(request, env, url, u) {
 
 // ---- Cadastro de serviços mensais (monitoramento, rastreamento…) usados nos orçamentos
 var SVC_PERM = "cad-servicos";
-var svcPode = (u) => ehAdmin(u) || u.permissoes.includes(SVC_PERM);
+var svcPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, SVC_PERM) : podeVer(u, SVC_PERM));
 var SVC_COLS = ["codigo", "descricao", "categoria", "unidade", "preco_venda", "custo", "situacao", "obs"];
 function svcLimpa(d) {
   return {
@@ -3542,7 +3804,7 @@ async function svcRotas(request, env, url, u) {
     const { results } = await env.DB.prepare("SELECT * FROM servicos " + (cond.length ? "WHERE " + cond.join(" AND ") : "") + " ORDER BY descricao COLLATE NOCASE LIMIT 500").bind(...args).all();
     return json({ total: results.length, pagina: 1, por: 500, itens: results });
   }
-  if (!svcPode(u)) return json({ erro: "Sem permissão para alterar os serviços mensais." }, 403);
+  if (!svcPode(u, true)) return json({ erro: "Sem permissão para alterar os serviços mensais." }, 403);
   if (!((m === "POST" && !id) || (m === "PUT" && id))) return json({ erro: "Não encontrado" }, 404);
   let d; try { d = await lerJson(request, 2e4); } catch { return json({ erro: "Dados inválidos" }, 400); }
   const s = svcLimpa(d), agora = Date.now();
@@ -4138,8 +4400,8 @@ async function cmpSyncDaOS(env, os, email) {
 
 // ===== Mão de obra (Cadastros) e Tabela de preços (Comercial) · v21 =====
 var MO_PERM = "cad-maoobra";
-var moPode = (u) => ehAdmin(u) || u.permissoes.includes(MO_PERM);
-var precosPode = (u) => ehAdmin(u) || u.permissoes.includes("com-precos");
+var moPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, MO_PERM) : podeVer(u, MO_PERM));
+var precosPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, "com-precos") : podeVer(u, "com-precos"));
 var MO_COLS = ["codigo", "descricao", "categoria", "unidade", "preco_venda", "custo", "situacao", "obs"];
 function moLimpa(d) {
   return {
@@ -4165,7 +4427,7 @@ async function moRotas(request, env, url, u) {
     const { results } = await env.DB.prepare("SELECT * FROM mao_obra " + (cond.length ? "WHERE " + cond.join(" AND ") : "") + " ORDER BY codigo LIMIT 500").bind(...args).all();
     return json({ total: results.length, pagina: 1, por: 500, itens: results });
   }
-  if (!moPode(u)) return json({ erro: "Sem permissão para alterar a mão de obra." }, 403);
+  if (!moPode(u, true)) return json({ erro: "Sem permissão para alterar a mão de obra." }, 403);
   if (!((m === "POST" && !id) || (m === "PUT" && id))) return json({ erro: "Não encontrado" }, 404);
   let d; try { d = await lerJson(request, 2e4); } catch { return json({ erro: "Dados inválidos" }, 400); }
   const s = moLimpa(d), agora = Date.now();
@@ -4199,14 +4461,14 @@ async function precosRotas(request, env, url, u) {
   const sel = (t) => "SELECT id, codigo, descricao, categoria, unidade, preco_venda, " + (custo ? "custo, " : "") + "obs, atualizado_em FROM " + t + " WHERE situacao = 'Ativo' ORDER BY " + (t === "mao_obra" ? "codigo" : "categoria IS NULL, categoria COLLATE NOCASE, descricao COLLATE NOCASE");
   const [a, b] = await env.DB.batch([env.DB.prepare(sel("servicos")), env.DB.prepare(sel("mao_obra"))]);
   const ult = Math.max(0, ...a.results.map((x) => x.atualizado_em || 0), ...b.results.map((x) => x.atualizado_em || 0));
-  return json({ servicos: a.results, maoobra: b.results, verCusto: custo, atualizado: ult || null, podeEditar: { servicos: svcPode(u), maoobra: moPode(u) } });
+  return json({ servicos: a.results, maoobra: b.results, verCusto: custo, atualizado: ult || null, podeEditar: { servicos: svcPode(u, true), maoobra: moPode(u, true) } });
 }
 
 // ===== Equipes técnicas (Assistência Técnica) · v22 =====
 // A equipe tem um nome, um técnico principal e 1 ou mais técnicos (usuários com perfil Técnico).
 // A OS enviada para a equipe vai para o App do Técnico do principal.
 var EQ_PERM = "at-equipes";
-var eqPode = (u) => ehAdmin(u) || u.permissoes.includes(EQ_PERM);
+var eqPode = (u, write) => ehAdmin(u) || (write ? podeUsar(u, EQ_PERM) : podeVer(u, EQ_PERM));
 function eqIds(v) {
   let l = v;
   if (typeof l === "string") { try { l = JSON.parse(l); } catch { l = []; } }
@@ -4307,7 +4569,7 @@ function relOsMin(c) {
 }
 async function relatoriosOsRotas(request, env, url, u) {
   if (url.pathname !== "/api/relatorios/os" || request.method !== "GET") return json({ erro: "Não encontrado" }, 404);
-  if (!(ehAdmin(u) || u.permissoes.includes(RELOS_PERM))) return json({ erro: "Sem permissão para os relatórios de OS." }, 403);
+  if (!(ehAdmin(u) || podeVer(u, RELOS_PERM))) return json({ erro: "Sem permissão para os relatórios de OS." }, 403);
   const dia = /^\d{4}-\d{2}-\d{2}$/;
   let de = url.searchParams.get("de") || "", ate = url.searchParams.get("ate") || "";
   if (!dia.test(de) || !dia.test(ate) || de > ate) return json({ erro: "Período inválido." }, 400);
@@ -4401,9 +4663,12 @@ var REGRAS = [
   [/^\/(telas\/leads|api\/leads)(\/|\.html|$)/, ["com-leads"]]
 ];
 var TECNICO_LIVRE = /^\/(app(\.html)?|app-sw\.js|tecnico\/.*|img\/.*|api\/eu(\/senha)?|api\/tecnico\/.*)$/;
-function podeAcessar(u, caminho) {
+function podeAcessar(u, caminho, metodo) {
+  const write = metodo && !/^(GET|HEAD|OPTIONS)$/i.test(metodo);
   for (const [re, itens] of REGRAS) {
-    if (re.test(caminho)) return itens.some((i) => u.permissoes.includes(i));
+    if (!re.test(caminho)) continue;
+    if (write) return podeUsarAlgum(u, itens);
+    return itens.some((i) => podeVer(u, i));
   }
   return true;
 }
@@ -4621,13 +4886,35 @@ var worker_default = {
       if (caminho.startsWith("/api/")) return json({ erro: "Sem permiss\xE3o para esta \xE1rea." }, 403);
       return Response.redirect(url.origin + "/app", 302);
     }
-    if (!podeAcessar(u, caminho)) {
-      if (caminho.startsWith("/api/")) return json({ erro: "Sem permiss\xE3o para esta \xE1rea." }, 403);
+    if (!podeAcessar(u, caminho, request.method)) {
+      if (caminho.startsWith("/api/")) {
+        return json({
+          erro: /^(GET|HEAD)$/i.test(request.method)
+            ? "Sem permiss\xE3o para esta \xE1rea."
+            : "Seu acesso \xE9 s\xF3 consulta nesta \xE1rea. Pe\xE7a libera\xE7\xE3o de uso ao administrador.",
+        }, 403);
+      }
       if (caminho.startsWith("/telas/") || caminho.startsWith("/views/")) return new Response("Sem permiss\xE3o", { status: 403 });
     }
     if (caminho === "/api/eu") {
       const extra = u.perfil === "tecnico" ? { "set-cookie": cookieSessao(cookie(request, COOKIE), duracao(u.perfil) / 1e3) } : {};
-      return json({ id: u.id, login: u.login, nome: u.nome, perfil: u.perfil, admin: ehAdmin(u), setor: u.setor_id, setor_nome: u.setor_nome, equipe: u.equipe || null, permissoes: u.permissoes }, 200, extra);
+      return json({
+        id: u.id,
+        login: u.login,
+        nome: u.nome,
+        perfil: u.perfil,
+        admin: ehAdmin(u),
+        setor: u.setor_id,
+        setor_nome: u.setor_nome,
+        setores: u.setores || [],
+        equipe: u.equipe || null,
+        permissoes: u.permissoes,
+        permissoes_detalhe: u.permissoes_detalhe || [],
+        permissoes_nivel: u.permissoes_nivel || {},
+        os_transicoes: u.os_transicoes || [],
+        os_papeis: papeisOsDoUsuario(u),
+        modo_consulta: false,
+      }, 200, extra);
     }
     if (caminho === "/api/eu/senha" && request.method === "POST") return trocarSenha(request, env, u);
     if (caminho === "/api/menu") {
@@ -4862,7 +5149,7 @@ var worker_default = {
       }
     }
     if (caminho.startsWith("/api/")) {
-      const r = await rotaDocs(request, env, url, u.login);
+      const r = await rotaDocs(request, env, url, u);
       if (r) return r;
       return json({ erro: "N\xE3o encontrado" }, 404);
     }

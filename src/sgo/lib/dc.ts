@@ -294,7 +294,13 @@ export function useTelaDc(montar: Montar, eu: SgoEu | null): Estado {
         return;
       }
       gravando[id] = true;
-      apiDc("PUT", "/api/" + cfg.colecao + "/" + id, { versao: ver[id] || 0, dados: doc })
+      apiDc("PUT", "/api/" + cfg.colecao + "/" + id, {
+        versao: ver[id] || 0,
+        dados: doc,
+        ...(cfg.colecao === "os"
+          ? { papel_os: String((ref.current.n?.state?.role as string) || "") }
+          : {}),
+      })
         .then((r) => {
           if (r.__status === 200) {
             ver[id] = r.versao as number;

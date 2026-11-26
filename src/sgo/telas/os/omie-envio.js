@@ -159,13 +159,17 @@ if (typeof window !== "undefined") {
     return h;
   }
 
+  function empresaOmie(c) {
+    if ((c.comodato && c.comodato.ativo) || String(c.omieEmpresa || "").toLowerCase() === "angela") return "Angela";
+    return "Belfer";
+  }
   function abrir(c) {
     css();
-    var M = maoDeObra(c), mo = M.valor;
+    var M = maoDeObra(c), mo = M.valor, emp = empresaOmie(c);
     var jaFoi = c.faturamento && c.faturamento.status === "enviado";
     var st = { modo: (jaFoi && c.faturamento.modo) || "normal", prods: null, desconto: 0, err: "", carregando: true, enviando: false };
     var f = document.createElement("div"); f.className = "om-f";
-    f.innerHTML = '<div class="om-m" role="dialog" aria-modal="true" aria-labelledby="om-tt"><div class="om-t"><div><div class="k">OS ' + esc(c.num) + ' · Belfer · coluna Faturar</div><h2 id="om-tt">Enviar para a Omie</h2><p>Produto vai para Vendas, passo 3. Serviço vai para Serviços, passo 3.</p></div><button type="button" class="om-x" aria-label="Fechar">×</button></div><div class="om-c" id="om-c"></div><div class="om-a"><button type="button" class="om-b" data-x>Cancelar</button><button type="button" class="om-b y" id="om-ok" disabled>Enviar para a coluna Faturar</button></div></div>';
+    f.innerHTML = '<div class="om-m" role="dialog" aria-modal="true" aria-labelledby="om-tt"><div class="om-t"><div><div class="k">OS ' + esc(c.num) + " · " + esc(emp) + ' · coluna Faturar</div><h2 id="om-tt">Enviar para a Omie</h2><p>Produto vai para Vendas, passo 3. Serviço vai para Serviços, passo 3.' + (emp === "Angela" ? " Comodato: faturamento na Angela." : "") + '</p></div><button type="button" class="om-x" aria-label="Fechar">×</button></div><div class="om-c" id="om-c"></div><div class="om-a"><button type="button" class="om-b" data-x>Cancelar</button><button type="button" class="om-b y" id="om-ok" disabled>Enviar para a coluna Faturar</button></div></div>';
     document.body.appendChild(f);
     function fechar() { f.remove(); document.removeEventListener("keydown", tecla); }
     function tecla(e) { if (e.key === "Escape") fechar(); }
@@ -181,8 +185,9 @@ if (typeof window !== "undefined") {
       var r = montar(st.modo, c, prods);
       var h = st.err ? '<div class="om-err" role="alert">' + esc(st.err) + "</div>" : "";
       if (M.semFech) h += '<div class="om-warn">Esta OS foi finalizada sem a tela de fechamento. A mão de obra veio do orçamento; confira antes de enviar.</div>';
-      if (c.faturamento && c.faturamento.status === "enviado") h += '<div class="om-warn">Enviar de novo apaga o pedido e a OS de serviço na Belfer e cria outros. Se o anterior já foi apagado na Omie, só o novo é criado. Documento já faturado não pode ser substituído.</div>';
+      if (c.faturamento && c.faturamento.status === "enviado") h += '<div class="om-warn">Enviar de novo apaga o pedido e a OS de serviço na ' + esc(emp) + ' e cria outros. Se o anterior já foi apagado na Omie, só o novo é criado. Documento já faturado não pode ser substituído.</div>';
       else if (c.faturamento) h += '<div class="om-warn">O clique anterior só guardou o plano nesta OS. A Omie não recebeu. O modo Separado manda o produto para Vendas e a mão de obra para Serviços.</div>';
+      if (emp === "Angela") h += '<div class="om-ok">Esta OS é de comodato: o envio vai para a empresa Angela na Omie.</div>';
       h += '<div class="om-base"><div><small>Produtos</small><b>' + brl(totProd) + '</b><div class="om-d">' + prods.length + (prods.length === 1 ? " item" : " itens") + (st.desconto ? " · desconto de " + brl(st.desconto) + " já aplicado" : "") + '</div></div><div><small>Mão de obra (serviço)</small><b>' + brl(mo) + '</b><div class="om-d">' + esc(M.fonte) + '</div></div><div><small>Total da OS</small><b>' + brl(totProd + mo) + "</b></div></div>";
       h += '<div class="om-h">Como faturar</div><div class="om-modos" role="radiogroup" aria-label="Como faturar">' + MODOS.map(function (m) {
         var off = m.id === "diluir" && (!prods.length || !(mo > 0));
@@ -194,7 +199,7 @@ if (typeof window !== "undefined") {
       if (Math.abs(r.total - (totProd + mo)) > 0.009) h += '<div class="om-err">O total faturado não bate com o total da OS. Confira os valores antes de enviar.</div>';
       c0.innerHTML = h;
       ok.disabled = st.enviando || !(r.total > 0);
-      ok.textContent = st.enviando ? "Enviando para a Belfer…" : "Enviar para a coluna Faturar";
+      ok.textContent = st.enviando ? ("Enviando para a " + emp + "…") : "Enviar para a coluna Faturar";
       Array.prototype.forEach.call(f.querySelectorAll('input[name="om-modo"]'), function (i) { i.onchange = function () { st.modo = i.value; st.err = ""; desenhar(); var n = f.querySelector('input[name="om-modo"]:checked'); if (n) n.focus(); }; });
       st.ultimo = r;
     }
@@ -204,7 +209,7 @@ if (typeof window !== "undefined") {
       if (!r || !T || st.enviando) return;
       st.enviando = true;
       ok.disabled = true;
-      ok.textContent = "Enviando para a Belfer…";
+      ok.textContent = "Enviando para a " + emp + "…";
       var quem = (window.EU && EU.nome) || "Assistência";
       var jaEnviado = c.faturamento && c.faturamento.status === "enviado";
       fetch("/api/os/faturar-omie", {
@@ -222,10 +227,10 @@ if (typeof window !== "undefined") {
         T.patch(c.id, function (o) {
           return Object.assign({}, o, {
             faturamento: fat,
-            hist: (o.hist || []).concat([{ quando: fat.quandoTxt || agoraTxt(), quem: quem + " (Assistência)", acao: "Enviado para a coluna Faturar da Belfer · " + (partes.join(" · ") || NOME[r.modo]) }])
+            hist: (o.hist || []).concat([{ quando: fat.quandoTxt || agoraTxt(), quem: quem + " (Assistência)", acao: "Enviado para a coluna Faturar da " + emp + " · " + (partes.join(" · ") || NOME[r.modo]) }])
           });
         });
-        if (T.showToast) T.showToast("ok", "OS " + c.num + " na coluna Faturar · " + (partes.join(" · ") || brl(r.total)));
+        if (T.showToast) T.showToast("ok", "OS " + c.num + " na coluna Faturar (" + emp + ") · " + (partes.join(" · ") || brl(r.total)));
         fechar();
       }).catch(function (e) {
         st.enviando = false;
@@ -267,7 +272,7 @@ if (typeof window !== "undefined") {
       resumo = "Na coluna Faturar · " + [ped, osv].filter(Boolean).join(" · ");
     } else if (fa) resumo = "Ainda não foi para a Omie · " + (NOME[fa.modo] || fa.modo);
     var row = document.createElement("div"); row.className = "om-row"; row.dataset.k = chave;
-    row.innerHTML = '<div style="flex:1;min-width:160px"><div class="om-lbl">Faturamento · Omie · Belfer</div><div class="om-st">' +
+    row.innerHTML = '<div style="flex:1;min-width:160px"><div class="om-lbl">Faturamento · Omie · ' + esc(empresaOmie(c)) + '</div><div class="om-st">' +
       esc(resumo) +
       '</div></div><button type="button" class="om-btn">' + (fa && fa.status === "enviado" ? "Enviar de novo" : "Enviar para Omie") + "</button>";
     row.querySelector(".om-btn").onclick = function () { var k = cardAberto(); if (k) abrir(k); };

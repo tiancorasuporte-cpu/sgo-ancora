@@ -16,10 +16,9 @@ import {
   type ReactNode,
 } from "react";
 
-import { api, avisar, esc, type EntradaMenu, type GrupoMenu, type ItemMenu, type SgoEu } from "@/sgo/lib/api";
-import { ICONES, ROTAS } from "@/sgo/lib/rotas";
+import { api, avisar, esc, nivelPerm, type EntradaMenu, type GrupoMenu, type ItemMenu, type SgoEu } from "@/sgo/lib/api";
+import { ICONES, PERMISSAO_DA_ROTA, ROTAS } from "@/sgo/lib/rotas";
 import { BUSCA_POR_ROTA, ROTA_DO_ITEM_BASE } from "@/sgo/lib/telas";
-import { PERMISSAO_DA_ROTA } from "@/sgo/lib/rotas";
 import moduloUsuarios from "@/sgo/telas/usuarios/modulo.js?raw";
 import moduloVoip from "@/sgo/telas/voip/modulo.js?raw";
 
@@ -159,6 +158,12 @@ export function SgoShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.body.classList.toggle("menu-mini", mini);
   }, [mini]);
+  useEffect(() => {
+    const item = PERMISSAO_DA_ROTA[caminho];
+    const consulta = !!eu && !eu.admin && !!item && nivelPerm(eu, item) === "ver";
+    document.body.classList.toggle("modo-consulta", consulta);
+    return () => document.body.classList.remove("modo-consulta");
+  }, [eu, caminho]);
 
   const carregarContadores = useCallback(() => {
     fetch("/api/contadores", { credentials: "same-origin" })
@@ -180,7 +185,7 @@ export function SgoShell({ children }: { children: ReactNode }) {
     ] as const) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-implied-eval
-        new Function(codigo + "\n//# sourceURL=sgo-modulo-" + nome + ".js")();
+        new Function(codigo + "\n//# sourceURL=sgo-modulo-" + nome + ".js?v=perm2")();
       } catch (e) {
         console.error("[sgo] módulo " + nome, e);
       }
@@ -494,6 +499,9 @@ export function SgoShell({ children }: { children: ReactNode }) {
               <h1 id="page-title">{titulo.t}</h1>
               <span className="sub" id="page-sub">
                 {titulo.s}
+                {eu && !eu.admin && PERMISSAO_DA_ROTA[caminho] && nivelPerm(eu, PERMISSAO_DA_ROTA[caminho]) === "ver"
+                  ? " · só consulta"
+                  : ""}
               </span>
             </div>
             {temBusca ? (

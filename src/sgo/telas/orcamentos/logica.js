@@ -151,18 +151,21 @@ function converter(id,bt){
   }).catch(function(e){toast(e.message);if(bt)bt.disabled=false})}
 
 /* ===================== EDITOR ===================== */
-function novoE(){return{id:null,num:null,versao:0,status:"salvo",os_num:null,lt:null,cli:null,cliSug:[],itens:[],desconto:0,validade:hojeISO(15),pagamento:"",prazo:"",garantia:"",obs:"",ref:"",ocultarItens:false,ocultarTotal:false,criado_nome:"",criado_em:null,mensal:novoM(),op:null,base:""}}
+function novoE(){return{id:null,num:null,versao:0,status:"salvo",os_num:null,lt:null,cli:null,cliSug:[],itens:[],desconto:0,validade:hojeISO(15),pagamento:"",prazo:"",garantia:"",obs:"",ref:"",ocultarItens:false,ocultarTotal:false,criado_nome:"",criado_em:null,mensal:novoM(),comodato:novoC(),empresaDoc:"ancora",op:null,base:""}}
 function novoM(){return{ativo:false,itens:[],prazo_meses:"",inicio:""}}
-function edDe(it){var D=it.dados||{},c=D.cliente||{};
+function novoC(){return{ativo:false,pct_mes:"1,5",meses:"36",pct_depreciacao:"20"}}
+function edDe(it){var D=it.dados||{},c=D.cliente||{},Co=D.comodato&&D.comodato.ativo?D.comodato:null;
   return{id:it.id,num:it.num,versao:it.versao,status:it.status,os_num:it.os_num,criado_nome:it.criado_nome,criado_em:it.criado_em,
     lt:it.lt_num?{id:it.lt_id,num:it.lt_num}:null,cliSug:[],op:it.op_id?{id:it.op_id,cod:it.op_cod||""}:null,
     cli:{id:it.parceiro_id,razao:c.razao,fantasia:c.fantasia,documento:c.documento,endereco:c.endereco,bairro:c.bairro,cidade:c.cidade,uf:c.uf,cep:c.cep,telefone:c.telefone,email:c.email,contato:c.contato,ie:c.ie},
     itens:(D.itens||[]).map(function(i){return{tipo:i.tipo==="servico"?"servico":undefined,mo_id:i.mo_id,produto_id:i.produto_id,codigo:i.codigo,descricao:i.descricao,unidade:i.unidade,qtd:i.qtd,preco:i.preco,desc:i.desc||0,obs:i.obs||"",lt_nome:i.lt_nome}}),
     autorizacao:D.autorizacao&&D.autorizacao.por?D.autorizacao:null,
     desconto:D.desconto||0,validade:D.validade||"",pagamento:D.pagamento||"",prazo:D.prazo||"",garantia:D.garantia||"",obs:D.obs||"",ref:D.ref||"",ocultarItens:!!D.ocultarItens,ocultarTotal:!!D.ocultarTotal,
-    mensal:D.mensal&&D.mensal.ativo?{ativo:true,itens:(D.mensal.itens||[]).map(function(i){return{servico_id:i.servico_id,codigo:i.codigo,descricao:i.descricao,unidade:i.unidade,qtd:i.qtd,preco:i.preco,desc:i.desc||0,obs:i.obs||""}}),prazo_meses:D.mensal.prazo_meses||"",inicio:D.mensal.inicio||""}:novoM(),base:""}}
-function snap(E){return JSON.stringify({c:E.cli&&E.cli.id,i:E.itens.map(function(i){return[i.tipo==="servico"?"s"+i.mo_id:i.produto_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),d:r2(num(E.desconto)),v:E.validade,p:E.pagamento,z:E.prazo,g:E.garantia,o:E.obs,r:E.ref,oi:E.ocultarItens,ot:E.ocultarTotal,m:E.mensal.ativo?[E.mensal.itens.map(function(i){return[i.servico_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),String(E.mensal.prazo_meses||""),E.mensal.inicio]:0})}
-function sujo(){var E=S.E;if(!E||E.os_num)return false;return E.id?snap(E)!==E.base:!!(E.itens.length||E.cli||E.mensal.itens.length)}
+    mensal:D.mensal&&D.mensal.ativo?{ativo:true,itens:(D.mensal.itens||[]).map(function(i){return{servico_id:i.servico_id,codigo:i.codigo,descricao:i.descricao,unidade:i.unidade,qtd:i.qtd,preco:i.preco,desc:i.desc||0,obs:i.obs||""}}),prazo_meses:D.mensal.prazo_meses||"",inicio:D.mensal.inicio||""}:novoM(),
+    comodato:Co?{ativo:true,pct_mes:n2(Math.max(1,num(Co.pct_mes)||1)),meses:String(Co.meses||""),pct_depreciacao:n2(Math.max(10,num(Co.pct_depreciacao)||10))}:novoC(),
+    empresaDoc:Co?"angela":(D.empresaDoc||"ancora"),base:""}}
+function snap(E){return JSON.stringify({c:E.cli&&E.cli.id,i:E.itens.map(function(i){return[i.tipo==="servico"?"s"+i.mo_id:i.produto_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),d:r2(num(E.desconto)),v:E.validade,p:E.pagamento,z:E.prazo,g:E.garantia,o:E.obs,r:E.ref,oi:E.ocultarItens,ot:E.ocultarTotal,m:E.mensal.ativo?[E.mensal.itens.map(function(i){return[i.servico_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),String(E.mensal.prazo_meses||""),E.mensal.inicio]:0,co:E.comodato&&E.comodato.ativo?[String(E.comodato.pct_mes||""),String(E.comodato.meses||""),String(E.comodato.pct_depreciacao||"")]:0})}
+function sujo(){var E=S.E;if(!E||E.os_num)return false;return E.id?snap(E)!==E.base:!!(E.itens.length||E.cli||E.mensal.itens.length||(E.comodato&&E.comodato.ativo))}
 function sairEditor(){return!sujo()||confirm("Há alterações não salvas neste orçamento. Sair mesmo assim?")}
 function abrirOrc(id){if(S.E&&S.E.id!==id&&!sairEditor())return;api("GET","/api/orcamentos/"+id).then(function(d){var E=edDe(d.item);E.base=snap(E);S.E=E;desenhar();window.scrollTo(0,0)}).catch(function(e){toast(e.message)})}
 function duplicar(it){var E=edDe(it);E.id=null;E.num=null;E.versao=0;E.status="salvo";E.os_num=null;E.lt=null;E.criado_nome="";E.criado_em=null;E.validade=hojeISO(15);E.base="";S.E=E;desenhar();window.scrollTo(0,0);toast("Cópia de "+it.num+": confira e clique em Salvar para gerar o número novo.",5000)}
@@ -173,8 +176,23 @@ function faltaProd(i){return!ehSvc(i)&&!i.produto_id}
 function ordenar(E){var p=E.itens.filter(function(i){return!ehSvc(i)}),s=E.itens.filter(ehSvc);E.itens=p.concat(s)}
 function carregarMO(){if(S.mos)return Promise.resolve(S.mos);return api("GET","/api/cadastros/maoobra").then(function(d){S.mos=(d.itens||[]).filter(function(m){return m.situacao!=="Inativo"});return S.mos})}
 function calcM(E){var t=0;E.mensal.itens.forEach(function(i){i._t=r2(num(i.qtd)*num(i.preco)*(1-Math.min(100,Math.max(0,num(i.desc)))/100));t+=i._t});return E.mensal.ativo?r2(t):0}
+/** Comodato: taxa = valor×%×meses; parcela = ceil((valor+taxa)/meses); mensalidade = round(parcela×(1+dep%)). */
+function calcC(E){
+  var C=E.comodato||novoC();
+  if(!C.ativo)return{valor:0,taxa:0,parcela:0,mensalidade:0,meses:0,pct:0,dep:0};
+  var valor=calc(E).total,pct=Math.min(100,Math.max(1,num(C.pct_mes)||1)),meses=Math.min(240,Math.max(0,parseInt(String(C.meses).replace(/\D+/g,""),10)||0)),dep=Math.min(100,Math.max(10,num(C.pct_depreciacao)||10));
+  if(!meses)return{valor:valor,taxa:0,parcela:0,mensalidade:0,meses:0,pct:pct,dep:dep};
+  var taxa=r2(valor*(pct/100)*meses),parcela=Math.ceil((valor+taxa)/meses),mensalidade=Math.round(parcela*(1+dep/100));
+  return{valor:valor,taxa:taxa,parcela:parcela,mensalidade:mensalidade,meses:meses,pct:pct,dep:dep};
+}
 function carregarSvcs(){if(S.svcs)return Promise.resolve(S.svcs);return api("GET","/api/cadastros/servicos").then(function(d){S.svcs=d.itens||[];return S.svcs})}
-function barraTot(E){var T=calc(E),M=calcM(E);return E.mensal.ativo?(E.itens.length?brl(T.total)+' <span class="tm">+ '+brl(M)+"/mês</span>":'<span class="tm" style="font:inherit;color:#FFD200">'+brl(M)+"/mês</span>"):brl(T.total)}
+function barraTot(E){
+  var T=calc(E),M=calcM(E),C=calcC(E),parts=[];
+  if(E.itens.length||(!E.mensal.ativo&&!(E.comodato&&E.comodato.ativo)))parts.push(brl(T.total));
+  if(E.mensal.ativo)parts.push('<span class="tm"'+(E.itens.length?"":' style="font:inherit;color:#FFD200"')+">"+brl(M)+"/mês</span>");
+  if(E.comodato&&E.comodato.ativo)parts.push('<span class="tm"'+(parts.length?"":' style="font:inherit;color:#FFD200"')+">comodato "+brl(C.mensalidade)+"/mês</span>");
+  return parts.join(" + ")||brl(0);
+}
 function travado(){return!!(S.E&&S.E.os_num)}
 
 function desenharEditor(){
@@ -214,6 +232,22 @@ function desenharEditor(){
     h+='<div class="tw"><table class="tbl itens"><thead><tr><th style="width:36px">#</th><th>Serviço</th><th>Un.</th><th class="r">Qtd</th><th class="r">Valor mensal unit.</th><th class="r">Desc. %</th><th class="r">Total mensal</th>'+(tv?"":'<th class="r"></th>')+'</tr></thead><tbody id="m-body">'+linhasM()+"</tbody></table></div>";
     h+='<div class="tot"><div class="tot-box m-tot"><div class="tot-l g"><span>Valor mensal</span><span id="m-tot">'+brl(calcM(E))+"</span></div></div></div>";
     h+='<div class="grid2" style="margin-top:14px"><div class="f"><label class="flabel" for="m-prazo">Prazo contratual (meses)</label><input class="field" id="m-prazo" inputmode="numeric" value="'+esc(M.prazo_meses)+'" placeholder="Ex.: 36"'+dis0+'></div><div class="f" style="grid-column:span 3"><label class="flabel" for="m-ini">Início da cobrança (opcional)</label><input class="field" id="m-ini" value="'+esc(M.inicio)+'" placeholder="Ex.: a partir da ativação do sistema"'+dis0+"></div></div>";
+    h+="</div>";
+  }
+  h+="</section>";
+  // comodato
+  var C=E.comodato||novoC(),CC=calcC(E);
+  h+='<section class="card m-card c-card'+(C.ativo?" on":"")+'"><div class="card-h"><label class="m-flag"><input type="checkbox" id="c-ativo"'+(C.ativo?" checked":"")+dis0+'><span>Comodato</span></label><span class="dica">'+(C.ativo?"Empresa Angela · mensalidade calculada sobre o total do orçamento":"Marque para gerar contrato de comodato (OS e faturamento na Angela)")+"</span></div>";
+  if(C.ativo){
+    h+='<div class="card-b"><div class="aviso azul" style="margin-bottom:12px">Base: <b>'+brl(CC.valor)+'</b> (total dos produtos/serviços). Fórmula: <b>% a.m. × meses × valor</b> = taxa · (<b>valor + taxa</b>) ÷ meses (arred. p/ cima) · + % depreciação (arred.).</div>';
+    h+='<div class="grid2"><div class="f"><label class="flabel" for="c-pct">Porcentagem ao mês (%) · mín. 1%</label><input class="field" id="c-pct" inputmode="decimal" value="'+esc(C.pct_mes)+'" placeholder="Ex.: 1,5" min="1"'+dis0+'></div>';
+    h+='<div class="f"><label class="flabel" for="c-meses">Meses do contrato</label><input class="field" id="c-meses" inputmode="numeric" value="'+esc(C.meses)+'" placeholder="Ex.: 36"'+dis0+'></div>';
+    h+='<div class="f"><label class="flabel" for="c-dep">Depreciação (%) · mín. 10%</label><input class="field" id="c-dep" inputmode="decimal" value="'+esc(C.pct_depreciacao)+'" placeholder="Ex.: 20" min="10"'+dis0+"></div></div>";
+    h+='<div class="tot" style="margin-top:14px"><div class="tot-box m-tot" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">';
+    h+='<div class="tot-l"><span>Taxa do período</span><b id="c-taxa">'+brl(CC.taxa)+'</b></div>';
+    h+='<div class="tot-l"><span>Parcela base</span><b id="c-parc">'+brl(CC.parcela)+'</b></div>';
+    h+='<div class="tot-l g"><span>Mensalidade comodato</span><span id="c-men">'+brl(CC.mensalidade)+"</span></div></div></div>";
+    if(CC.meses)h+='<div class="dica" style="margin-top:10px" id="c-resumo">'+esc(n2(CC.pct))+"% × "+CC.meses+" × "+brl(CC.valor)+" = "+brl(CC.taxa)+" · ("+brl(CC.valor)+" + "+brl(CC.taxa)+") ÷ "+CC.meses+" = "+brl(CC.parcela)+" · + "+esc(n2(CC.dep))+"% = "+brl(CC.mensalidade)+"/mês</div>";
     h+="</div>";
   }
   h+="</section>";
@@ -266,7 +300,7 @@ function linhasItens(){
       :(i.lt_nome&&norm(i.lt_nome)!==norm(i.descricao)?'<div class="lt-orig">L.T.: '+esc(i.lt_nome)+(tv?"":' · <button class="lnk" type="button" data-trocar="'+k+'" style="all:unset;cursor:pointer;text-decoration:underline">trocar produto</button>')+"</div>":"")+'<div class="prod-d">'+esc(i.descricao)+'</div><div class="prod-c">Cód. '+esc(i.codigo)+"</div>";
     prod+=tv?(i.obs?'<div class="sub">'+esc(i.obs)+"</div>":""):'<input class="obs-in" data-obs="'+k+'" value="'+esc(i.obs)+'" placeholder="Complemento (opcional) · ex.: Portão social" aria-label="Complemento do item '+(k+1)+'">';
     return'<tr class="'+(falta?"falta":"")+(sv?" sv-row":"")+'"><td>'+(k+1)+"</td><td>"+prod+"</td><td>"+esc(i.unidade||"")+'</td><td class="q"><input class="num" data-q="'+k+'" inputmode="decimal" value="'+qtdTxt(i.qtd)+'" aria-label="Quantidade item '+(k+1)+'"'+dis+'></td><td class="p"><input class="num" data-p="'+k+'" inputmode="decimal" value="'+n2(i.preco)+'" aria-label="Preço item '+(k+1)+'"'+dis+'></td><td class="d"><input class="num" data-d="'+k+'" inputmode="decimal" value="'+(i.desc?n2(i.desc):"")+'" placeholder="0" aria-label="Desconto % item '+(k+1)+'"'+dis+'></td><td class="r" style="white-space:nowrap;font-weight:700" data-t="'+k+'">'+brl(r2(num(i.qtd)*num(i.preco)*(1-num(i.desc)/100)))+"</td>"+(tv?"":'<td class="r" style="white-space:nowrap"><button class="ico" type="button" data-up="'+k+'" aria-label="Subir item '+(k+1)+'"'+(k===0||ehSvc(E.itens[k-1])!==sv?" disabled":"")+'>↑</button> <button class="ico" type="button" data-dn="'+k+'" aria-label="Descer item '+(k+1)+'"'+(k===E.itens.length-1||ehSvc(E.itens[k+1])!==sv?" disabled":"")+'>↓</button> <button class="ico del" type="button" data-rm="'+k+'" aria-label="Remover item '+(k+1)+'">✕</button></td>')+"</tr>"}).join("")}
-function totais(){var E=S.E,T=calc(E),M=calcM(E);$("#t-sub").textContent=brl(T.sub);var tp=$("#t-pr"),ts=$("#t-sv");if(tp){tp.textContent=brl(T.pr);ts.textContent=brl(T.sv);$$(".sv-l").forEach(function(x){x.hidden=!T.sv})}$("#t-tot").textContent=brl(T.total);$("#b-tot").innerHTML=barraTot(E);E.itens.forEach(function(i,k){var c=$('[data-t="'+k+'"]');if(c)c.textContent=brl(i._t)});var mt=$("#m-tot");if(mt)mt.textContent=brl(M);E.mensal.itens.forEach(function(i,k){var c=$('[data-mt="'+k+'"]');if(c)c.textContent=brl(i._t)});marcar()}
+function totais(){var E=S.E,T=calc(E),M=calcM(E),C=calcC(E);$("#t-sub").textContent=brl(T.sub);var tp=$("#t-pr"),ts=$("#t-sv");if(tp){tp.textContent=brl(T.pr);ts.textContent=brl(T.sv);$$(".sv-l").forEach(function(x){x.hidden=!T.sv})}$("#t-tot").textContent=brl(T.total);$("#b-tot").innerHTML=barraTot(E);E.itens.forEach(function(i,k){var c=$('[data-t="'+k+'"]');if(c)c.textContent=brl(i._t)});var mt=$("#m-tot");if(mt)mt.textContent=brl(M);E.mensal.itens.forEach(function(i,k){var c=$('[data-mt="'+k+'"]');if(c)c.textContent=brl(i._t)});var ct=$("#c-taxa"),cp=$("#c-parc"),cm=$("#c-men"),cr=$("#c-resumo");if(ct)ct.textContent=brl(C.taxa);if(cp)cp.textContent=brl(C.parcela);if(cm)cm.textContent=brl(C.mensalidade);if(cr&&C.meses)cr.textContent=n2(C.pct)+"% × "+C.meses+" × "+brl(C.valor)+" = "+brl(C.taxa)+" · ("+brl(C.valor)+" + "+brl(C.taxa)+") ÷ "+C.meses+" = "+brl(C.parcela)+" · + "+n2(C.dep)+"% = "+brl(C.mensalidade)+"/mês";marcar()}
 function marcar(){var E=S.E,el=$("#b-st");if(!el)return;var falta=E.itens.filter(faltaProd).length;
   el.textContent=E.os_num?"Enviado ao pedido · OS "+E.os_num:!E.id?"Ainda não salvo"+(falta?" · "+falta+" item(ns) sem produto":""):sujo()?"Alterações não salvas"+(falta?" · "+falta+" item(ns) sem produto":""):"Salvo";
   var bs=$("#bt-salvar");if(bs)bs.disabled=!!(E.id&&!sujo())}
@@ -296,6 +330,10 @@ function ligarEditor(){
   var mad=$("#m-add");if(mad)mad.onchange=function(){var v=(S.svcs||[]).find(function(x){return String(x.id)===mad.value});if(!v)return;E.mensal.itens.push({servico_id:v.id,codigo:v.codigo,descricao:v.descricao,unidade:v.unidade||"MÊS",qtd:1,preco:+v.preco_venda||0,desc:0,obs:""});desenharEditor();toast("Adicionado: "+v.descricao,2200);var s=$("#m-add");if(s)s.focus()};
   var mpz=$("#m-prazo");if(mpz)mpz.oninput=function(){E.mensal.prazo_meses=mpz.value.replace(/\D+/g,"").slice(0,3);marcar()};
   var mini=$("#m-ini");if(mini)mini.oninput=function(){E.mensal.inicio=mini.value;marcar()};
+  var ca=$("#c-ativo");if(ca)ca.onchange=function(){E.comodato.ativo=ca.checked;if(ca.checked)E.empresaDoc="angela";desenharEditor()};
+  var cpct=$("#c-pct");if(cpct){cpct.oninput=function(){E.comodato.pct_mes=cpct.value;totais()};cpct.onblur=function(){E.comodato.pct_mes=n2(Math.max(1,num(cpct.value)||1));cpct.value=E.comodato.pct_mes;totais()}};
+  var cmes=$("#c-meses");if(cmes)cmes.oninput=function(){E.comodato.meses=cmes.value.replace(/\D+/g,"").slice(0,3);totais()};
+  var cdep=$("#c-dep");if(cdep){cdep.oninput=function(){E.comodato.pct_depreciacao=cdep.value;totais()};cdep.onblur=function(){E.comodato.pct_depreciacao=n2(Math.max(10,num(cdep.value)||10));cdep.value=E.comodato.pct_depreciacao;totais()}};
   var td=$("#t-desc");if(td){td.oninput=function(){E.desconto=num(td.value);totais()};td.onblur=function(){td.value=E.desconto?n2(E.desconto):""}}
   [["c-val","validade"],["c-pag","pagamento"],["c-pra","prazo"],["c-gar","garantia"],["c-ref","ref"],["c-obs","obs"]].forEach(function(x){var el=$("#"+x[0]);el.oninput=el.onchange=function(){E[x[1]]=el.value;marcar()}});
   $("#o-itens").onchange=function(){E.ocultarItens=this.checked;marcar()};
@@ -312,25 +350,53 @@ function carregarListaSilenciosa(){api("GET","/api/orcamentos").then(function(d)
 function salvar(){
   var E=S.E,er=$("#e-erro");er.textContent="";
   if(!E.cli||!E.cli.id){er.textContent="Escolha o cliente no cadastro antes de salvar.";var c=$("#cli-busca");if(c)c.focus();return}
-  var M=E.mensal;
+  var M=E.mensal,C=E.comodato||novoC();
   if(M.ativo&&!M.itens.length){er.textContent="Inclua pelo menos um serviço mensal ou desmarque “Incluir serviço mensal”.";var ms=$("#m-add");if(ms)ms.focus();return}
+  if(C.ativo&&!E.itens.length){er.textContent="Comodato exige produtos/serviços de execução (base do valor).";$("#add-prod").focus();return}
+  if(C.ativo&&!(num(C.pct_mes)>=1)){er.textContent="A porcentagem ao mês do comodato não pode ser menor que 1%.";var xp=$("#c-pct");if(xp)xp.focus();return}
+  if(C.ativo&&!(num(C.pct_depreciacao)>=10)){er.textContent="A depreciação do comodato não pode ser menor que 10%.";var xd=$("#c-dep");if(xd)xd.focus();return}
+  if(C.ativo&&!(parseInt(String(C.meses).replace(/\D+/g,""),10)>0)){er.textContent="Informe a quantidade de meses do contrato de comodato.";var xm=$("#c-meses");if(xm)xm.focus();return}
   if(!E.itens.length&&!M.ativo){er.textContent="Inclua pelo menos um produto ou serviço (ou marque “Incluir serviço mensal”).";$("#add-prod").focus();return}
   ordenar(E);var falta=E.itens.findIndex(faltaProd);
   if(falta>=0){er.textContent="Escolha o produto do cadastro em todas as linhas (falta na linha "+(falta+1)+").";var x=$('[data-escolher="'+falta+'"]');if(x)x.focus();return}
   var zero=E.itens.filter(function(i){return!num(i.preco)}).length+(M.ativo?M.itens.filter(function(i){return!num(i.preco)}).length:0);
   if(zero&&!confirm(zero+(zero===1?" item está":" itens estão")+" com preço zero. Salvar mesmo assim?"))return;
-  var body={parceiro_id:E.cli.id,lt_id:!E.id&&E.lt?E.lt.id:undefined,op_id:!E.id&&E.op?E.op.id:undefined,versao:E.versao,dados:{itens:E.itens.map(function(i){return ehSvc(i)?{tipo:"servico",mo_id:i.mo_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs}:{produto_id:i.produto_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs,lt_nome:i.lt_nome}}),desconto:num(E.desconto),validade:E.validade,pagamento:E.pagamento,prazo:E.prazo,garantia:E.garantia,obs:E.obs,ref:E.ref,ocultarItens:E.ocultarItens,ocultarTotal:E.ocultarTotal,mensal:M.ativo?{ativo:true,itens:M.itens.map(function(i){return{servico_id:i.servico_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs}}),prazo_meses:parseInt(M.prazo_meses,10)||null,inicio:M.inicio}:null}};
+  if(C.ativo)E.empresaDoc="angela";
+  var CC=calcC(E);
+  var body={parceiro_id:E.cli.id,lt_id:!E.id&&E.lt?E.lt.id:undefined,op_id:!E.id&&E.op?E.op.id:undefined,versao:E.versao,dados:{itens:E.itens.map(function(i){return ehSvc(i)?{tipo:"servico",mo_id:i.mo_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs}:{produto_id:i.produto_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs,lt_nome:i.lt_nome}}),desconto:num(E.desconto),validade:E.validade,pagamento:E.pagamento,prazo:E.prazo,garantia:E.garantia,obs:E.obs,ref:E.ref,ocultarItens:E.ocultarItens,ocultarTotal:E.ocultarTotal,empresaDoc:E.empresaDoc||null,mensal:M.ativo?{ativo:true,itens:M.itens.map(function(i){return{servico_id:i.servico_id,qtd:num(i.qtd),preco:num(i.preco),desc:num(i.desc),obs:i.obs}}),prazo_meses:parseInt(M.prazo_meses,10)||null,inicio:M.inicio}:null,comodato:C.ativo?{ativo:true,pct_mes:CC.pct,meses:CC.meses,pct_depreciacao:CC.dep,valor_base:CC.valor,taxa:CC.taxa,parcela:CC.parcela,mensalidade:CC.mensalidade,empresa:"angela"}:null}};
   var bs=$("#bt-salvar");bs.disabled=true;
   api(E.id?"PUT":"POST",E.id?"/api/orcamentos/"+E.id:"/api/orcamentos",body).then(function(d){var n=edDe(d.item);n.base=snap(n);var novo=!E.id;S.E=n;desenhar();toast((novo?"Salvo como "+n.num:"Alterações salvas")+(n.op?" · oportunidade "+(n.op.cod||"")+" atualizada.":"."));return carregar().then(function(){S.E=n;desenhar()})})
   .catch(function(e){er.textContent=e.message;bs.disabled=false})}
 
 /* ===================== DOCUMENTO ===================== */
 var LOGO="";(function(){var i=new Image();i.onload=function(){try{var c=document.createElement("canvas");c.width=i.naturalWidth*2;c.height=i.naturalHeight*2;var x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.drawImage(i,0,0,c.width,c.height);LOGO=c.toDataURL("image/jpeg",.92)}catch(e){}};i.src="/img/logo-ancora.png"})();
-function docDados(E){var c=E.cli||{},T=calc(E),Mt=calcM(E),M=E.mensal.ativo?{itens:E.mensal.itens,total:Mt,prazo:E.mensal.prazo_meses,inicio:E.mensal.inicio}:null;return{M:M,num:E.num||"(rascunho — não salvo)",emissao:E.criado_em?new Date(E.criado_em).toLocaleDateString("pt-BR"):new Date().toLocaleDateString("pt-BR"),validade:dataBR(E.validade),resp:E.criado_nome||"",c:c,itens:E.itens,T:T,oi:E.ocultarItens,ot:E.ocultarTotal,cond:[["Validade da proposta",dataBR(E.validade)],["Forma de pagamento",E.pagamento],["Prazo de execução",E.prazo],["Garantia",E.garantia]].concat(M&&M.prazo?[["Prazo contratual",M.prazo+" meses"]]:[]).concat(M&&M.inicio?[["Início da cobrança mensal",M.inicio]]:[]).filter(function(x){return x[1]}),ref:E.ref,obs:E.obs}}
+/** Fallback (Omie); atualizado em runtime por /api/orcamentos/empresas-doc. */
+var EMPRESAS_DOC=[
+  {id:"ancora",label:"Âncora",nome:"ANCORA SEGURANCA LTDA",nomePdf:"ANCORA SEGURANCA LTDA",cnpj:"07.836.724/0001-19",fantasia:"ANCORA SEGURANCA PATRIMONIAL",email:"atendimento@ancoraseguranca.com.br"},
+  {id:"angela",label:"Angela",nome:"ANGELA EQUIPAM ELETRONICOS E SERVIÇOS DE MONITORAMENTO LTDA",nomePdf:"ANGELA EQUIPAM ELETRONICOS E SERVIÇOS DE MONITORAMENTO LTDA",cnpj:"08.009.975/0001-92",fantasia:"ANGELA SERVIÇOS DIVERSOS",email:"atendimento@ancoraseguranca.com.br"},
+  {id:"belfer",label:"Belfer",nome:"AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",nomePdf:"AUTOMACAO E SEGURANCA ELETRONICA BELFER LTDA",cnpj:"15.699.646/0001-86",fantasia:"ANCORA AUTOMACAO E SEGURANCA ELETRONICA",email:"atendimento@ancoraseguranca.com.br"}
+];
+var EMPRESAS_DOC_OK=false;
+function empDoc(id){return EMPRESAS_DOC.find(function(e){return e.id===id})||EMPRESAS_DOC[0]}
+function carregarEmpresasDoc(){
+  if(EMPRESAS_DOC_OK)return Promise.resolve();
+  return api("GET","/api/orcamentos/empresas-doc").then(function(d){
+    var lista=d&&d.empresas;if(!Array.isArray(lista)||!lista.length)return;
+    EMPRESAS_DOC=lista.map(function(e){return{id:e.id,label:e.label,nome:e.nome,nomePdf:e.nomePdf||String(e.nome||"").toUpperCase(),cnpj:e.cnpj||"",fantasia:e.fantasia||"",email:e.email||"atendimento@ancoraseguranca.com.br"}});
+    EMPRESAS_DOC_OK=true;
+  }).catch(function(){});
+}
+function docDados(E){
+  if(E.comodato&&E.comodato.ativo)E.empresaDoc="angela";
+  var c=E.cli||{},T=calc(E),Mt=calcM(E),M=E.mensal.ativo?{itens:E.mensal.itens,total:Mt,prazo:E.mensal.prazo_meses,inicio:E.mensal.inicio}:null,CC=calcC(E),Co=E.comodato&&E.comodato.ativo?CC:null,emp=empDoc(E.empresaDoc);
+  var cond=[["Validade da proposta",dataBR(E.validade)],["Forma de pagamento",E.pagamento],["Prazo de execução",E.prazo],["Garantia",E.garantia]].concat(M&&M.prazo?[["Prazo contratual",M.prazo+" meses"]]:[]).concat(M&&M.inicio?[["Início da cobrança mensal",M.inicio]]:[]);
+  if(Co)cond=cond.concat([["Comodato (meses)",String(Co.meses)],["Comodato % a.m.",n2(Co.pct)+"%"],["Depreciação",n2(Co.dep)+"%"],["Mensalidade comodato",brl(Co.mensalidade)]]);
+  return{M:M,C:Co,num:E.num||"(rascunho — não salvo)",emissao:E.criado_em?new Date(E.criado_em).toLocaleDateString("pt-BR"):new Date().toLocaleDateString("pt-BR"),validade:dataBR(E.validade),resp:E.criado_nome||"",c:c,itens:E.itens,T:T,oi:E.ocultarItens,ot:E.ocultarTotal,emp:emp,cond:cond.filter(function(x){return x[1]}),ref:E.ref,obs:E.obs};
+}
 function lnTot(i){return r2(num(i.qtd)*num(i.preco)*(1-num(i.desc)/100))}
 function docHTML(D){
-  var c=D.c,nm=c.fantasia||c.razao||"";
-  var h='<div class="ph"><div class="l"><img src="'+(LOGO||"/img/logo-ancora.png")+'" alt="Âncora"><div><div class="emp">Âncora Segurança Patrimonial</div><div class="em">atendimento@ancoraseguranca.com.br</div></div></div><div class="dr"><div class="dn">Orçamento '+esc(D.num)+'</div><div class="dd">Emitido em '+esc(D.emissao)+(D.validade?" · válido até "+esc(D.validade):"")+"</div></div></div>";
+  var c=D.c,nm=c.fantasia||c.razao||"",emp=D.emp||empDoc();
+  var h='<div class="ph"><div class="l"><img src="'+(LOGO||"/img/logo-ancora.png")+'" alt="'+esc(emp.label)+'"><div><div class="emp">'+esc(emp.nome)+'</div>'+(emp.cnpj?'<div class="em">CNPJ '+esc(emp.cnpj)+"</div>":"")+(emp.fantasia?'<div class="em">'+esc(emp.fantasia)+"</div>":"")+'<div class="em">'+esc(emp.email)+'</div></div></div><div class="dr"><div class="dl">Orçamento</div><div class="dn">'+esc(D.num)+'</div><div class="dd">Emitido em '+esc(D.emissao)+(D.validade?" · válido até "+esc(D.validade):"")+"</div></div></div>";
   h+='<div class="pc"><div class="t">Cliente</div><div><span class="sub">Nome / razão social:</span> <b>'+esc(c.razao||nm)+"</b></div><div><span class=\"sub\">CNPJ / CPF:</span> <b>"+esc(doc(c.documento)||"—")+"</b></div>"+(c.fantasia&&c.fantasia!==c.razao?'<div><span class="sub">Nome fantasia:</span> <b>'+esc(c.fantasia)+"</b></div>":"")+'<div><span class="sub">Endereço:</span> <b>'+esc([c.endereco,c.bairro].filter(Boolean).join(" · ")||"—")+'</b></div><div><span class="sub">Cidade / UF:</span> <b>'+esc([cidade(c.cidade),c.uf].filter(Boolean).join(" / ")||"—")+(c.cep?" · CEP "+esc(c.cep):"")+'</b></div><div><span class="sub">Telefone:</span> <b>'+esc(c.telefone||"—")+'</b></div><div><span class="sub">E-mail:</span> <b>'+esc(c.email||"—")+"</b></div>"+(c.contato?'<div><span class="sub">Contato:</span> <b>'+esc(c.contato)+"</b></div>":"")+(D.ref?'<div style="grid-column:1/-1"><span class="sub">Referência:</span> <b>'+esc(D.ref)+"</b></div>":"")+"</div>";
   if(D.itens.length){if(D.M)h+='<div class="pt-sec">Produtos e serviços</div>';
   h+='<table class="pt"'+(D.M?' style="margin-top:6px"':"")+'><thead><tr><th style="width:34px">Item</th><th>Código</th><th>Descrição</th><th>Un.</th><th style="text-align:right">Qtd</th>'+(D.oi?"":'<th style="text-align:right">Valor unit.</th><th style="text-align:right">Desc.</th><th style="text-align:right">Total</th>')+"</tr></thead><tbody>"+
@@ -341,19 +407,31 @@ function docHTML(D){
       D.M.itens.map(function(i,k){return"<tr><td>"+(k+1)+"</td><td>"+esc(i.codigo)+"</td><td>"+esc(i.descricao)+(i.obs?'<span class="o">'+esc(i.obs)+"</span>":"")+"</td><td>"+esc(i.unidade||"MÊS")+'</td><td style="text-align:right">'+qtdTxt(i.qtd)+"</td>"+(D.oi?"":'<td style="text-align:right;white-space:nowrap">'+brl(i.preco)+'</td><td style="text-align:right">'+(num(i.desc)?n2(i.desc)+"%":"—")+'</td><td style="text-align:right;white-space:nowrap">'+brl(lnTot(i))+"</td>")+"</tr>"}).join("")+"</tbody></table>";
     if(!D.ot)h+='<div class="ptot"><div><div class="g" style="display:flex;justify-content:space-between;gap:20px"><span>Valor mensal</span><span>'+brl(D.M.total)+"</span></div>"+(D.M.prazo?'<div class="l" style="justify-content:flex-end;color:#555">Contrato de '+esc(D.M.prazo)+" meses</div>":"")+"</div></div>";
   }
+  if(D.C&&!D.ot){
+    h+='<div class="pt-sec">Comodato (Angela)</div><div class="pcond" style="margin-top:8px">';
+    h+="<div><span>Valor base</span><b>"+brl(D.C.valor)+"</b></div><div><span>% ao mês × prazo</span><b>"+esc(n2(D.C.pct))+"% × "+D.C.meses+" meses</b></div>";
+    h+="<div><span>Taxa do período</span><b>"+brl(D.C.taxa)+"</b></div><div><span>Parcela base</span><b>"+brl(D.C.parcela)+"</b></div>";
+    h+="<div><span>Depreciação</span><b>"+esc(n2(D.C.dep))+"%</b></div><div><span>Mensalidade</span><b>"+brl(D.C.mensalidade)+"</b></div></div>";
+  }
   if(D.cond.length)h+='<div class="pcond">'+D.cond.map(function(x){return"<div><span>"+esc(x[0])+"</span><b>"+esc(x[1])+"</b></div>"}).join("")+"</div>";
   if(D.obs)h+='<div class="pobs"><b>Observações</b>'+esc(D.obs)+"</div>";
-  h+='<div class="pf"><span>Âncora Segurança Patrimonial'+(D.resp?" · Responsável: "+esc(D.resp):"")+"</span><span>atendimento@ancoraseguranca.com.br</span></div>";
+  h+='<div class="pf"><span>'+esc(emp.nome)+(emp.cnpj?" · CNPJ "+esc(emp.cnpj):"")+(D.resp?" · Responsável: "+esc(D.resp):"")+"</span><span>"+esc(emp.email)+"</span></div>";
   return h}
 function documento(E,daLista,soLeitura){
   var o=$("#ov");if(o)o.remove();
+  if(E.comodato&&E.comodato.ativo)E.empresaDoc="angela";
+  else if(!E.empresaDoc)E.empresaDoc="ancora";
+  var comodatoTrava=!!(E.comodato&&E.comodato.ativo);
   o=document.createElement("div");o.id="ov";o.className="ov";o.setAttribute("role","dialog");o.setAttribute("aria-label","Documento do orçamento");
-  var pinta=function(){var D=docDados(E);o.innerHTML='<div class="ovbar"><span class="t">'+esc(D.num)+'</span><div class="cks"><label class="ck"><input type="checkbox" id="v-oi"'+(E.ocultarItens?" checked":"")+'><span>Ocultar valores dos itens</span></label><label class="ck"><input type="checkbox" id="v-ot"'+(E.ocultarTotal?" checked":"")+'><span>Ocultar valor total</span></label></div><button class="btn adv" type="button" id="v-pdf">Baixar PDF</button><button class="btn ghost" type="button" id="v-print">Imprimir</button><button class="btn ghost" type="button" id="v-close">Fechar</button></div><div class="paper">'+docHTML(D)+"</div>";
+  var pinta=function(){var D=docDados(E);o.innerHTML='<div class="ovbar"><span class="t">'+esc(D.num)+'</span><div class="cks emp-doc" role="radiogroup" aria-label="Empresa no orçamento"><span class="emp-doc-l">Empresa:</span>'+EMPRESAS_DOC.map(function(e){return'<label class="ck"><input type="radio" name="v-emp" value="'+e.id+'"'+(E.empresaDoc===e.id?" checked":"")+(comodatoTrava&&e.id!=="angela"?" disabled":"")+'><span>'+esc(e.label)+"</span></label>"}).join("")+(comodatoTrava?'<span class="dica">Comodato → Angela</span>':"")+'</div><div class="cks"><label class="ck"><input type="checkbox" id="v-oi"'+(E.ocultarItens?" checked":"")+'><span>Ocultar valores dos itens</span></label><label class="ck"><input type="checkbox" id="v-ot"'+(E.ocultarTotal?" checked":"")+'><span>Ocultar valor total</span></label></div><button class="btn adv" type="button" id="v-pdf">Baixar PDF</button><button class="btn ghost" type="button" id="v-print">Imprimir</button><button class="btn ghost" type="button" id="v-close">Fechar</button></div><div class="paper">'+docHTML(D)+"</div>";
     $("#v-close").onclick=function(){if(soLeitura){if(history.length>1)history.back();else window.close();return}o.remove()};$("#v-print").onclick=function(){window.print()};$("#v-pdf").onclick=function(){baixarPDF(docDados(E),this)};
-    $("#v-oi").onchange=function(){E.ocultarItens=this.checked;sync();pinta()};$("#v-ot").onchange=function(){E.ocultarTotal=this.checked;sync();pinta()};$("#v-close").focus()};
+    $("#v-oi").onchange=function(){E.ocultarItens=this.checked;sync();pinta()};$("#v-ot").onchange=function(){E.ocultarTotal=this.checked;sync();pinta()};
+    o.querySelectorAll('input[name="v-emp"]').forEach(function(r){r.onchange=function(){if(comodatoTrava){E.empresaDoc="angela";pinta();return}E.empresaDoc=r.value;pinta()}});
+    $("#v-close").focus()};
   var sync=function(){if(!daLista&&S.E===E){var a=$("#o-itens"),b=$("#o-total");if(a)a.checked=E.ocultarItens;if(b)b.checked=E.ocultarTotal;marcar()}};
   if(!soLeitura)o.addEventListener("click",function(e){if(e.target===o)o.remove()});
   document.body.appendChild(o);pinta();
+  carregarEmpresasDoc().then(function(){if(document.body.contains(o))pinta()});
   if(!E.num)toast("Rascunho: salve o orçamento para o documento sair com o número.",4500)}
 var LIBS={pdf:"https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",at:"https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"};
 function lib(u){return new Promise(function(ok,no){var s=document.createElement("script");s.src=u;s.onload=ok;s.onerror=function(){no(new Error("não foi possível carregar o gerador de PDF (verifique a internet)"))};document.head.appendChild(s)})}
@@ -362,18 +440,30 @@ function T(s){return String(s==null?"":s).replace(/[\u00a0\u202f]/g," ").replace
 function baixarPDF(D,bt){
   bt.disabled=true;
   libsPDF().then(function(){
-    var J=new window.jspdf.jsPDF({unit:"mm",format:"a4"}),W=210,M=14,P=[20,20,20],Y=[255,210,0],G=[90,90,90];
+    var emp=D.emp||empDoc(),J=new window.jspdf.jsPDF({unit:"mm",format:"a4"}),W=210,M=14,P=[20,20,20],Y=[255,210,0],G=[90,90,90];
     try{if(LOGO)J.addImage(LOGO,"JPEG",M,9,18,17.7)}catch(e){}
-    J.setFont("helvetica","bold");J.setFontSize(12);J.setTextColor.apply(J,P);J.text("ÂNCORA SEGURANÇA PATRIMONIAL",M+22,16);
-    J.setFont("helvetica","normal");J.setFontSize(8.5);J.setTextColor.apply(J,G);J.text("atendimento@ancoraseguranca.com.br",M+22,21);
-    J.setFont("helvetica","bold");J.setFontSize(14);J.setTextColor.apply(J,P);J.text(T("ORÇAMENTO "+D.num),W-M,16,{align:"right"});
-    J.setFont("helvetica","normal");J.setFontSize(8.5);J.setTextColor.apply(J,G);J.text(T("Emitido em "+D.emissao+(D.validade?" · válido até "+D.validade:"")),W-M,21,{align:"right"});
-    J.setFillColor.apply(J,Y);J.rect(M,29,W-2*M,1.4,"F");
+    var xNome=M+22,largDir=58,largNome=W-M-largDir-xNome-4;
+    J.setFont("helvetica","bold");J.setFontSize(10);J.setTextColor.apply(J,P);
+    var nomeEmp=T(emp.nomePdf||emp.nome);var nomeLinhas=J.splitTextToSize(nomeEmp,Math.max(60,largNome));
+    J.text(nomeLinhas,xNome,14);
+    var yEmp=14+(nomeLinhas.length-1)*3.8+3.6;
+    J.setFont("helvetica","normal");J.setFontSize(7.5);J.setTextColor.apply(J,G);
+    if(emp.cnpj){J.text(T("CNPJ "+emp.cnpj),xNome,yEmp);yEmp+=3.4}
+    if(emp.fantasia&&emp.fantasia!==emp.nome){J.text(T(emp.fantasia),xNome,yEmp);yEmp+=3.4}
+    J.text(T(emp.email),xNome,yEmp);
+    J.setFont("helvetica","bold");J.setFontSize(9.5);J.setTextColor.apply(J,P);
+    J.text("ORÇAMENTO",W-M,13.5,{align:"right"});
+    J.setFontSize(11);J.text(T(D.num),W-M,18.5,{align:"right"});
+    J.setFont("helvetica","normal");J.setFontSize(7.5);J.setTextColor.apply(J,G);
+    var emis=T("Emitido em "+D.emissao+(D.validade?" · válido até "+D.validade:""));
+    var emisLinhas=J.splitTextToSize(emis,largDir);J.text(emisLinhas,W-M,23,{align:"right"});
+    var yBar=Math.max(29,yEmp+4,23+(emisLinhas.length-1)*3.4+4);
+    J.setFillColor.apply(J,Y);J.rect(M,yBar,W-2*M,1.4,"F");
     var c=D.c,cli=[["Nome / razão social",c.razao||c.fantasia||""],["CNPJ / CPF",doc(c.documento)||"-"]];
     if(c.fantasia&&c.fantasia!==c.razao)cli.push(["Nome fantasia",c.fantasia]);
     cli.push(["Endereço",[c.endereco,c.bairro].filter(Boolean).join(" · ")||"-"],["Cidade / UF",[cidade(c.cidade),c.uf].filter(Boolean).join(" / ")+(c.cep?" · CEP "+c.cep:"")||"-"],["Telefone",c.telefone||"-"],["E-mail",c.email||"-"]);
     if(c.contato)cli.push(["Contato",c.contato]);if(D.ref)cli.push(["Referência",D.ref]);
-    J.autoTable({startY:33,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:38},1:{fontStyle:"bold",textColor:P}},body:cli.map(function(r){return[T(r[0]),T(r[1])]})});
+    J.autoTable({startY:yBar+4,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:38},1:{fontStyle:"bold",textColor:P}},body:cli.map(function(r){return[T(r[0]),T(r[1])]})});
     var y=J.lastAutoTable.finalY+5;
     var secao=function(t){if(y>262){J.addPage();y=20}J.setFont("helvetica","bold");J.setFontSize(8.5);J.setTextColor(122,93,0);J.text(T(t.toUpperCase()),M,y+2);y+=4};
     var caixa=function(rot,val,extra){if(y>262){J.addPage();y=20}J.setFillColor.apply(J,P);J.rect(W-M-90,y,90,11,"F");J.setFillColor.apply(J,Y);J.rect(W-M-90,y,1.6,11,"F");J.setFont("helvetica","bold");J.setFontSize(11);J.setTextColor(255,255,255);J.text(T(rot),W-M-86,y+7.2);J.setTextColor.apply(J,Y);J.text(T(val),W-M-3,y+7.2,{align:"right"});y+=11;if(extra){J.setFont("helvetica","normal");J.setFontSize(8.5);J.setTextColor.apply(J,G);J.text(T(extra),W-M,y+4,{align:"right"});y+=5}y+=6};
@@ -395,9 +485,20 @@ function baixarPDF(D,bt){
       secao("Serviço mensal");
       tabela(D.M.itens,["Valor mensal","Desc.","Total mensal"]);
       if(!D.ot)caixa("VALOR MENSAL",brl(D.M.total),D.M.prazo?"Contrato de "+D.M.prazo+" meses":"")}
+    if(D.C&&!D.ot){
+      secao("Comodato (Angela)");
+      J.autoTable({startY:y,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:55},1:{fontStyle:"bold",textColor:P}},body:[
+        ["Valor base",T(brl(D.C.valor))],
+        ["% ao mês × prazo",T(n2(D.C.pct)+"% × "+D.C.meses+" meses")],
+        ["Taxa do período",T(brl(D.C.taxa))],
+        ["Parcela base",T(brl(D.C.parcela))],
+        ["Depreciação",T(n2(D.C.dep)+"%")]
+      ]});
+      y=J.lastAutoTable.finalY+3;
+      caixa("MENSALIDADE COMODATO",brl(D.C.mensalidade),D.C.meses+" meses")}
     if(D.cond.length){J.autoTable({startY:y,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:45},1:{fontStyle:"bold",textColor:P}},body:D.cond.map(function(r){return[T(r[0]),T(r[1])]})});y=J.lastAutoTable.finalY+4}
     if(D.obs){if(y>255){J.addPage();y=20}J.setFont("helvetica","bold");J.setFontSize(8.5);J.setTextColor(122,93,0);J.text("OBSERVAÇÕES",M,y);y+=4.5;J.setFont("helvetica","normal");J.setFontSize(8.8);J.setTextColor.apply(J,P);var ls=J.splitTextToSize(T(D.obs),W-2*M);ls.forEach(function(l){if(y>280){J.addPage();y=20}J.text(l,M,y);y+=4.2})}
-    var n=J.getNumberOfPages();for(var p=1;p<=n;p++){J.setPage(p);J.setDrawColor(210,210,205);J.line(M,285,W-M,285);J.setFont("helvetica","normal");J.setFontSize(7.8);J.setTextColor.apply(J,G);J.text(T("Âncora Segurança Patrimonial"+(D.resp?" · Responsável: "+D.resp:"")),M,289.5);J.text("atendimento@ancoraseguranca.com.br · página "+p+" de "+n,W-M,289.5,{align:"right"})}
+    var n=J.getNumberOfPages();for(var p=1;p<=n;p++){J.setPage(p);J.setDrawColor(210,210,205);J.line(M,285,W-M,285);J.setFont("helvetica","normal");J.setFontSize(7.2);J.setTextColor.apply(J,G);J.text(T(emp.nome+(emp.cnpj?" · CNPJ "+emp.cnpj:"")+(D.resp?" · Resp.: "+D.resp:"")),M,289.5);J.text(T(emp.email+" · pág. "+p+"/"+n),W-M,289.5,{align:"right"})}
     var nome=(D.num+" - "+(D.c.fantasia||D.c.razao||"cliente")).replace(/[\\/:*?"<>|]/g,"").slice(0,120)+".pdf";
     J.save(nome);toast("PDF gerado: "+nome)
   }).catch(function(e){toast("Não foi possível gerar o PDF: "+e.message,6000)}).then(function(){bt.disabled=false})}

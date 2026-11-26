@@ -113,13 +113,17 @@ table.tbl{width:100%;border-collapse:collapse;font:400 13.5px Inter,sans-serif}
 .ovbar .t{color:#fff;font:700 15px Inter,sans-serif;margin-right:auto}
 .ovbar .cks{background:#fff;border-radius:10px;padding:8px 12px;gap:8px 18px}
 .ovbar .ck{font-size:13px}
+.ovbar .emp-doc{align-items:center}
+.ovbar .emp-doc-l{font:700 12px Inter,sans-serif;color:#3d3d3d;text-transform:uppercase;letter-spacing:.3px;margin-right:2px}
+.ovbar .emp-doc .ck input{accent-color:#141414}
 .paper{max-width:860px;margin:0 auto;background:#fff;color:#141414;padding:38px 42px;border-radius:2px;font:400 12.5px Inter,sans-serif;line-height:1.45}
-.ph{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:4px solid #FFD200;padding-bottom:12px}
-.ph .l{display:flex;gap:14px;align-items:center}.ph img{width:64px;height:auto}
-.ph .emp{font:800 17px 'Barlow Semi Condensed',sans-serif;text-transform:uppercase}
+.ph{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:4px solid #FFD200;padding-bottom:12px}
+.ph .l{display:flex;gap:14px;align-items:flex-start;min-width:0;flex:1}.ph img{width:64px;height:auto;flex:none}
+.ph .emp{font:800 14px/1.2 'Barlow Semi Condensed',sans-serif;text-transform:uppercase;max-width:28rem}
 .ph .em{font:400 11.5px Inter,sans-serif;color:#555}
-.ph .dr{text-align:right}.ph .dn{font:800 22px 'Barlow Semi Condensed',sans-serif;text-transform:uppercase}
-.ph .dd{font:400 11.5px Inter,sans-serif;color:#555}
+.ph .dr{text-align:right;flex:none;max-width:11.5rem}.ph .dl{font:700 11px Inter,sans-serif;color:#555;text-transform:uppercase;letter-spacing:.4px}
+.ph .dn{font:800 16px 'Barlow Semi Condensed',sans-serif;text-transform:uppercase;letter-spacing:.2px}
+.ph .dd{font:400 11px Inter,sans-serif;color:#555;margin-top:2px}
 .pc{margin-top:16px;border:1px solid #DDDDD6;border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px}
 .pc .t{grid-column:1/-1;font:700 11px Inter,sans-serif;text-transform:uppercase;letter-spacing:.5px;color:#7a5d00;margin-bottom:4px}
 .pc b{font-weight:600}

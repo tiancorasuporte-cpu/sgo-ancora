@@ -23,7 +23,6 @@ async function fetchRemotePdfAsBase64(url: string) {
     return null;
   }
 }
-import { runManualNotifications, runManualSync } from "@/server/scheduler";
 import { sendDueItemReminder, sendSelectedDueItems } from "@/server/omie/notifications";
 
 export const getOmieAppsFn = createServerFn({ method: "GET" }).handler(async () => {
@@ -88,6 +87,7 @@ export const listNotificationLogsFn = createServerFn({ method: "GET" })
 export const syncOmieFn = createServerFn({ method: "POST" }).handler(async () => {
   const { requireAdmin } = await import("@/lib/require-auth");
   await requireAdmin();
+  const { runManualSync } = await import("@/server/scheduler");
   return runManualSync();
 });
 
@@ -95,12 +95,18 @@ export const syncOmieFn = createServerFn({ method: "POST" }).handler(async () =>
 export const syncDueItemsFn = createServerFn({ method: "POST" }).handler(async () => {
   const { requireModule } = await import("@/lib/require-auth");
   await requireModule("vencimentos");
-  return runManualSync();
+  const { runManualSync } = await import("@/server/scheduler");
+  const result = await runManualSync();
+  if (!result || typeof result !== "object" || !("ok" in result)) {
+    return { ok: false as const, error: "Sincronização não retornou resultado." };
+  }
+  return result;
 });
 
 export const sendNotificationsFn = createServerFn({ method: "POST" }).handler(async () => {
   const { requireAdmin } = await import("@/lib/require-auth");
   await requireAdmin();
+  const { runManualNotifications } = await import("@/server/scheduler");
   return runManualNotifications();
 });
 

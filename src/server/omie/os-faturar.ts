@@ -2,7 +2,12 @@ import "@tanstack/react-start/server-only";
 
 import { getSetting } from "@/db/settings";
 import { sgoSql } from "@/sgo/server/d1";
-import { requireOrcamentosOmieApp, omieCall, type OmieAppConfig } from "@/server/omie/client";
+import {
+  requireOrcamentosOmieApp,
+  requireOmieAppByHint,
+  omieCall,
+  type OmieAppConfig,
+} from "@/server/omie/client";
 import { searchOmieClients } from "@/server/omie/quotes";
 
 type LinhaProduto = {
@@ -596,7 +601,12 @@ export async function enviarOsParaFaturarOmie(input: {
   const servicos = (fat.servicos ?? []).filter((s) => num(s.valor) > 0);
   if (!produtos.length && !servicos.length) throw new Error("Não há produto nem serviço para enviar.");
 
-  const app = requireOrcamentosOmieApp();
+  const comodato = (dados["comodato"] ?? null) as { ativo?: boolean } | null;
+  const omieEmpresa = String(dados["omieEmpresa"] || "").toLowerCase();
+  const usarAngela = !!(comodato && comodato.ativo) || omieEmpresa === "angela";
+  const app = usarAngela
+    ? requireOmieAppByHint("angela", "Angela")
+    : requireOrcamentosOmieApp();
   if (input.substituir) {
     await excluirAnterior(app, anterior?.omie, os.num);
   }
