@@ -90,6 +90,12 @@ export function TelaIsolada({ def, busca }: { def: DefTela; busca?: string }) {
         // A busca precisa existir antes da lógica: a tela isolada guarda SGOBusca na janela dela.
         if (def.meta.buscaCadastros) executar(buscaCadastros, amb, def.id + "-busca");
         executar(def.logica, amb, def.id);
+        // A lógica monta os campos depois; varre de novo o Shadow DOM desta tela.
+        try {
+          amb.window.SGOBusca?.varrer?.(amb.document);
+        } catch {
+          /* ignore */
+        }
       })
       .catch((e: Error) => vivo && setErro(e.message));
 
