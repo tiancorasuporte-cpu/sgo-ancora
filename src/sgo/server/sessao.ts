@@ -103,34 +103,46 @@ export async function appUserDoSgo(u: UsuarioSgo): Promise<AppUser> {
   const assinatura = JSON.stringify({ ...user, veiculos });
   if (espelhados.get(u.id) !== assinatura) {
     const sql = sgoSql();
-    await sql`
-      insert into public.users (
-        id, username, password_hash, name, role, active, modules,
-        is_tecnico, is_comprador, is_vendedor, default_vehicle_id
-      )
-      values (
-        ${user.id}, ${"sgo:" + user.username}, ${"!sgo"}, ${user.name}, ${user.role}, true,
-        ${JSON.stringify(user.modules)}, ${user.isTecnico}, ${user.isComprador}, ${user.isVendedor},
-        ${user.defaultVehicleId}
-      )
-      on conflict (id) do update set
-        username = excluded.username, name = excluded.name, role = excluded.role, active = true,
-        modules = excluded.modules, is_tecnico = excluded.is_tecnico,
-        is_comprador = excluded.is_comprador, is_vendedor = excluded.is_vendedor,
-        default_vehicle_id = excluded.default_vehicle_id
-    `;
-    await sql`delete from public.user_vehicles where user_id = ${user.id}`.catch(() => undefined);
-    for (const vid of veiculos) {
+    const username = "sgo:" + user.username;
+    try {
+      // Libera username preso em outro id (espelho antigo) antes do upsert por id.
       await sql`
-        insert into public.user_vehicles (user_id, vehicle_id)
-        values (${user.id}, ${vid})
-        on conflict do nothing
-      `.catch(() => undefined);
+        update public.users
+        set username = username || '#old-' || id::text
+        where username = ${username} and id <> ${user.id}
+      `;
+      await sql`
+        insert into public.users (
+          id, username, password_hash, name, role, active, modules,
+          is_tecnico, is_comprador, is_vendedor, default_vehicle_id
+        )
+        values (
+          ${user.id}, ${username}, ${"!sgo"}, ${user.name}, ${user.role}, true,
+          ${JSON.stringify(user.modules)}, ${user.isTecnico}, ${user.isComprador}, ${user.isVendedor},
+          ${user.defaultVehicleId}
+        )
+        on conflict (id) do update set
+          username = excluded.username, name = excluded.name, role = excluded.role, active = true,
+          modules = excluded.modules, is_tecnico = excluded.is_tecnico,
+          is_comprador = excluded.is_comprador, is_vendedor = excluded.is_vendedor,
+          default_vehicle_id = excluded.default_vehicle_id
+      `;
+      await sql`delete from public.user_vehicles where user_id = ${user.id}`.catch(() => undefined);
+      for (const vid of veiculos) {
+        await sql`
+          insert into public.user_vehicles (user_id, vehicle_id)
+          values (${user.id}, ${vid})
+          on conflict do nothing
+        `.catch(() => undefined);
+      }
+      await sql`select setval(pg_get_serial_sequence('public.users','id'), greatest((select max(id) from public.users), 1))`.catch(
+        () => undefined,
+      );
+      espelhados.set(u.id, assinatura);
+    } catch (e) {
+      // Espelho é best-effort: não derruba a sessão/páginas do SGO.
+      console.error("[sgo] espelho users", e);
     }
-    await sql`select setval(pg_get_serial_sequence('public.users','id'), greatest((select max(id) from public.users), 1))`.catch(
-      () => undefined,
-    );
-    espelhados.set(u.id, assinatura);
   }
   return user;
 }
