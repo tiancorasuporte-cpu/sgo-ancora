@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = process.cwd();
@@ -20,6 +20,33 @@ function loadDotEnv(file) {
       val = val.slice(1, -1);
     }
     if (process.env[key] == null || process.env[key] === "") process.env[key] = val;
+  }
+}
+
+/**
+ * Nitro 3 (srvx) não encaminha NITRO_BUN_IDLE_TIMEOUT. Sem idleTimeout no
+ * Bun.serve, requests longos (sync Omie) caem em ~10s → nginx 502.
+ */
+function ensureBunIdleTimeout(serverEntry, idleTimeout) {
+  let source = readFileSync(serverEntry, "utf8");
+  const next = `bun: { websocket: void 0, idleTimeout: ${idleTimeout} }`;
+  let patched = source.replace(
+    /bun:\s*\{\s*websocket:\s*void 0(?:\s*,\s*idleTimeout:\s*\d+)?\s*\}/g,
+    next,
+  );
+  if (patched === source) {
+    patched = source.replace(
+      /bun:\s*\{\s*websocket:\s*import\.meta\._websocket\s*\?\s*ws\?\.websocket\s*:\s*undefined(?:\s*,\s*idleTimeout:\s*[^}]*)?\s*\}/g,
+      `bun: { websocket: import.meta._websocket ? ws?.websocket : undefined, idleTimeout: ${idleTimeout} }`,
+    );
+  }
+  if (patched !== source) {
+    writeFileSync(serverEntry, patched, "utf8");
+    console.info(`[start-prod] Bun idleTimeout=${idleTimeout}s aplicado em ${serverEntry}`);
+  } else if (!/idleTimeout\s*:\s*\d+/.test(source)) {
+    console.warn(
+      "[start-prod] Não achei o bloco bun:{websocket} para injetar idleTimeout — sync Omie pode falhar após 10s.",
+    );
   }
 }
 
@@ -50,9 +77,20 @@ process.env.HOST ??= "0.0.0.0";
 process.env.NITRO_HOST ??= process.env.HOST;
 process.env.NODE_ENV ??= "production";
 
+// Bun.serve fecha conexões idle em 10s por padrão (máx. 255). Sync Omie
+// passa disso (sleep 8s entre apps + APIs). Nitro 3 beta não lê a env —
+// injetamos idleTimeout no bundle antes de subir o servidor.
+{
+  const raw = Number.parseInt(process.env.NITRO_BUN_IDLE_TIMEOUT ?? "255", 10);
+  const idleTimeout = Number.isFinite(raw) && raw >= 0 && raw <= 255 ? raw : 255;
+  process.env.NITRO_BUN_IDLE_TIMEOUT = String(idleTimeout);
+  ensureBunIdleTimeout(serverEntry, idleTimeout);
+}
+
 console.info(
   `[start-prod] ${process.env.HOST}:${process.env.PORT}` +
-    (wantHttps ? " (https)" : " (http)"),
+    (wantHttps ? " (https)" : " (http)") +
+    ` idleTimeout=${process.env.NITRO_BUN_IDLE_TIMEOUT}s`,
 );
 
 await import(serverEntry);
