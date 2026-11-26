@@ -16,6 +16,7 @@ import {
   getNotificationSettingsFn,
   getOmieAppsFn,
   getDueItemBoletoViewFn,
+  getSyncDueItemsStatusFn,
   listDueItemsFn,
   sendDueItemNotificationFn,
   sendSelectedDueItemsFn,
@@ -458,36 +459,68 @@ function VencimentosPage() {
                 setSyncing(true);
                 setFeedback(null);
                 try {
-                  const result = await syncDueItemsFn();
-                  if (!result?.ok) {
+                  const started = await syncDueItemsFn();
+                  if (!started?.ok) {
                     setFeedback({
                       type: "error",
-                      text:
-                        (result && "error" in result && result.error) ||
-                        "Falha ao sincronizar Omie.",
+                      text: "Falha ao iniciar sincronização Omie.",
                     });
+                    setSyncing(false);
                     return;
                   }
-                  const total = (result.results ?? []).reduce(
-                    (sum, item) => sum + (item.itemsFound ?? 0),
-                    0,
-                  );
-                  const avisos = (result.results ?? [])
-                    .flatMap((item) =>
-                      "error" in item && item.error
-                        ? [item.error]
-                        : "errors" in item && Array.isArray(item.errors)
-                          ? item.errors
-                          : [],
-                    )
-                    .filter(Boolean);
                   setFeedback({
-                    type: avisos.length ? "info" : "ok",
-                    text: avisos.length
-                      ? `Sync parcial: ${total} boleto(s)/nota(s). ${avisos.slice(0, 3).join(" · ")}`
-                      : `Sincronização concluída: ${total} boleto(s)/nota(s).`,
+                    type: "info",
+                    text: started.alreadyRunning
+                      ? "Sincronização já em andamento — aguardando..."
+                      : "Sincronização iniciada em segundo plano...",
                   });
-                  await router.invalidate();
+
+                  const deadline = Date.now() + 8 * 60_000;
+                  while (Date.now() < deadline) {
+                    await new Promise((r) => setTimeout(r, 3_000));
+                    const status = await getSyncDueItemsStatusFn();
+                    if (status.status !== "done") continue;
+
+                    if (status.error) {
+                      setFeedback({ type: "error", text: status.error });
+                      return;
+                    }
+                    const result = status.result;
+                    if (!result || typeof result !== "object" || !("ok" in result) || !result.ok) {
+                      setFeedback({
+                        type: "error",
+                        text:
+                          (result && "error" in result && result.error) ||
+                          "Falha ao sincronizar Omie.",
+                      });
+                      return;
+                    }
+                    const total = (result.results ?? []).reduce(
+                      (sum, item) => sum + (item.itemsFound ?? 0),
+                      0,
+                    );
+                    const avisos = (result.results ?? [])
+                      .flatMap((item) =>
+                        "error" in item && item.error
+                          ? [item.error]
+                          : "errors" in item && Array.isArray(item.errors)
+                            ? item.errors
+                            : [],
+                      )
+                      .filter(Boolean);
+                    setFeedback({
+                      type: avisos.length ? "info" : "ok",
+                      text: avisos.length
+                        ? `Sync parcial: ${total} boleto(s)/nota(s). ${avisos.slice(0, 3).join(" · ")}`
+                        : `Sincronização concluída: ${total} boleto(s)/nota(s).`,
+                    });
+                    await router.invalidate();
+                    return;
+                  }
+                  setFeedback({
+                    type: "info",
+                    text: "Sync ainda rodando no servidor — atualize a página em alguns minutos.",
+                  });
                 } catch (error) {
                   setFeedback({
                     type: "error",

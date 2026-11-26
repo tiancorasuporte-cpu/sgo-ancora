@@ -143,9 +143,97 @@ async function ensureWahaWebhook() {
   }
 }
 
+type ManualSyncResult = Awaited<ReturnType<typeof syncAllOmieApps>>;
+
+type ManualSyncJob = {
+  status: "idle" | "running" | "done";
+  startedAt: number | null;
+  finishedAt: number | null;
+  result: ManualSyncResult | null;
+  error: string | null;
+};
+
+let manualSyncJob: ManualSyncJob = {
+  status: "idle",
+  startedAt: null,
+  finishedAt: null,
+  result: null,
+  error: null,
+};
+
+function snapshotManualSyncJob() {
+  return {
+    status: manualSyncJob.status,
+    startedAt: manualSyncJob.startedAt,
+    finishedAt: manualSyncJob.finishedAt,
+    result: manualSyncJob.result,
+    error: manualSyncJob.error,
+  };
+}
+
+/** Sync síncrono (scheduler / admin). Preferir `startManualSyncBackground` na UI. */
 export async function runManualSync() {
   lastSyncAt = Date.now();
   return syncAllOmieApps();
+}
+
+/**
+ * Dispara o sync Omie sem segurar a conexão HTTP.
+ * Cloudflare corta requests ~100s; o sync de 3 apps + sleep passa disso.
+ */
+export function startManualSyncBackground() {
+  if (manualSyncJob.status === "running") {
+    return {
+      ok: true as const,
+      started: false as const,
+      alreadyRunning: true as const,
+      ...snapshotManualSyncJob(),
+    };
+  }
+
+  lastSyncAt = Date.now();
+  manualSyncJob = {
+    status: "running",
+    startedAt: Date.now(),
+    finishedAt: null,
+    result: null,
+    error: null,
+  };
+
+  void (async () => {
+    try {
+      const result = await syncAllOmieApps();
+      manualSyncJob = {
+        status: "done",
+        startedAt: manualSyncJob.startedAt,
+        finishedAt: Date.now(),
+        result,
+        error: null,
+      };
+      console.info("[sync] manual background done");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha na sincronização";
+      manualSyncJob = {
+        status: "done",
+        startedAt: manualSyncJob.startedAt,
+        finishedAt: Date.now(),
+        result: null,
+        error: message,
+      };
+      console.error("[sync] manual background failed", error);
+    }
+  })();
+
+  return {
+    ok: true as const,
+    started: true as const,
+    alreadyRunning: false as const,
+    ...snapshotManualSyncJob(),
+  };
+}
+
+export function getManualSyncStatus() {
+  return snapshotManualSyncJob();
 }
 
 export async function runManualNotifications() {

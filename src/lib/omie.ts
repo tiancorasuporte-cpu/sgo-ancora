@@ -91,16 +91,20 @@ export const syncOmieFn = createServerFn({ method: "POST" }).handler(async () =>
   return runManualSync();
 });
 
-/** Sync de boletos/notas — disponível para quem usa Vencimentos (faturamento). */
+/** Dispara sync de boletos/notas em background (evita corte Cloudflare ~100s). */
 export const syncDueItemsFn = createServerFn({ method: "POST" }).handler(async () => {
   const { requireModule } = await import("@/lib/require-auth");
   await requireModule("vencimentos");
-  const { runManualSync } = await import("@/server/scheduler");
-  const result = await runManualSync();
-  if (!result || typeof result !== "object" || !("ok" in result)) {
-    return { ok: false as const, error: "Sincronização não retornou resultado." };
-  }
-  return result;
+  const { startManualSyncBackground } = await import("@/server/scheduler");
+  return startManualSyncBackground();
+});
+
+/** Status do sync manual em background (poll na tela de Vencimentos). */
+export const getSyncDueItemsStatusFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { requireModule } = await import("@/lib/require-auth");
+  await requireModule("vencimentos");
+  const { getManualSyncStatus } = await import("@/server/scheduler");
+  return getManualSyncStatus();
 });
 
 export const sendNotificationsFn = createServerFn({ method: "POST" }).handler(async () => {
