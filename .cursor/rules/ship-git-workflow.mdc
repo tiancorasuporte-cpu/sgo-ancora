@@ -1,0 +1,19 @@
+---
+description: Sempre fazer git add, commit, pull e push ao salvar/subir alterações
+alwaysApply: true
+---
+
+# Ship: git add → commit → pull → push
+
+Quando o Alison pedir para salvar, subir, publicar, enviar ou “dar git add/commit/pull/push”:
+
+1. `git add` só dos arquivos relevantes (nunca `tmp-*`, probes locais, `.env`/segredos).
+2. `git commit` com mensagem curta no estilo do repo (por quê, não lista de arquivos).
+3. `git pull --no-rebase origin main` (ou da branch atual); resolver conflitos se houver.
+4. `git push origin HEAD`.
+
+Não pedir confirmação extra para essa sequência quando ele já pediu explicitamente.
+
+Se ele disser que vai testar em **produção** / servidor (`sgo.ancoraseguranca.app`), depois do push também fazer deploy no host `192.168.0.107`: `git reset --hard origin/main` em `~/sgo-ancora`, `bun run build`, e `sudo pm2 restart sgo-ancora` (PM2 roda como root).
+
+Nunca force-push em `main`, nunca `--amend` de commit já enviado, nunca pular hooks.

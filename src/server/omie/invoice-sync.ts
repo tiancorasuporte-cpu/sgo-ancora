@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { upsertDueItem, markStaleOpenDueItems } from "@/db/due-items";
+import { upsertDueItem, markStaleOpenDueItems, findStoredClientPhone } from "@/db/due-items";
 import type { DueItemType } from "@/db/schema";
 import {
   formatOmieDate,
@@ -15,6 +15,7 @@ import {
   getCliente,
   pickClientCodeFromRecord,
   pickClientNameFromRecord,
+  pickClientPhoneFromRecord,
   resolveStoredClientPhone,
 } from "@/server/omie/clients";
 import {
@@ -232,7 +233,26 @@ export async function saveReceivableDueItem(
     if (isClosedReceivableStatus(status)) return false;
   }
 
-  const client = input.clientCode ? await getCliente(app, input.clientCode) : undefined;
+  // Evita ConsultarCliente quando o título já traz nome/telefone, ou quando
+  // o telefone já está em due_items (maior ganho de tempo no sync manual).
+  const phoneFromRecord = pickClientPhoneFromRecord(input.detalhes);
+  const nameFromInput =
+    input.clientName?.trim() || pickClientNameFromRecord(input.detalhes) || null;
+  let clientPhone = phoneFromRecord;
+  let clientName = nameFromInput;
+  let client: Awaited<ReturnType<typeof getCliente>> | undefined;
+
+  if ((!clientPhone || !clientName) && input.clientCode) {
+    if (!clientPhone) {
+      clientPhone = await findStoredClientPhone(app.id, input.clientCode);
+    }
+    if (!clientPhone || !clientName) {
+      client = await getCliente(app, input.clientCode);
+      clientName = clientName || clientDisplayName(client);
+      clientPhone = clientPhone || resolveStoredClientPhone(client, input.detalhes);
+    }
+  }
+
   const issueDate = input.issueDate ?? pickIssueDate(input.detalhes);
 
   await upsertDueItem({
@@ -243,8 +263,8 @@ export async function saveReceivableDueItem(
     integrationCode: input.integrationCode,
     documentNumber: input.documentNumber,
     clientCode: input.clientCode,
-    clientName: input.clientName || clientDisplayName(client) || pickClientNameFromRecord(input.detalhes),
-    clientPhone: resolveStoredClientPhone(client, input.detalhes),
+    clientName,
+    clientPhone,
     dueDate: input.dueDate,
     issueDate,
     amount: input.amount,
@@ -364,7 +384,7 @@ async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date, enforce
       nfCadastro?: Record<string, unknown>[];
     }>(app, "/produtos/nfconsultar/", "ListarNF", {
       pagina: page,
-      registros_por_pagina: 50,
+      registros_por_pagina: 100,
       filtrar_por_data_de: fromStr,
       filtrar_por_data_ate: toStr,
       ordenar_por: "DATA_EMISSAO",
@@ -521,7 +541,7 @@ async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date, enforc
     "ListarNFSEs",
     (page) => ({
       nPagina: page,
-      nRegPorPagina: 50,
+      nRegPorPagina: 100,
       dEmiInicial: fromStr,
       dEmiFinal: toStr,
     }),

@@ -151,8 +151,8 @@ function sleep(ms: number) {
 
 function omieDelayMs() {
   const raw = process.env["OMIE_REQUEST_DELAY_MS"]?.trim();
-  const parsed = raw ? Number(raw) : 400;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 400;
+  const parsed = raw ? Number(raw) : 200;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 200;
 }
 
 async function throttleOmieRequest() {

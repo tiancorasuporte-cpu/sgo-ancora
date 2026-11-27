@@ -99,7 +99,7 @@ async function syncContasReceber(app: OmieAppConfig, from: Date, to: Date) {
     "ListarContasReceber",
     (page) => ({
       pagina: page,
-      registros_por_pagina: 100,
+      registros_por_pagina: 500,
       filtrar_apenas_titulos_em_aberto: "S",
       filtrar_por_data_de: fromStr,
       filtrar_por_data_ate: toStr,
@@ -216,7 +216,7 @@ export async function syncOmieApp(
       onStage?.(name);
       try {
         breakdown[name] = await withTimeout(fn(app, from, to), stageTimeoutMs, `${app.name}/${name}`);
-        await sleep(1_500);
+        await sleep(200);
       } catch (error) {
         breakdown[name] = 0;
         errors.push(`${name}: ${error instanceof Error ? error.message : "erro"}`);
@@ -293,7 +293,7 @@ export async function syncAllOmieApps(
     const app = apps[index]!;
     if (index > 0) {
       report(`Aguardando próxima empresa (${app.name})...`, app, index);
-      await sleep(3_000);
+      await sleep(500);
     }
 
     console.info("[sync] app start", app.id, app.name, `${index + 1}/${apps.length}`);
@@ -415,7 +415,7 @@ export async function syncTodayFaturamento(onProgress?: SyncProgressHandler) {
 
   for (let index = 0; index < apps.length; index++) {
     const app = apps[index]!;
-    if (index > 0) await sleep(2_000);
+    if (index > 0) await sleep(500);
     clearClienteCache();
     const logId = await startSyncLog(app.id);
     const breakdown: Record<string, number> = {};

@@ -77,6 +77,22 @@ export async function updateDueItemsClientPhone(input: {
   `;
 }
 
+/** Telefone já gravado para o cliente neste app (evita ConsultarCliente no sync). */
+export async function findStoredClientPhone(omieAppId: string, clientCode: number) {
+  const db = await getDb();
+  const [row] = await db<{ client_phone: string | null }[]>`
+    select client_phone
+    from due_items
+    where omie_app_id = ${omieAppId}
+      and client_code = ${clientCode}
+      and nullif(trim(client_phone), '') is not null
+    order by synced_at desc
+    limit 1
+  `;
+  const phone = String(row?.client_phone ?? "").replace(/\D/g, "");
+  return phone.length >= 10 ? phone : null;
+}
+
 export async function upsertDueItem(input: {
   omieAppId: string;
   omieAppName: string;
