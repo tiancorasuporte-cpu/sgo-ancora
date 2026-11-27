@@ -1,5 +1,5 @@
 import { getDb, type DueItem, type DueItemType, type NotificationKind } from "./schema";
-import { OPEN_STATUS_SQL_LIST } from "@/server/omie/status";
+import { CLOSED_STATUS_SQL_LIST, OPEN_STATUS_SQL_LIST } from "@/server/omie/status";
 
 type DueItemRow = {
   id: number;
@@ -125,31 +125,50 @@ export async function listDueItems(filters?: {
   itemType?: DueItemType;
   omieAppId?: string;
   openOnly?: boolean;
+  /** Só quitados/cancelados (aba Recebidos). Ignora openOnly. */
+  closedOnly?: boolean;
 }) {
   const db = await getDb();
   const currentMonthOnly = filters?.currentMonthOnly !== false;
-  const openOnly = filters?.openOnly !== false;
-  const statusFilter = openOnly
-    ? db`and upper(trim(coalesce(status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}`
-    : db``;
+  const closedOnly = filters?.closedOnly === true;
+  const openOnly = !closedOnly && filters?.openOnly !== false;
+  const statusFilter = closedOnly
+    ? db`and upper(trim(coalesce(status, ''))) in ${db(CLOSED_STATUS_SQL_LIST)}`
+    : openOnly
+      ? db`and upper(trim(coalesce(status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}`
+      : db``;
 
-  const rows = currentMonthOnly
+  const rows = closedOnly
     ? await db<DueItemRow[]>`
         select *
         from due_items
-        where due_date >= date_trunc('month', current_date)::date
-          and due_date <= (date_trunc('month', current_date) + interval '1 month' - interval '1 day')::date
-          ${statusFilter}
-        order by due_date asc, client_name asc
+        where upper(trim(coalesce(status, ''))) in ${db(CLOSED_STATUS_SQL_LIST)}
+          and (
+            (
+              due_date >= current_date - interval '90 days'
+              and due_date <= current_date + interval '120 days'
+            )
+            or synced_at >= now() - interval '45 days'
+          )
+        order by synced_at desc nulls last, due_date desc, client_name asc
       `
-    : await db<DueItemRow[]>`
-        select *
-        from due_items
-        where due_date >= current_date - interval '90 days'
-          and due_date <= current_date + interval '120 days'
-          ${statusFilter}
-        order by due_date asc, client_name asc
-      `;
+    : currentMonthOnly
+      ? await db<DueItemRow[]>`
+          select *
+          from due_items
+          where due_date >= date_trunc('month', current_date)::date
+            and due_date <= (date_trunc('month', current_date) + interval '1 month' - interval '1 day')::date
+            ${statusFilter}
+          order by due_date asc, client_name asc
+        `
+      : await db<DueItemRow[]>`
+          select *
+          from due_items
+          where due_date >= current_date - interval '90 days'
+            and due_date <= current_date + interval '120 days'
+            ${statusFilter}
+          order by due_date asc, client_name asc
+        `;
 
   return rows
     .map(toDueItem)
@@ -232,6 +251,67 @@ export async function markDueItemNotified(id: number) {
 export async function markDueItemOverdueNotified(id: number) {
   const db = await getDb();
   await db`update due_items set overdue_notified_at = now() where id = ${id}`;
+}
+
+/** Atualiza status local (ex.: após checagem Omie ao vivo). */
+export async function updateDueItemStatus(id: number, status: string) {
+  const db = await getDb();
+  const cleaned = status.trim().slice(0, 80);
+  if (!cleaned) return;
+  await db`
+    update due_items
+    set status = ${cleaned}, synced_at = now()
+    where id = ${id}
+  `;
+}
+
+/**
+ * Fecha todos os due_items da mesma parcela (boleto + NF) quando o título foi quitado.
+ */
+export async function closeCompanionFiscalDueItems(input: {
+  omieAppId: string;
+  omieCode: number;
+  dueDate: string;
+  status?: string;
+}) {
+  const db = await getDb();
+  const status = (input.status?.trim() || "RECEBIDO").slice(0, 80);
+  const due = input.dueDate.slice(0, 10);
+  if (!input.omieCode || !due) return 0;
+  const rows = await db<{ id: number }[]>`
+    update due_items
+    set status = ${status}, synced_at = now()
+    where omie_app_id = ${input.omieAppId}
+      and omie_code = ${input.omieCode}
+      and due_date = ${due}::date
+      and upper(trim(coalesce(status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
+    returning id
+  `;
+  return rows.length;
+}
+
+/** Após boletos marcados RECEBIDO, fecha companions fiscais abertos do mesmo título. */
+export async function closeFiscalCompanionsOfPaidBoletos() {
+  const db = await getDb();
+  const rows = await db<{ id: number }[]>`
+    update due_items f
+    set status = 'RECEBIDO', synced_at = now()
+    where f.item_type in ('nfe', 'nfse')
+      and f.omie_code is not null
+      and upper(trim(coalesce(f.status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
+      and exists (
+        select 1
+        from due_items b
+        where b.item_type = 'boleto'
+          and b.omie_app_id = f.omie_app_id
+          and b.omie_code = f.omie_code
+          and b.due_date = f.due_date
+          and upper(trim(coalesce(b.status, ''))) not in ${db(OPEN_STATUS_SQL_LIST)}
+          and upper(trim(coalesce(b.status, ''))) <> ''
+      )
+    returning f.id
+  `;
+  return rows.length;
 }
 
 /** Marca como RECEBIDO itens que sumiram da lista de títulos em aberto do Omie. */

@@ -5,7 +5,9 @@ import {
   markStaleOpenDueItems,
   startSyncLog,
   closeNonOpenInvoiceDueItems,
+  closeFiscalCompanionsOfPaidBoletos,
   purgeGhostNfseDueItems,
+  DEFAULT_OVERDUE_NOTIFICATION_DAYS,
 } from "@/db/due-items";
 import {
   formatOmieDate,
@@ -319,6 +321,12 @@ export async function syncAllOmieApps(
   } catch (error) {
     console.warn("[sync] cleanup notas", error);
   }
+  try {
+    const companions = await closeFiscalCompanionsOfPaidBoletos();
+    if (companions > 0) console.info("[sync] companions fiscais fechados", { companions });
+  } catch (error) {
+    console.warn("[sync] cleanup companions", error);
+  }
   completedUnits = totalUnits;
   const failed = results.filter((r) => !r.ok || ("errors" in r && r.errors.length > 0));
   onProgress?.({
@@ -468,8 +476,30 @@ export async function syncTodayFaturamento(onProgress?: SyncProgressHandler) {
   } catch (error) {
     console.warn("[sync-hoje] cleanup nfse fantasmas", error);
   }
+  try {
+    const companions = await closeFiscalCompanionsOfPaidBoletos();
+    if (companions > 0) console.info("[sync-hoje] companions fiscais fechados", { companions });
+  } catch (error) {
+    console.warn("[sync-hoje] cleanup companions", error);
+  }
 
   completedUnits = totalUnits;
   onProgress?.({ percent: 100, label: "Sync de hoje concluído", appTotal: apps.length });
   return { ok: true as const, results };
+}
+
+/**
+ * Sync enxuto da janela de alertas (D-1 + atraso) antes do lote WhatsApp.
+ * daysBack cobre overdue; daysAhead cobre pré-vencimento de amanhã.
+ */
+export async function syncForNotificationWindow() {
+  const daysBack = DEFAULT_OVERDUE_NOTIFICATION_DAYS + 2;
+  const daysAhead = 2;
+  console.info("[sync-notify] start", { daysBack, daysAhead });
+  const result = await syncAllOmieApps(daysBack, daysAhead);
+  console.info("[sync-notify] done", {
+    ok: result.ok,
+    apps: "results" in result ? result.results?.length : 0,
+  });
+  return result;
 }

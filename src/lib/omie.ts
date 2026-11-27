@@ -23,7 +23,11 @@ async function fetchRemotePdfAsBase64(url: string) {
     return null;
   }
 }
-import { sendDueItemReminder, sendSelectedDueItems } from "@/server/omie/notifications";
+import {
+  previewDueItemsSend,
+  sendDueItemReminder,
+  sendSelectedDueItems,
+} from "@/server/omie/notifications";
 
 export const getOmieAppsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { requireAuth } = await import("@/lib/require-auth");
@@ -47,8 +51,12 @@ export const getDashboardFn = createServerFn({ method: "GET" }).handler(async ()
 export const listDueItemsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { requireModule } = await import("@/lib/require-auth");
   await requireModule("vencimentos");
-  // Janela ampla para filtrar por vencimento e por emissão no front.
-  return listDueItems({ currentMonthOnly: false, openOnly: true });
+  // Em aberto + Recebidos (abas separadas na UI).
+  const [open, received] = await Promise.all([
+    listDueItems({ currentMonthOnly: false, openOnly: true }),
+    listDueItems({ currentMonthOnly: false, closedOnly: true }),
+  ]);
+  return { open, received };
 });
 
 export const listNotificationLogsFn = createServerFn({ method: "GET" })
@@ -113,6 +121,20 @@ export const sendNotificationsFn = createServerFn({ method: "POST" }).handler(as
   const { runManualNotifications } = await import("@/server/scheduler");
   return runManualNotifications();
 });
+
+export const previewDueItemsSendFn = createServerFn({ method: "POST" })
+  .validator((input) =>
+    z
+      .object({
+        dueItemIds: z.array(z.number().int().positive()).min(1).max(80),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { requireModule } = await import("@/lib/require-auth");
+    await requireModule("vencimentos");
+    return previewDueItemsSend(data.dueItemIds);
+  });
 
 export const sendDueItemNotificationFn = createServerFn({ method: "POST" })
   .validator((input) => z.object({ dueItemId: z.number().int().positive() }).parse(input))
@@ -269,7 +291,8 @@ export const getNotificationSettingsFn = createServerFn({ method: "GET" }).handl
   ]);
   const hourlyParsed = Number(settings.notification_hourly_limit ?? "0");
   return {
-    notificationsEnabled: settings.notifications_enabled !== "false",
+    // Default seguro: desligado se a setting ainda não existir.
+    notificationsEnabled: settings.notifications_enabled === "true",
     notificationTime: settings.notification_time ?? "09:00",
     defaultNotifyPhone: settings.default_notify_phone ?? "",
     testModeEnabled: settings.test_mode_enabled === "true",

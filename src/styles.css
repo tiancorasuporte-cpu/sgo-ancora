@@ -492,3 +492,42 @@
     visibility: hidden;
   }
 }
+
+/*
+ * Vencimentos: escala automática por viewport (só esta tela).
+ * Efeito parecido com Ctrl+- em monitores menores; monitores grandes ficam em 1.
+ * Dialogs Radix ficam no portal (fora deste nó) e não herdam o zoom.
+ */
+.vencimentos-fit {
+  zoom: clamp(0.82, min(100vw / 1440, 100dvh / 900), 1);
+}
+
+@media (max-height: 820px), (max-width: 1280px) {
+  .vencimentos-fit {
+    padding-block: 12px;
+  }
+
+  .vencimentos-fit .vencimentos-fit-inner > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 16px;
+  }
+
+  .vencimentos-fit table td,
+  .vencimentos-fit table th {
+    padding-block: 6px;
+  }
+}
+
+@media (max-height: 720px), (max-width: 1100px) {
+  .vencimentos-fit {
+    padding-block: 8px;
+  }
+
+  .vencimentos-fit .vencimentos-fit-inner > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 12px;
+  }
+
+  .vencimentos-fit table td,
+  .vencimentos-fit table th {
+    padding-block: 4px;
+  }
+}

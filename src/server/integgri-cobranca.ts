@@ -1,7 +1,11 @@
 import "@tanstack/react-start/server-only";
 
 import { createDocLink, isPublicTemplateUrl, readPublicSiteUrl } from "@/db/doc-links";
-import { getDueItemById } from "@/db/due-items";
+import {
+  closeCompanionFiscalDueItems,
+  getDueItemById,
+  updateDueItemStatus,
+} from "@/db/due-items";
 import {
   listPendingDocsForPhone,
   markPendingFulfilled,
@@ -9,6 +13,11 @@ import {
 } from "@/db/waba-pending";
 import { formatDisplayDate, listOmieApps } from "@/server/omie/client";
 import { resolveDueItemPdfWithStatus } from "@/server/omie/documents";
+import {
+  preferPayableDocsPerTitle,
+  tituloCodeFromDueItem,
+  verifyDueItemOpenLive,
+} from "@/server/omie/receivable-live";
 import {
   sendWhatsAppCobrancaTemplate,
   sendWhatsAppDocsBundleTemplate,
@@ -70,24 +79,38 @@ export function isInboundCustomerMessage(payload: unknown) {
   return true;
 }
 
-function tituloCodeFromItem(item: {
-  itemType: string;
-  omieCode: number | null;
-  integrationCode: string | null;
-}) {
-  if (item.integrationCode?.startsWith("titulo:")) {
-    const n = Number(item.integrationCode.slice("titulo:".length));
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  if (item.itemType === "boleto" && item.omieCode && item.omieCode > 0) return item.omieCode;
-  return null;
-}
-
-async function resolveItemDocumentLink(dueItemId: number, phone: string) {
+async function resolveItemDocumentLink(
+  dueItemId: number,
+  phone: string,
+  options?: { allowPaid?: boolean },
+) {
   const item = await getDueItemById(dueItemId);
   if (!item) throw new Error(`Documento ${dueItemId} não encontrado.`);
   const app = listOmieApps().find((entry) => entry.id === item.omieAppId);
   if (!app) throw new Error(`App Omie não encontrado para o item ${dueItemId}.`);
+
+  const allowPaid = options?.allowPaid === true;
+  const live = await verifyDueItemOpenLive(item);
+  if (!live.ok) {
+    if (!allowPaid) throw new Error(`Documento ${dueItemId}: ${live.error}`);
+    console.warn("[waba-cobranca] Omie indisponível no link; manual liberado", dueItemId, live.error);
+  } else if (!live.open) {
+    await updateDueItemStatus(item.id, live.closedAs);
+    if (live.nCodTitulo) {
+      await closeCompanionFiscalDueItems({
+        omieAppId: item.omieAppId,
+        omieCode: live.nCodTitulo,
+        dueDate: item.dueDate,
+        status: live.closedAs,
+      });
+    }
+    if (!allowPaid) {
+      throw new Error(
+        `Documento ${dueItemId} já está ${live.status ?? live.closedAs} na Omie — link de cobrança bloqueado.`,
+      );
+    }
+    console.warn("[waba-cobranca] título pago; envio manual liberado", dueItemId, live.status);
+  }
 
   const result = await resolveDueItemPdfWithStatus(app, item);
   let target =
@@ -97,7 +120,7 @@ async function resolveItemDocumentLink(dueItemId: number, phone: string) {
 
   // NFS-e/NF-e costumam vir só em PDF base64 — tenta boleto do título para o template.
   if (!isPublicTemplateUrl(target) && item.itemType !== "boleto") {
-    const tituloCode = tituloCodeFromItem(item);
+    const tituloCode = tituloCodeFromDueItem(item);
     if (tituloCode) {
       const boleto = await resolveDueItemPdfWithStatus(app, {
         ...item,
@@ -158,18 +181,29 @@ async function resolveItemDocumentLink(dueItemId: number, phone: string) {
 export async function notifyCobrancaViaWabaTemplate(
   chatId: string,
   dueItemIds: number[],
-  options?: { kind?: WabaDocsTemplateKind },
+  options?: { kind?: WabaDocsTemplateKind; allowPaid?: boolean },
 ) {
   const phone = digitsPhone(chatId);
   const kind: WabaDocsTemplateKind = options?.kind ?? "envio";
+  const allowPaid = options?.allowPaid === true;
   const uniqueIds = [...new Set(dueItemIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (!uniqueIds.length) throw new Error("Nenhum documento para enviar.");
 
+  // Carrega itens e mantém 1 cobrança por parcela (boleto preferido).
+  const loaded = (
+    await Promise.all(uniqueIds.map(async (id) => ({ id, item: await getDueItemById(id) })))
+  )
+    .map((row) => row.item)
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const payableIds = new Set(preferPayableDocsPerTitle(loaded).map((item) => item.id));
+  const filteredIds = uniqueIds.filter((id) => payableIds.has(id));
+  if (!filteredIds.length) throw new Error("Nenhum documento cobrável para enviar.");
+
   const errors: string[] = [];
   const resolved = await Promise.all(
-    uniqueIds.map(async (dueItemId) => {
+    filteredIds.map(async (dueItemId) => {
       try {
-        const doc = await resolveItemDocumentLink(dueItemId, phone);
+        const doc = await resolveItemDocumentLink(dueItemId, phone, { allowPaid });
         return {
           ok: true as const,
           dueItemId,

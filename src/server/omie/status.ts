@@ -145,3 +145,12 @@ export const OPEN_STATUS_SQL_LIST = [
   "EM ABERTO",
   "A RECEBER",
 ] as const;
+
+/** Status financeiros quitados/cancelados (lista “Recebidos” em Vencimentos). */
+export const CLOSED_STATUS_SQL_LIST = [
+  "RECEBIDO",
+  "CANCELADO",
+  "BAIXADO",
+  "LIQUIDADO",
+  "PAGO",
+] as const;

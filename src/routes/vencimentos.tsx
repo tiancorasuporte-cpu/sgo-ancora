@@ -1,11 +1,19 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
 import { AppShell, useShellSearch } from "@/components/AppShell";
 import { Icon } from "@/components/Icon";
 import { btnOnPrimaryOutline, btnPrimary, PageTitle } from "@/components/PageChrome";
 import { paginateList, TablePager } from "@/components/TablePager";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,6 +26,7 @@ import {
   getDueItemBoletoViewFn,
   getSyncDueItemsStatusFn,
   listDueItemsFn,
+  previewDueItemsSendFn,
   sendDueItemNotificationFn,
   sendSelectedDueItemsFn,
   syncDueItemsFn,
@@ -43,6 +52,7 @@ const TYPE_LABELS = {
 } as const;
 
 type TypeFilter = "all" | DueItemType;
+type ListScope = "open" | "received";
 
 const searchSchema = z.object({
   page: z.coerce.number().int().min(1).catch(1),
@@ -52,12 +62,17 @@ export const Route = createFileRoute("/vencimentos")({
   validateSearch: searchSchema,
   beforeLoad: () => requireModule("vencimentos"),
   loader: async () => {
-    const [items, apps, notifySettings] = await Promise.all([
+    const [lists, apps, notifySettings] = await Promise.all([
       listDueItemsFn(),
       getOmieAppsFn(),
       getNotificationSettingsFn().catch(() => null),
     ]);
-    return { items, apps, notifySettings };
+    return {
+      openItems: lists.open,
+      receivedItems: lists.received,
+      apps,
+      notifySettings,
+    };
   },
   head: () => ({
     meta: [{ title: `Vencimentos — ${APP_NAME}` }],
@@ -178,12 +193,14 @@ function StatCard({
 }
 
 function VencimentosPage() {
-  const { items, apps, notifySettings } = Route.useLoaderData();
+  const { openItems, receivedItems, apps, notifySettings } = Route.useLoaderData();
   const testMode = Boolean(notifySettings?.testModeEnabled);
   const navigate = Route.useNavigate();
   const router = useRouter();
   const { page: urlPage } = Route.useSearch();
   const { query } = useShellSearch();
+  const [listScope, setListScope] = useState<ListScope>("open");
+  const items = listScope === "open" ? openItems : receivedItems;
   const [appFilter, setAppFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [clientFilter, setClientFilter] = useState("");
@@ -204,12 +221,21 @@ function VencimentosPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncPercent, setSyncPercent] = useState(0);
   const [syncLabel, setSyncLabel] = useState("");
+  const [paidConfirmWarnings, setPaidConfirmWarnings] = useState<string[] | null>(
+    null,
+  );
+  const [checkingPaid, setCheckingPaid] = useState(false);
+  const paidConfirmResolveRef = useRef<((ok: boolean) => void) | null>(null);
+  const paidConfirmDecidedRef = useRef(false);
+  const paidConfirmOpenedAtRef = useRef(0);
   const busy =
     sendingId !== null ||
     bulkSending ||
     viewingId !== null ||
     savingPhoneId !== null ||
-    syncing;
+    syncing ||
+    checkingPaid ||
+    paidConfirmWarnings != null;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -290,7 +316,18 @@ function VencimentosPage() {
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [query, appFilter, typeFilter, clientFilter, documentFilter, dueFrom, dueTo, issueFrom, issueTo]);
+  }, [
+    query,
+    listScope,
+    appFilter,
+    typeFilter,
+    clientFilter,
+    documentFilter,
+    dueFrom,
+    dueTo,
+    issueFrom,
+    issueTo,
+  ]);
 
   const setPage = (nextPage: number) => {
     navigate({ search: { page: nextPage } });
@@ -383,10 +420,49 @@ function VencimentosPage() {
     }
   }
 
+  async function confirmPaidWarnings(dueItemIds: number[]) {
+    setCheckingPaid(true);
+    try {
+      let warnings: string[] = [];
+      try {
+        const preview = await previewDueItemsSendFn({ data: { dueItemIds } });
+        warnings = preview.warnings;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Falha ao consultar Omie.";
+        warnings = [
+          `Não foi possível confirmar na Omie se o(s) documento(s) estão pagos (${msg}).`,
+        ];
+      }
+      if (!warnings.length) return true;
+      return new Promise<boolean>((resolve) => {
+        paidConfirmDecidedRef.current = false;
+        paidConfirmResolveRef.current = resolve;
+        paidConfirmOpenedAtRef.current = Date.now();
+        setPaidConfirmWarnings(warnings);
+      });
+    } finally {
+      setCheckingPaid(false);
+    }
+  }
+
+  function closePaidConfirm(ok: boolean) {
+    if (paidConfirmDecidedRef.current) return;
+    paidConfirmDecidedRef.current = true;
+    const resolve = paidConfirmResolveRef.current;
+    paidConfirmResolveRef.current = null;
+    setPaidConfirmWarnings(null);
+    resolve?.(ok);
+  }
+
   async function sendAlert(item: DueItem) {
     setSendingId(item.id);
     setFeedback(null);
     try {
+      const proceed = await confirmPaidWarnings([item.id]);
+      if (!proceed) {
+        setFeedback({ type: "info", text: "Envio cancelado." });
+        return;
+      }
       const result = await sendDueItemNotificationFn({
         data: { dueItemId: item.id },
       });
@@ -414,6 +490,11 @@ function VencimentosPage() {
     setBulkSending(true);
     setFeedback(null);
     try {
+      const proceed = await confirmPaidWarnings(ids);
+      if (!proceed) {
+        setFeedback({ type: "info", text: "Envio em lote cancelado." });
+        return;
+      }
       const result = await sendSelectedDueItemsFn({
         data: { dueItemIds: ids },
       });
@@ -441,8 +522,8 @@ function VencimentosPage() {
 
   return (
     <AppShell mobileTitle="Vencimentos" searchPlaceholder="Busca rápida (cliente, documento, telefone)...">
-      <main className="flex-1 p-margin-mobile md:p-margin-desktop">
-        <div className="mx-auto max-w-7xl space-y-lg">
+      <main className="vencimentos-fit flex-1 p-margin-mobile md:p-margin-desktop">
+        <div className="vencimentos-fit-inner mx-auto max-w-7xl space-y-lg">
           <PageTitle
             title="Vencimentos"
             subtitle={
@@ -588,19 +669,82 @@ function VencimentosPage() {
             </div>
           ) : null}
 
+          <div className="flex flex-wrap gap-xs">
+            {(
+              [
+                ["open", "Em aberto", openItems.length],
+                ["received", "Recebidos", receivedItems.length],
+              ] as const
+            ).map(([value, label, count]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  setListScope(value);
+                  setPage(1);
+                }}
+                className={cn(
+                  "inline-flex items-center gap-xs rounded-full px-md py-sm text-label-md transition-colors",
+                  listScope === value
+                    ? "bg-primary font-semibold text-on-primary"
+                    : "bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high",
+                )}
+              >
+                {label}
+                <span
+                  className={cn(
+                    "rounded-full px-sm py-px text-[11px] tabular-nums",
+                    listScope === value
+                      ? "bg-on-primary/15 text-on-primary"
+                      : "bg-surface-container-highest text-on-surface-variant",
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {listScope === "received" ? (
+            <p className="text-body-md text-on-surface-variant">
+              Documentos que a Omie já marcou como pagos/fechados. Dá para reenviar o WhatsApp se
+              precisar — o sistema avisa antes.
+            </p>
+          ) : null}
+
           <div className="grid gap-sm sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Documentos" value={String(summary.count)} hint="Com os filtros atuais" />
+            <StatCard
+              label="Documentos"
+              value={String(summary.count)}
+              hint={listScope === "received" ? "Na aba Recebidos" : "Com os filtros atuais"}
+            />
             <StatCard label="Valor total" value={formatMoney(summary.total)} />
-            <StatCard
-              label="Vencem hoje"
-              value={String(summary.todayCount)}
-              tone={summary.todayCount > 0 ? "ok" : "default"}
-            />
-            <StatCard
-              label="Em atraso"
-              value={String(summary.overdue)}
-              tone={summary.overdue > 0 ? "warn" : "default"}
-            />
+            {listScope === "open" ? (
+              <>
+                <StatCard
+                  label="Vencem hoje"
+                  value={String(summary.todayCount)}
+                  tone={summary.todayCount > 0 ? "ok" : "default"}
+                />
+                <StatCard
+                  label="Em atraso"
+                  value={String(summary.overdue)}
+                  tone={summary.overdue > 0 ? "warn" : "default"}
+                />
+              </>
+            ) : (
+              <>
+                <StatCard
+                  label="Recebidos (lista)"
+                  value={String(receivedItems.length)}
+                  tone="ok"
+                />
+                <StatCard
+                  label="Em aberto (lista)"
+                  value={String(openItems.length)}
+                />
+              </>
+            )}
           </div>
 
           {filtersOpen ? (
@@ -804,7 +948,9 @@ function VencimentosPage() {
                         className="px-md py-2xl text-center text-on-surface-variant"
                       >
                         {items.length === 0
-                          ? "Nenhum documento na janela sincronizada. Configure os apps Omie e sincronize."
+                          ? listScope === "received"
+                            ? "Nenhum documento recebido/fechado na janela recente."
+                            : "Nenhum documento na janela sincronizada. Configure os apps Omie e sincronize."
                           : "Nenhum resultado para os filtros aplicados."}
                       </td>
                     </tr>
@@ -812,6 +958,7 @@ function VencimentosPage() {
                     pagination.items.map((item) => {
                       const tone = dueTone(item.dueDate);
                       const selected = selectedIds.has(item.id);
+                      const statusLabel = (item.status ?? "").trim() || "RECEBIDO";
                       return (
                         <tr
                           key={item.id}
@@ -837,6 +984,9 @@ function VencimentosPage() {
                             <p className="truncate font-medium text-primary">
                               {item.clientName ?? "—"}
                             </p>
+                            {listScope === "received" ? (
+                              <p className="mt-px text-label-md text-secondary">{statusLabel}</p>
+                            ) : null}
                           </td>
                           <td className="px-md py-sm tabular-nums text-on-surface">
                             {item.documentNumber ?? "—"}
@@ -848,9 +998,13 @@ function VencimentosPage() {
                             <span
                               className={cn(
                                 "inline-flex rounded-md px-sm py-xs text-label-md font-semibold tabular-nums",
-                                tone === "overdue" && "bg-error-container/40 text-error",
-                                tone === "today" && "bg-secondary-container/60 text-on-secondary-container",
-                                tone === "upcoming" && "text-primary",
+                                listScope === "received"
+                                  ? "bg-secondary-container/40 text-on-secondary-container"
+                                  : tone === "overdue"
+                                    ? "bg-error-container/40 text-error"
+                                    : tone === "today"
+                                      ? "bg-secondary-container/60 text-on-secondary-container"
+                                      : "text-primary",
                               )}
                             >
                               {formatDate(item.dueDate)}
@@ -956,7 +1110,11 @@ function VencimentosPage() {
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   disabled={busy}
-                                  onSelect={() => void sendAlert(item)}
+                                  onSelect={(event) => {
+                                    // Evita o menu “roubar” o foco e fechar o diálogo de aviso.
+                                    event.preventDefault();
+                                    void sendAlert(item);
+                                  }}
                                 >
                                   <Icon name="send" className="text-[16px]" />
                                   Enviar WhatsApp
@@ -981,6 +1139,55 @@ function VencimentosPage() {
           </div>
         </div>
       </main>
+
+      <Dialog
+        open={paidConfirmWarnings != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            // Clique residual do dropdown pode disparar close logo ao abrir.
+            if (Date.now() - paidConfirmOpenedAtRef.current < 400) return;
+            closePaidConfirm(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-[32rem]">
+          <DialogHeader>
+            <DialogTitle>Documento já pago / fechado</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-sm text-left text-sm text-muted-foreground">
+                <p>
+                  A Omie indica que{" "}
+                  {(paidConfirmWarnings?.length ?? 0) === 1
+                    ? "este documento já foi pago ou fechado"
+                    : `${paidConfirmWarnings?.length ?? 0} documentos já foram pagos ou fechados`}
+                  . O envio automático bloqueia; no manual você pode seguir se quiser.
+                </p>
+                <ul className="max-h-56 list-disc space-y-xs overflow-y-auto rounded-md border border-outline-variant bg-surface px-md py-sm pl-lg text-primary">
+                  {(paidConfirmWarnings ?? []).map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-sm">
+            <button
+              type="button"
+              className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium shadow-sm hover:bg-accent"
+              onClick={() => closePaidConfirm(false)}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className={btnPrimary}
+              onClick={() => closePaidConfirm(true)}
+            >
+              Enviar mesmo assim
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }

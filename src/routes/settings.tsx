@@ -75,9 +75,10 @@ function NotificationSettings({
         Alertas de vencimento
       </h3>
       <p className="mb-md text-body-md text-on-surface-variant">
-        Envia WhatsApp com 1 dia de antecedência para documentos (boleto, NF-e e NFS-e) que vencem
-        amanhã, e um segundo lembrete 10 dias após o vencimento se ainda estiverem em aberto. Usa o
-        telefone 2 do cadastro Omie; se estiver vazio, tenta celular / telefone 1.
+        Envia WhatsApp com 1 dia de antecedência (D-1) e um lembrete 10 dias após o vencimento se
+        ainda estiverem em aberto. Antes de cada envio o SGO confere o título na Omie — pago/cancelado
+        não é cobrado. Por parcela manda o boleto (não empilha NF). Ativação: desligue o
+        automacao-omie → modo teste + telefone de teste → 1 dia de teste → desligue o modo teste.
       </p>
       <form
         className="space-y-md"

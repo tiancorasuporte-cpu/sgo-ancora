@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { getSetting, setSetting } from "@/db/settings";
 import { sendDueReminders } from "@/server/omie/notifications";
-import { syncAllOmieApps } from "@/server/omie/sync";
+import { syncAllOmieApps, syncForNotificationWindow } from "@/server/omie/sync";
 
 let schedulerStarted = false;
 
@@ -23,6 +23,13 @@ async function runNotificationsOnce() {
   if (notifyInProgress) return;
   notifyInProgress = true;
   try {
+    // Banco fresco na janela D-1/atraso; o gate Omie ao vivo ainda bloqueia pagos.
+    try {
+      await syncForNotificationWindow();
+      lastSyncAt = Date.now();
+    } catch (error) {
+      console.warn("[scheduler] sync pré-alerta falhou; seguindo com gate Omie ao vivo", error);
+    }
     await sendDueReminders();
   } finally {
     notifyInProgress = false;

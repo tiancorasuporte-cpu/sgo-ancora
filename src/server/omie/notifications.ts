@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { getSetting } from "@/db/settings";
 import {
+  closeCompanionFiscalDueItems,
   countSuccessfulNotifyPhonesLastHour,
   DEFAULT_OVERDUE_NOTIFICATION_DAYS,
   getDueItemById,
@@ -10,6 +11,7 @@ import {
   insertNotificationLog,
   markDueItemNotified,
   markDueItemOverdueNotified,
+  updateDueItemStatus,
 } from "@/db/due-items";
 import type { DueItem } from "@/db/schema";
 import type { NotificationKind } from "@/db/schema";
@@ -17,6 +19,10 @@ import { APP_NAME } from "@/lib/brand";
 import { formatDisplayDate, listOmieApps } from "@/server/omie/client";
 import { resolveDueItemPdfWithStatus } from "@/server/omie/documents";
 import { clientDisplayName, clientPhones, getCliente } from "@/server/omie/clients";
+import {
+  preferPayableDocsPerTitle,
+  verifyDueItemOpenLive,
+} from "@/server/omie/receivable-live";
 import { isOpenReceivableStatus } from "@/server/omie/status";
 import {
   sendWhatsAppDocument,
@@ -354,14 +360,118 @@ async function sendItemToPhone(
   chatId: string,
   message: string,
   errors: string[],
+  options?: { allowPaid?: boolean },
 ) {
   if (usesWabaTemplateForCobranca()) {
     // Botão manual / envio avulso → templates envio_para_pagamento_*.
-    await notifyCobrancaViaWabaTemplate(chatId, [item.id], { kind: "envio" });
+    await notifyCobrancaViaWabaTemplate(chatId, [item.id], {
+      kind: "envio",
+      allowPaid: options?.allowPaid === true,
+    });
     return;
   }
   await sendWhatsAppText(chatId, message);
   await sendItemPdf(chatId, item, errors);
+}
+
+type LiveGateMode = "strict" | "advise";
+
+/** Grava status local quando Omie confirma pago/cancelado (companions fiscais também). */
+async function persistClosedFromLive(item: DueItem) {
+  const live = await verifyDueItemOpenLive(item);
+  if (!live.ok || live.open) return;
+  await updateDueItemStatus(item.id, live.closedAs);
+  if (live.nCodTitulo) {
+    await closeCompanionFiscalDueItems({
+      omieAppId: item.omieAppId,
+      omieCode: live.nCodTitulo,
+      dueDate: item.dueDate,
+      status: live.closedAs,
+    });
+  }
+}
+
+/**
+ * Omie ao vivo.
+ * - strict (automático): pago/API falha → bloqueia; grava status na hora
+ * - advise (manual): pago/API falha → avisa e libera; NÃO grava aqui
+ *   (grava só depois do WhatsApp ok, senão some da lista sem enviar)
+ * - persist:false = só consulta
+ */
+async function assertDueItemOpenLive(
+  item: DueItem,
+  mode: LiveGateMode = "strict",
+  options?: { persist?: boolean },
+): Promise<{ ok: true; warning?: string } | { ok: false; error: string }> {
+  // Manual nunca persiste no gate — evita sumir da tela antes/sem o envio.
+  const persist = mode === "strict" && options?.persist !== false;
+  const live = await verifyDueItemOpenLive(item);
+
+  if (!live.ok) {
+    if (mode === "advise") {
+      return {
+        ok: true,
+        warning: `${item.clientName ?? "Sem cliente"} (#${item.id}): não deu para confirmar na Omie (${live.error}).`,
+      };
+    }
+    return {
+      ok: false,
+      error: `${item.clientName ?? "Sem cliente"} (#${item.id}): não enviado — ${live.error}`,
+    };
+  }
+
+  if (!live.open) {
+    if (persist) {
+      await updateDueItemStatus(item.id, live.closedAs);
+      if (live.nCodTitulo) {
+        await closeCompanionFiscalDueItems({
+          omieAppId: item.omieAppId,
+          omieCode: live.nCodTitulo,
+          dueDate: item.dueDate,
+          status: live.closedAs,
+        });
+      }
+    }
+    const label = live.status ?? live.closedAs;
+    if (mode === "advise") {
+      return {
+        ok: true,
+        warning: `${item.clientName ?? "Sem cliente"} · doc ${item.documentNumber ?? item.id}: Omie indica ${label} (já pago/fechado).`,
+      };
+    }
+    return {
+      ok: false,
+      error: `${item.clientName ?? "Sem cliente"} (#${item.id}): Omie indica ${label} — cobrança automática bloqueada.`,
+    };
+  }
+
+  if (!isOpenReceivableStatus(item.status) && mode === "strict") {
+    return {
+      ok: false,
+      error: `${item.clientName ?? "Sem cliente"}: documento não está em aberto (${item.status ?? "sem status"})`,
+    };
+  }
+
+  if (persist && live.status && live.status !== item.status) {
+    await updateDueItemStatus(item.id, live.status);
+  }
+  return { ok: true };
+}
+
+/** Pré-checagem para UI manual: avisos de pago sem bloquear (não grava status). */
+export async function previewDueItemsSend(dueItemIds: number[]) {
+  const uniqueIds = [...new Set(dueItemIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const warnings: string[] = [];
+  for (const id of uniqueIds) {
+    const row = await getDueItemById(id);
+    if (!row) {
+      warnings.push(`Documento #${id} não encontrado.`);
+      continue;
+    }
+    const gate = await assertDueItemOpenLive(row, "advise", { persist: false });
+    if (gate.ok && gate.warning) warnings.push(gate.warning);
+  }
+  return { warnings };
 }
 
 export async function sendDueItemReminder(dueItemId: number) {
@@ -370,10 +480,13 @@ export async function sendDueItemReminder(dueItemId: number) {
     return { ok: false as const, error: "Documento não encontrado." };
   }
 
-  const closed = !isOpenReceivableStatus(row.status);
-  if (closed) {
-    return { ok: false as const, error: "Este documento já está quitado, cancelado ou sem status em aberto." };
+  // Manual: avisa se pago, mas não impede; não grava status antes do WhatsApp.
+  const liveGate = await assertDueItemOpenLive(row, "advise", { persist: false });
+  const warnings: string[] = [];
+  if (!liveGate.ok) {
+    return { ok: false as const, error: liveGate.error };
   }
+  if (liveGate.warning) warnings.push(liveGate.warning);
 
   const quota = await remainingHourlyQuota();
   if (quota.remaining <= 0) {
@@ -414,7 +527,7 @@ export async function sendDueItemReminder(dueItemId: number) {
     }
 
     try {
-      await sendItemToPhone(item, chatId, message, errors);
+      await sendItemToPhone(item, chatId, message, errors, { allowPaid: true });
       await insertNotificationLog({
         dueItemId: item.id,
         phone,
@@ -439,18 +552,21 @@ export async function sendDueItemReminder(dueItemId: number) {
   }
 
   if (sentPhones === 0) {
-    return { ok: false as const, error: errors.join(" | ") || "Falha ao enviar." };
+    return { ok: false as const, error: errors.join(" | ") || "Falha ao enviar.", warnings };
   }
 
   if (!target.testMode) {
     await markDueItemNotified(item.id);
   }
+  // Só agora alinha status local (pago some da lista depois do envio ok).
+  await persistClosedFromLive(item);
 
   return {
     ok: true as const,
     sentPhones,
     testMode: target.testMode,
-    errors,
+    errors: [...warnings, ...errors],
+    warnings,
   };
 }
 
@@ -480,8 +596,14 @@ async function sendReminderBatch(
     wabaKind?: "lembrete" | "envio";
     /** Como marcar notificado; padrão segue o kind. */
     markAs?: NotificationKind;
+    /** strict = automático (bloqueia pago); advise = manual (avisa e envia). */
+    liveGate?: LiveGateMode;
+    /** Manual: permite link/PDF mesmo se Omie disser pago. */
+    allowPaid?: boolean;
   },
 ): Promise<ReminderBatchResult & { quotaUsed: number }> {
+  const liveGateMode: LiveGateMode = options.liveGate ?? "strict";
+  const allowPaid = options.allowPaid === true || liveGateMode === "advise";
   let quota = await remainingHourlyQuota();
   let sent = 0;
   let skipped = 0;
@@ -506,14 +628,19 @@ async function sendReminderBatch(
 
   const groups = new Map<string, PendingGroup>();
 
-  // Resolve telefones em paralelo (Omie) — era o maior gargalo antes de enviar.
+  // Uma cobrança por parcela (boleto > NF) antes de checar Omie / telefone.
+  const payableItems = preferPayableDocsPerTitle(items);
+  skipped += Math.max(0, items.length - payableItems.length);
+
+  // Resolve telefones + gate Omie ao vivo.
+  // Manual (advise): não grava status no gate; automático (strict) grava/bloqueia.
   const prepared = await Promise.all(
-    items.map(async (rawItem) => {
-      if (!isOpenReceivableStatus(rawItem.status)) {
-        return {
-          ok: false as const,
-          error: `${rawItem.clientName ?? "Sem cliente"}: documento não está em aberto (${rawItem.status ?? "sem status"})`,
-        };
+    payableItems.map(async (rawItem) => {
+      const gate = await assertDueItemOpenLive(rawItem, liveGateMode, {
+        persist: liveGateMode === "strict",
+      });
+      if (!gate.ok) {
+        return { ok: false as const, error: gate.error };
       }
       try {
         const item = await enrichDueItem(rawItem);
@@ -524,7 +651,7 @@ async function sendReminderBatch(
             error: `${item.clientName ?? "Sem cliente"}: telefone inválido ou ausente`,
           };
         }
-        return { ok: true as const, item, target };
+        return { ok: true as const, item, target, warning: gate.warning };
       } catch (error) {
         return {
           ok: false as const,
@@ -542,6 +669,7 @@ async function sendReminderBatch(
       errors.push(entry.error);
       continue;
     }
+    if (entry.warning) errors.push(entry.warning);
     const { item, target } = entry;
     for (const phone of target.phones) {
       const chatId = toWhatsAppChatId(phone);
@@ -611,7 +739,7 @@ async function sendReminderBatch(
         const result = await notifyCobrancaViaWabaTemplate(
           group.chatId,
           group.items.map((item) => item.id),
-          { kind: wabaKind },
+          { kind: wabaKind, allowPaid },
         );
         wabaTemplates = result?.templates ?? [];
         const sentIdSet = new Set(result?.sentDueItemIds ?? []);
@@ -654,6 +782,10 @@ async function sendReminderBatch(
           success: true,
           kind: markAs,
         });
+        // Manual: fecha local só depois do WhatsApp ok (não some sem enviar).
+        if (liveGateMode === "advise") {
+          await persistClosedFromLive(item);
+        }
       }
       sent += deliveredItems.length;
       if (deliveredItems.length > 0) {
@@ -719,13 +851,15 @@ export async function sendSelectedDueItems(dueItemIds: number[]) {
     const testMode = (await getSetting("test_mode_enabled")) === "true";
     const contactBudget = Math.min(maxContactsPerRun(), quota.remaining, uniqueIds.length);
 
-    // Precisa await: fire-and-forget no serverFn é abortado ao fim da request.
+    // Manual: avisa se pago, mas não bloqueia.
     const result = await sendReminderBatch(items, "overdue", {
       testMode,
       delayMs: manualBatchDelayMs(),
       contactBudget,
       wabaKind: "envio",
       markAs: "pre_due",
+      liveGate: "advise",
+      allowPaid: true,
     });
 
     if (result.sent === 0) {
@@ -764,8 +898,9 @@ export async function sendDueReminders(targetDate = new Date()) {
   }
 
   try {
-    const enabled = (await getSetting("notifications_enabled")) ?? "true";
-    if (enabled === "false") {
+    // Default seguro: desligado se a setting não existir (alinhar seed do scheduler).
+    const enabled = (await getSetting("notifications_enabled")) ?? "false";
+    if (enabled !== "true") {
       return { ok: true as const, sent: 0, skipped: 0, errors: [] as string[], testMode: false };
     }
 
@@ -786,6 +921,7 @@ export async function sendDueReminders(targetDate = new Date()) {
       testMode,
       delayMs,
       contactBudget: runBudget,
+      liveGate: "strict",
     });
     const overdueBudget = Math.max(0, runBudget - preDue.quotaUsed);
     const overdue = await sendReminderBatch(overdueItems, "overdue", {
@@ -793,6 +929,7 @@ export async function sendDueReminders(targetDate = new Date()) {
       delayMs,
       overdueDays,
       contactBudget: overdueBudget,
+      liveGate: "strict",
     });
 
     return {
