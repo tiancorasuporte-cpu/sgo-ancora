@@ -29,7 +29,7 @@ async function runNotificationsOnce() {
       const daysBack = 12;
       const daysAhead = 2;
       console.info("[sync-notify] start", { daysBack, daysAhead });
-      await runExclusiveSync(daysBack, daysAhead);
+      await runExclusiveSync(daysBack, daysAhead, undefined, { mode: "quick" });
       lastSyncAt = Date.now();
       console.info("[sync-notify] done");
     } catch (error) {
@@ -40,7 +40,8 @@ async function runNotificationsOnce() {
     notifyInProgress = false;
   }
 }
-let lastSyncAt = 0;
+// Evita sync full logo no boot/deploy (travava o botão em "Aguardando… 1%").
+let lastSyncAt = Date.now();
 let lastNotifySlot = "";
 
 function todayKey() {
@@ -76,7 +77,8 @@ async function tick() {
   try {
     const now = Date.now();
     if (now - lastSyncAt > 6 * 60 * 60 * 1000) {
-      await runExclusiveSync();
+      // Mesmo modo quick da UI — full com movimentos é pesado demais no agendador.
+      await runExclusiveSync(90, 120, undefined, { mode: "quick" });
     }
 
     const notifyTime = (await getSetting("notification_time")) ?? "09:00";
@@ -166,6 +168,19 @@ type ManualSyncJob = {
   label: string;
 };
 
+type DueSyncProg = {
+  ativo: boolean;
+  percent: number;
+  label: string;
+};
+
+/** Progresso ao vivo (mesmo padrão do sync de produtos em sgo-cadastros-sync). */
+const DUE_PROG = ((globalThis as Record<string, unknown>)["__sgoDueSyncProg"] ??= {
+  ativo: false,
+  percent: 0,
+  label: "",
+}) as DueSyncProg;
+
 let manualSyncJob: ManualSyncJob = {
   status: "idle",
   startedAt: null,
@@ -176,9 +191,9 @@ let manualSyncJob: ManualSyncJob = {
   label: "",
 };
 
-/** Uma sync por vez (manual + scheduler), em fila — não mistura janelas diferentes. */
-let activeSyncPromise: Promise<ManualSyncResult> | null = null;
-let syncChain: Promise<unknown> = Promise.resolve();
+/** Mutex síncrono (evita corrida do Promise chain no boot). */
+let syncBusy = false;
+const syncWaitQueue: Array<() => void> = [];
 
 function snapshotManualSyncJob() {
   return {
@@ -192,47 +207,66 @@ function snapshotManualSyncJob() {
   };
 }
 
+function publishDueProgress(percent: number, label: string) {
+  DUE_PROG.ativo = true;
+  DUE_PROG.percent = Math.max(0, Math.min(99, percent));
+  DUE_PROG.label = label;
+  if (manualSyncJob.status === "running") {
+    manualSyncJob.percent = DUE_PROG.percent;
+    manualSyncJob.label = label;
+  }
+}
+
+async function withDueSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (syncBusy) {
+    await new Promise<void>((resolve) => {
+      syncWaitQueue.push(resolve);
+    });
+  }
+  syncBusy = true;
+  DUE_PROG.ativo = true;
+  try {
+    return await fn();
+  } finally {
+    syncBusy = false;
+    DUE_PROG.ativo = syncWaitQueue.length > 0;
+    const next = syncWaitQueue.shift();
+    next?.();
+  }
+}
+
 function runExclusiveSync(
   daysBack = 90,
   daysAhead = 120,
   onProgress?: Parameters<typeof syncAllOmieApps>[2],
   options?: Parameters<typeof syncAllOmieApps>[3],
 ) {
-  const run = async (): Promise<ManualSyncResult> => {
+  return withDueSyncLock(async () => {
     lastSyncAt = Date.now();
-    const work = (async () => {
-      const { abandonStaleOpenSyncLogs } = await import("@/db/due-items");
-      const abandoned = await abandonStaleOpenSyncLogs();
-      if (abandoned > 0) console.warn("[sync] fechou sync_log órfãos:", abandoned);
-      return await syncAllOmieApps(daysBack, daysAhead, onProgress, options);
-    })();
-    activeSyncPromise = work;
-    try {
-      return await work;
-    } finally {
-      if (activeSyncPromise === work) activeSyncPromise = null;
-    }
-  };
-
-  const queued = syncChain.then(run, run);
-  syncChain = queued.then(
-    () => undefined,
-    () => undefined,
-  );
-  return queued;
+    const { abandonStaleOpenSyncLogs } = await import("@/db/due-items");
+    const abandoned = await abandonStaleOpenSyncLogs();
+    if (abandoned > 0) console.warn("[sync] fechou sync_log órfãos:", abandoned);
+    return syncAllOmieApps(
+      daysBack,
+      daysAhead,
+      (progress) => {
+        publishDueProgress(progress.percent, progress.label);
+        onProgress?.(progress);
+      },
+      options,
+    );
+  });
 }
 
 /** Sync síncrono (scheduler / admin). Preferir `startManualSyncBackground` na UI. */
 export async function runManualSync() {
-  return runExclusiveSync();
+  return runExclusiveSync(90, 120, undefined, { mode: "quick" });
 }
 
 /**
  * Dispara o sync Omie sem segurar a conexão HTTP.
- * Cloudflare corta requests ~100s; o sync de 3 apps + sleep passa disso.
- *
- * Modo quick (padrão na UI): pula movimentos, busca notas recentes e
- * contas a receber em aberto — bem mais rápido nas sincronizações do dia a dia.
+ * Padrão parecido com produtos: progresso global ao vivo + fila com mutex.
+ * Modo quick na UI (pula movimentos, notas recentes).
  */
 export function startManualSyncBackground() {
   if (manualSyncJob.status === "running") {
@@ -244,38 +278,22 @@ export function startManualSyncBackground() {
     };
   }
 
-  const waitingOther = Boolean(activeSyncPromise);
+  const queued = syncBusy;
   manualSyncJob = {
     status: "running",
     startedAt: Date.now(),
     finishedAt: null,
     result: null,
     error: null,
-    percent: waitingOther ? 1 : 0,
-    label: waitingOther
-      ? "Aguardando outro sync terminar..."
+    percent: queued ? Math.max(2, DUE_PROG.percent) : 2,
+    label: queued
+      ? DUE_PROG.label || "Na fila — acompanhando sync em andamento..."
       : "Iniciando sincronização rápida...",
   };
 
   void (async () => {
     try {
-      while (activeSyncPromise) {
-        if (manualSyncJob.status !== "running") return;
-        manualSyncJob.label = "Aguardando outro sync terminar...";
-        manualSyncJob.percent = Math.max(manualSyncJob.percent, 1);
-        await activeSyncPromise.catch(() => {});
-      }
-
-      const result = await runExclusiveSync(
-        90,
-        120,
-        (progress) => {
-          if (manualSyncJob.status !== "running") return;
-          manualSyncJob.percent = progress.percent;
-          manualSyncJob.label = progress.label;
-        },
-        { mode: "quick" },
-      );
+      const result = await runExclusiveSync(90, 120, undefined, { mode: "quick" });
       const avisos = (result.results ?? []).flatMap((item) =>
         !item.ok
           ? [item.error || item.appId]
@@ -294,6 +312,9 @@ export function startManualSyncBackground() {
           ? `Concluído com avisos (${avisos.length})`
           : "Sincronização concluída",
       };
+      DUE_PROG.ativo = false;
+      DUE_PROG.percent = 100;
+      DUE_PROG.label = manualSyncJob.label;
       console.info("[sync] manual background done", { avisos: avisos.length, mode: "quick" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha na sincronização";
@@ -306,6 +327,8 @@ export function startManualSyncBackground() {
         percent: manualSyncJob.percent,
         label: message,
       };
+      DUE_PROG.ativo = false;
+      DUE_PROG.label = message;
       console.error("[sync] manual background failed", error);
     }
   })();
