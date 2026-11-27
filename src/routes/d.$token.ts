@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-const OMIE_REFRESH_MS = 8_000;
+// NFS-e/NF-e fazem várias idas à Omie (+ download). 8s estourava em produção
+// ("Renovação Omie excedeu 8000ms" → 503 no /d/*).
+const OMIE_REFRESH_MS = 25_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {

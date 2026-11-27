@@ -1,6 +1,12 @@
 import "@tanstack/react-start/server-only";
 
-import { finishSyncLog, markStaleOpenDueItems, startSyncLog, closeNonOpenInvoiceDueItems } from "@/db/due-items";
+import {
+  finishSyncLog,
+  markStaleOpenDueItems,
+  startSyncLog,
+  closeNonOpenInvoiceDueItems,
+  purgeGhostNfseDueItems,
+} from "@/db/due-items";
 import {
   formatOmieDate,
   listOmieApps,
@@ -303,6 +309,12 @@ export async function syncAllOmieApps(
 
   report("Finalizando limpeza de títulos...");
   try {
+    const ghosts = await purgeGhostNfseDueItems();
+    if (ghosts > 0) console.info("[sync] NFS-e fantasmas removidas", { ghosts });
+  } catch (error) {
+    console.warn("[sync] cleanup nfse fantasmas", error);
+  }
+  try {
     await closeNonOpenInvoiceDueItems();
   } catch (error) {
     console.warn("[sync] cleanup notas", error);
@@ -448,6 +460,13 @@ export async function syncTodayFaturamento(onProgress?: SyncProgressHandler) {
       await finishSyncLog(logId, 0, message);
       results.push({ ok: false as const, appId: app.id, appName: app.name, error: message });
     }
+  }
+
+  try {
+    const ghosts = await purgeGhostNfseDueItems();
+    if (ghosts > 0) console.info("[sync-hoje] NFS-e fantasmas removidas", { ghosts });
+  } catch (error) {
+    console.warn("[sync-hoje] cleanup nfse fantasmas", error);
   }
 
   completedUnits = totalUnits;

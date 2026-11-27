@@ -291,6 +291,42 @@ export async function closeNonOpenInvoiceDueItems() {
   return rows.length;
 }
 
+/**
+ * Remove NFS-e fantasmas: mesma parcela/título (ou mesmo nº+cliente+venc.) que já tem NF-e.
+ * Surgiam quando o título de produto vinha com nCodOS e o companion virava NFS-e.
+ */
+export async function purgeGhostNfseDueItems() {
+  const db = await getDb();
+  const rows = await db<{ id: number }[]>`
+    delete from due_items d
+    where d.item_type = 'nfse'
+      and exists (
+        select 1
+        from due_items n
+        where n.item_type = 'nfe'
+          and n.omie_app_id = d.omie_app_id
+          and (
+            (
+              n.omie_code is not null
+              and d.omie_code is not null
+              and n.omie_code = d.omie_code
+              and n.due_date = d.due_date
+            )
+            or (
+              n.document_number is not null
+              and d.document_number is not null
+              and nullif(ltrim(n.document_number, '0'), '') is not null
+              and nullif(ltrim(n.document_number, '0'), '') = nullif(ltrim(d.document_number, '0'), '')
+              and n.client_name is not distinct from d.client_name
+              and n.due_date = d.due_date
+            )
+          )
+      )
+    returning d.id
+  `;
+  return rows.length;
+}
+
 export async function insertNotificationLog(input: {
   dueItemId: number;
   phone: string;

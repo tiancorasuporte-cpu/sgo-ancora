@@ -135,7 +135,10 @@ function lerLocal<T>(k: string, padrao: T): T {
 
 export function SgoShell({ children }: { children: ReactNode }) {
   const router = useRouter();
+  // location muda na hora; resolvedLocation só depois do loader — o destaque do
+  // menu usa a rota “pedida” para acompanhar o clique, sem depender do conteúdo.
   const caminho = useRouterState({ select: (s) => s.location.pathname });
+  const navegando = useRouterState({ select: (s) => s.isLoading || s.status === "pending" });
   const [eu, setEu] = useState<SgoEu | null>(null);
   const [menu, setMenu] = useState<EntradaMenu[] | null>(null);
   const [erroMenu, setErroMenu] = useState(false);
@@ -310,6 +313,9 @@ export function SgoShell({ children }: { children: ReactNode }) {
   const navegar = (e: MouseEvent<HTMLAnchorElement>, href: string) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
+    e.stopPropagation();
+    const alvo = caminhoDoHref(href);
+    if (alvo === caminho && !navegando) return;
     void router.navigate({ href });
     window.scrollTo(0, 0);
   };
@@ -378,7 +384,8 @@ export function SgoShell({ children }: { children: ReactNode }) {
           if (p && p !== (d as Document).body && !p.hasAttribute("data-sgo-busca-oculta") && p.querySelectorAll("input,select,textarea,button").length === 1 && p.children.length <= 3)
             p.setAttribute("data-sgo-busca-oculta", "");
         }
-        setPlaceholder(a.getAttribute("placeholder") || "Buscar nesta tela…");
+        const ph = a.getAttribute("placeholder") || "Buscar nesta tela…";
+        setPlaceholder((atual) => (atual === ph ? atual : ph));
       }
     }, 400);
     return () => clearInterval(t);
@@ -417,17 +424,23 @@ export function SgoShell({ children }: { children: ReactNode }) {
   /* ---------- menu ---------- */
   function linkItem(e: ItemMenu, nivel: 1 | 2 | 3): ReactNode {
     const href = hrefDoItem(e);
-    const on = href === caminho || (ROTA_DO_ITEM_BASE[e.id] ? caminho.startsWith(href + "/") : false);
-    const cls = "side-i" + (nivel === 2 ? " side-sub" : nivel === 3 ? " side-sub2" : "") + (on ? " side-on" : "");
+    const path = caminhoDoHref(href);
+    const on = path === caminho || (ROTA_DO_ITEM_BASE[e.id] ? caminho.startsWith(path + "/") : false);
+    const cls =
+      "side-i" +
+      (nivel === 2 ? " side-sub" : nivel === 3 ? " side-sub2" : "") +
+      (on ? " side-on" : "");
     const t = tickets;
+    // Sem data-link: o onClick já navega; data-link + listener global
+    // podia reentrar na navegação e fazer o item amarelo piscar.
     return (
       <a
         key={e.id}
         className={cls}
         href={href}
-        data-link=""
         title={e.titulo}
         aria-current={on ? "page" : undefined}
+        aria-busy={on && navegando ? true : undefined}
         {...(e.destino === "sgo_atual" ? { target: "_blank", rel: "noopener" } : {})}
         onClick={e.destino === "sgo_atual" ? undefined : (ev) => navegar(ev, href)}
       >
@@ -479,7 +492,7 @@ export function SgoShell({ children }: { children: ReactNode }) {
       <SgoBuscaCtx.Provider value={busca}>
       <div className="app">
         <div className="band">
-          <a className="band-brand" href="/painel" data-link="" onClick={(e) => navegar(e, "/painel")}>
+          <a className="band-brand" href="/painel" onClick={(e) => navegar(e, "/painel")}>
             <span className="logo-tile">
               <img src="/img/logo-sgo.png" alt="Âncora Segurança Patrimonial" />
             </span>

@@ -127,11 +127,13 @@ export function companionFiscalType(detalhes: Record<string, unknown>): "nfe" | 
   const origem = String(detalhes["id_origem"] ?? detalhes["cOrigem"] ?? "").toUpperCase();
 
   // Exige vínculo resolvível no Omie (id/chave/OS). Só "número fiscal" gera NF-e fantasma sem PDF.
-  if (nCodNFSe || nCodOS || /RPS|NFS/i.test(numDoc) || origem.includes("NFSE") || origem.includes("OS")) {
-    return "nfse";
-  }
+  // NF-e explícita vence nCodOS residual — título de produto às vezes traz OS e virava NFS-e fantasma
+  // (ex.: SERGIO DURIGAN 00006450: NF-e ok + NFS-e "não encontrada para a OS").
   if (nIdNfe || chave.length >= 40 || /NFE|DANFE/i.test(numDoc) || origem.includes("NFE")) {
     return "nfe";
+  }
+  if (nCodNFSe || nCodOS || /RPS|NFS/i.test(numDoc) || origem.includes("NFSE") || origem.includes("OS")) {
+    return "nfse";
   }
   return null;
 }
@@ -150,18 +152,7 @@ export function classifyReceivableType(detalhes: Record<string, unknown>): DueIt
   ).trim();
   const doc = String(detalhes["numero_documento"] ?? "").trim();
 
-  if (
-    tipo.includes("NFS") ||
-    nCodNFSe ||
-    nCodOS ||
-    origem.includes("NFSE") ||
-    /nfs-?e|rps/i.test(doc) ||
-    /nfs-?e/i.test(docFiscal)
-  ) {
-    return "nfse";
-  }
-  // NF-e só com tipo/id/chave reais. Nº fiscal sozinho vira fantasma sem DANFE;
-  // o sync ListarNF cobre as notas de produto.
+  // NF-e explícita antes de nCodOS — OS residual em título de produto gerava NFS-e fantasma.
   if (
     tipo.includes("NFE") ||
     tipo === "NF" ||
@@ -171,6 +162,16 @@ export function classifyReceivableType(detalhes: Record<string, unknown>): DueIt
     origem.includes("NFE")
   ) {
     return "nfe";
+  }
+  if (
+    tipo.includes("NFS") ||
+    nCodNFSe ||
+    nCodOS ||
+    origem.includes("NFSE") ||
+    /nfs-?e|rps/i.test(doc) ||
+    /nfs-?e/i.test(docFiscal)
+  ) {
+    return "nfse";
   }
 
   return null;

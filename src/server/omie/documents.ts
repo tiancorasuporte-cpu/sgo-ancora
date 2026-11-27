@@ -728,6 +728,23 @@ export async function resolveNfsePdfWithStatus(
       const link = pickLinkFromResponse(response) ?? enriched?.url ?? null;
       if (link) fallbackLink = link;
 
+      // Link HTTP da Omie basta para /d/* (redirect). Evita baixar o PDF aqui e estourar timeout.
+      if (link && isHttpUrl(link)) {
+        return {
+          document: {
+            filename: `${safeFilename(item.documentNumber?.trim() || `nfse-${attemptId}`)}.pdf`,
+            mimetype: "application/pdf",
+            url: link,
+          },
+          status: null,
+          link,
+          barcode: null,
+          documentNumber:
+            (typeof response["cNumNFSe"] === "string" && response["cNumNFSe"].trim()) ||
+            item.documentNumber,
+        };
+      }
+
       const document = enriched ? await materializePdfDocument(enriched) : null;
       if (document?.base64) {
         return {
@@ -795,7 +812,12 @@ export async function resolveDueItemPdfWithStatus(app: OmieAppConfig, item: DueI
     return nfe;
   }
   if (item.itemType === "nfse") {
-    return resolveNfsePdfWithStatus(app, item);
+    const nfse = await resolveNfsePdfWithStatus(app, item);
+    if (nfse.document?.base64 || nfse.document?.url || nfse.link) return nfse;
+    // Companion fiscal às vezes marca NFS-e por nCodOS residual em título de NF-e de produto.
+    const nfe = await resolveNfePdfWithStatus(app, item);
+    if (nfe.document?.base64 || nfe.document?.url || nfe.link) return nfe;
+    return nfse;
   }
   return {
     document: null,
