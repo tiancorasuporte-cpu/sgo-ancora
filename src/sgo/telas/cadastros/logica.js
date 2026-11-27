@@ -3,7 +3,7 @@
 "use strict";
 var $ = function (s) { return document.querySelector(s); };
 var Q = new URLSearchParams(location.search);
-var S = { tipo: Q.get("tipo") === "produtos" ? "produtos" : Q.get("tipo") === "servicos" ? "servicos" : Q.get("tipo") === "maoobra" ? "maoobra" : "parceiros", q: "", sit: "Ativo", tags: [], est: false, pag: 1, dados: null, aberto: null, todasTags: [] };
+var S = { tipo: Q.get("tipo") === "produtos" ? "produtos" : Q.get("tipo") === "servicos" ? "servicos" : Q.get("tipo") === "maoobra" ? "maoobra" : "parceiros", q: "", sit: "Ativo", tags: [], est: false, fCusto: false, fMarkup: false, famFora: [], pag: 1, dados: null, aberto: null, todasTags: [] };
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 function brl(n) { return n == null || n === "" ? "—" : Number(n).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function num(n) { return Number(n || 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 }); }
@@ -19,6 +19,88 @@ function api(m, u, b) {
 }
 function avisarShell() { try { window.parent.postMessage({ sgo: "alterou" }, location.origin); } catch (e) {} }
 function fat(n) { return n == null ? "—" : Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "×"; }
+// ---------- aplicar o preço sugerido em todos os produtos abaixo do markup (filtro ligado) ----------
+// 1º clique simula (não grava) e mostra o resumo; "Confirmar" grava. Só sobe preço.
+function mkFiltros() { return { q: S.q, situacao: S.sit, estoque: S.tipo === "produtos" && S.est ? 1 : 0, familias_fora: S.tipo === "produtos" ? S.famFora : [] }; }
+function mkAcao() {
+  var el = $("#mk-acao"); if (!el) return;
+  var d = S.dados, on = S.tipo === "produtos" && S.fMarkup && d && d.total > 0;
+  if (!on) { el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  var s = S.mkSim;
+  if (!s) {
+    el.innerHTML = '<div><b>' + d.total + (d.total === 1 ? " produto está" : " produtos estão") + " abaixo do markup mínimo.</b> Aplicar a regra: preço de venda = custo de referência × markup (padrão " + fat(1.7) + '), terminando em ,90.</div><button type="button" class="btn sm" id="mk-sim">Aplicar regra em todos</button>';
+    $("#mk-sim").onclick = function () {
+      var b = this; b.disabled = true; b.textContent = "Calculando…";
+      api("POST", "/api/cadastros/precificacao/aplicar-abaixo", Object.assign({ simular: true }, mkFiltros())).then(function (r) { S.mkSim = r; mkAcao(); })
+        .catch(function (e) { toast(e.message); b.disabled = false; b.textContent = "Aplicar regra em todos"; });
+    };
+    return;
+  }
+  if (!s.total) { el.innerHTML = "<div>Nenhum preço muda com a regra (o sugerido não é maior que o preço atual).</div>" + '<button type="button" class="btn ghost sm" id="mk-cancel">Fechar</button>'; $("#mk-cancel").onclick = function () { S.mkSim = null; mkAcao(); }; return; }
+  var pct = s.soma_de > 0 ? Math.round(((s.soma_para - s.soma_de) / s.soma_de) * 1000) / 10 : null;
+  el.innerHTML = '<div><b>Confirmar: ' + s.total + (s.total === 1 ? " preço vai mudar" : " preços vão mudar") + ".</b> Soma dos preços: " + brl(s.soma_de) + " → <b>" + brl(s.soma_para) + "</b>" + (pct != null ? " (+" + String(pct).replace(".", ",") + "%)" : "") + '. Maiores aumentos: ' + s.exemplos.map(function (x) { return esc(x.codigo) + " " + brl(x.de) + " → " + brl(x.para); }).join("; ") + '. Fica registrado no histórico de cada produto.</div><span style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn ghost sm" id="mk-cancel">Cancelar</button><button type="button" class="btn sm" id="mk-ok">Confirmar e aplicar</button></span>';
+  $("#mk-cancel").onclick = function () { S.mkSim = null; mkAcao(); };
+  $("#mk-ok").onclick = function () {
+    var b = this; b.disabled = true; $("#mk-cancel").disabled = true; b.textContent = "Aplicando…";
+    api("POST", "/api/cadastros/precificacao/aplicar-abaixo", mkFiltros()).then(function (r) {
+      toast("Preço sugerido aplicado em " + (r.aplicados || 0) + " produto(s).");
+      carregar(); avisarShell();
+    }).catch(function (e) { toast(e.message); b.disabled = false; $("#mk-cancel").disabled = false; b.textContent = "Confirmar e aplicar"; });
+  };
+}
+// Filtro de família no cabeçalho: "todas menos estas". Clicar em "Família" abre a lista com caixas
+// (todas marcadas); desmarque o que não quer ver. "Só esta" deixa marcada só uma.
+function thFamilia() {
+  var n = S.famFora.length;
+  var dica = n ? "Escondendo: " + S.famFora.map(function (x) { return x === "__sem__" ? "sem família" : x; }).join(", ") : "Filtrar famílias";
+  return '<button type="button" class="th-f' + (n ? " on" : "") + '" id="th-fam" aria-haspopup="dialog" aria-expanded="' + !$("#fam-pop").hidden + '" title="' + esc(dica) + '">' + (n ? "Família (−" + n + ")" : 'Família <span aria-hidden="true">⏷</span>') + "</button>" + (n ? ' <button type="button" class="th-x" data-f="fam" aria-label="Mostrar todas as famílias" title="Mostrar todas as famílias">✕</button>' : "");
+}
+function famPopItens() {
+  var L = (S.familias || []).filter(function (f) { return f.situacao !== "Inativo" || Number(f.produtos) > 0; });
+  return [{ nome: "__sem__", rot: "— Sem família —", n: S.semFamilia || 0 }].concat(L.map(function (f) { return { nome: f.nome, rot: f.nome, n: f.produtos }; }));
+}
+function famFora(nome) { return S.famFora.some(function (x) { return x.toLowerCase() === nome.toLowerCase(); }); }
+function famPopAbrir() {
+  var pop = $("#fam-pop"), b = $("#th-fam"); if (!pop || !b) return;
+  if (!S.familias) { famCarregar().then(function () { if (S.familias) famPopAbrir(); }); return; }
+  var it = famPopItens(), marc = it.filter(function (x) { return !famFora(x.nome); }).length;
+  pop.innerHTML = '<div class="pop-t"><b>Mostrar famílias</b><span class="sub">' + marc + " de " + it.length + '</span></div><div class="pop-a"><button type="button" class="btn ghost sm" data-p="todas">Marcar todas</button><button type="button" class="btn ghost sm" data-p="nenhuma">Desmarcar todas</button></div><div class="pop-l">' +
+    it.map(function (x, i) { var on = !famFora(x.nome); return '<div class="pop-i"><label><input type="checkbox" data-n="' + esc(x.nome) + '"' + (on ? " checked" : "") + "> <span>" + esc(x.rot) + '</span> <span class="sub">' + num(x.n) + '</span></label><button type="button" class="pop-so" data-so="' + esc(x.nome) + '" title="Mostrar só esta família">só esta</button></div>'; }).join("") +
+    '</div><div class="pop-r"><button type="button" class="btn adv sm" data-p="ok">Pronto</button></div>';
+  var card = pop.parentNode.getBoundingClientRect(), r = b.getBoundingClientRect();
+  pop.style.top = Math.round(r.bottom - card.top + 8) + "px";
+  pop.style.left = Math.max(8, Math.min(Math.round(r.left - card.left), Math.round(card.width) - 300)) + "px";
+  pop.hidden = false; b.setAttribute("aria-expanded", "true");
+  pop.onchange = function (e) {
+    var c = e.target.closest("[data-n]"); if (!c) return;
+    var n = c.dataset.n;
+    S.famFora = S.famFora.filter(function (x) { return x.toLowerCase() !== n.toLowerCase(); });
+    if (!c.checked) S.famFora.push(n);
+    famPopAplicar();
+  };
+  pop.onclick = function (e) {
+    var so = e.target.closest("[data-so]"), p = e.target.closest("[data-p]");
+    if (so) { S.famFora = famPopItens().map(function (x) { return x.nome; }).filter(function (n) { return n !== so.dataset.so; }); famPopAplicar(); famPopAbrir(); return; }
+    if (!p) return;
+    if (p.dataset.p === "ok") { famPopFechar(); return; }
+    S.famFora = p.dataset.p === "todas" ? [] : famPopItens().map(function (x) { return x.nome; });
+    famPopAplicar(); famPopAbrir();
+  };
+  setTimeout(function () { var c = pop.querySelector("input"); if (c) c.focus(); }, 30);
+}
+function famPopFechar() { var pop = $("#fam-pop"); if (!pop || pop.hidden) return; pop.hidden = true; var b = $("#th-fam"); if (b) { b.setAttribute("aria-expanded", "false"); b.focus(); } }
+// recarrega a lista um instante depois da última marcação (dá para ir desmarcando várias)
+function famPopAplicar() {
+  var t = $("#fam-pop .pop-t .sub"), it = famPopItens();
+  if (t) t.textContent = it.filter(function (x) { return !famFora(x.nome); }).length + " de " + it.length;
+  clearTimeout(S.famTimer);
+  S.famTimer = setTimeout(function () { S.pag = 1; carregar(); }, 450);
+}
+// Filtro no cabeçalho da coluna (Custo / Markup): clique liga e desliga.
+function thFiltro(f, nome, on, rotuloOn, dica) {
+  return '<button type="button" class="th-f' + (on ? " on" : "") + '" data-f="' + f + '" aria-pressed="' + on + '" title="' + esc(on ? "Filtro ligado: " + rotuloOn + ". Clique para mostrar todos." : dica) + '">' + (on ? esc(rotuloOn) + " ✕" : esc(nome) + ' <span aria-hidden="true">⏷</span>') + "</button>";
+}
 function tagCls(t) { return t === "Cliente" ? "t-cli" : t === "Fornecedor" ? "t-for" : "t-out"; }
 function tagsHTML(ts) { return (ts || []).map(function (t) { return '<span class="pill ' + tagCls(t) + '">' + esc(t) + "</span>"; }).join(""); }
 
@@ -26,8 +108,12 @@ function carregar() {
   var p = new URLSearchParams({ q: S.q, situacao: S.sit, pagina: S.pag });
   if (S.tipo === "parceiros" && S.tags.length) p.set("tags", S.tags.join(","));
   if (S.tipo === "produtos" && S.est) p.set("estoque", "1");
+  if (S.tipo === "produtos" && S.fCusto) p.set("custo", "sem");
+  if (S.tipo === "produtos" && S.fMarkup) p.set("markup", "abaixo");
+  if (S.tipo === "produtos" && S.famFora.length) p.set("familias_fora", JSON.stringify(S.famFora));
   $("#tb").innerHTML = '<tr><td colspan="9" class="vazio">Carregando…</td></tr>';
-  api("GET", "/api/cadastros/" + S.tipo + "?" + p).then(function (d) { S.dados = d; if (d.tags) S.todasTags = d.tags; desenhar(); }).catch(function (e) { $("#tb").innerHTML = '<tr><td colspan="9" class="vazio">' + esc(e.message) + "</td></tr>"; });
+  S.mkSim = null; mkAcao();
+  api("GET", "/api/cadastros/" + S.tipo + "?" + p).then(function (d) { S.dados = d; if (d.tags) S.todasTags = d.tags; desenhar(); mkAcao(); }).catch(function (e) { $("#tb").innerHTML = '<tr><td colspan="9" class="vazio">' + esc(e.message) + "</td></tr>"; });
 }
 function desenhar() {
   document.querySelectorAll(".seg button").forEach(function (b) { b.classList.toggle("on", b.dataset.tipo === S.tipo); b.setAttribute("aria-pressed", b.dataset.tipo === S.tipo); });
@@ -35,6 +121,9 @@ function desenhar() {
   $("#b-imp").style.display = S.tipo === "servicos" || S.tipo === "maoobra" ? "none" : "";
   var bSync = $("#b-sync-omie");
   if (bSync) bSync.style.display = S.tipo === "parceiros" || S.tipo === "produtos" ? "" : "none";
+  $("#b-fam").style.display = S.tipo === "produtos" ? "" : "none";
+  if (S.tipo !== "produtos") { var pp = $("#fam-pop"); if (pp) pp.hidden = true; }
+  if (S.tipo === "produtos" && !S.familias) famCarregar();
   $("#b-novo").textContent = S.tipo === "servicos" ? "+ Novo serviço" : S.tipo === "maoobra" ? "+ Nova mão de obra" : "+ Novo";
   $("#l-est").style.display = S.tipo === "produtos" ? "inline-flex" : "none";
   $("#tags").style.display = S.tipo === "parceiros" ? "flex" : "none";
@@ -59,11 +148,11 @@ function desenhar() {
       return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + '</td><td><div style="font-weight:500">' + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.categoria, p.obs].filter(Boolean).join(" · ").slice(0, 140)) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + (p.preco_venda == null ? '<span class="sub">a definir</span>' : brl(p.preco_venda)) + '</td><td class="num">' + (p.custo == null ? '<span class="sub">a definir</span>' : brl(p.custo)) + '</td><td class="num">' + (mg == null ? "—" : String(mg).replace(".", ",") + "%") + "</td></tr>";
     }).join("") || '<tr><td colspan="6" class="vazio">Nenhum serviço mensal encontrado.</td></tr>';
   } else {
-    $("#th").innerHTML = '<tr><th>Código</th><th>Descrição</th><th>Un.</th><th style="text-align:right">Estoque</th><th style="text-align:right">Preço de venda</th><th style="text-align:right">Custo</th><th style="text-align:right">Última compra</th><th style="text-align:right" title="Preço de venda ÷ custo de referência (o maior entre o custo e a última compra). Abaixo do mínimo fica vermelho.">Markup</th></tr>';
+    $("#th").innerHTML = '<tr><th>Código</th><th>Descrição</th><th>' + thFamilia() + '</th><th>Un.</th><th style="text-align:right">Estoque</th><th style="text-align:right">Preço de venda</th><th style="text-align:right">' + thFiltro("custo", "Custo", S.fCusto, "Sem custo", "Mostrar só os produtos sem custo") + '</th><th style="text-align:right">Última compra</th><th style="text-align:right">' + thFiltro("markup", "Markup", S.fMarkup, "Abaixo do mínimo", "Mostrar só os produtos com preço abaixo do markup mínimo (preço ÷ custo de referência, o maior entre o custo e a última compra)") + "</th></tr>";
     $("#tb").innerHTML = d.itens.map(function (p) {
       var pr = p.prec || {};
-      return '<tr class="lin' + (pr.alerta ? " alerta" : "") + '" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + "</td><td><div style=\"font-weight:500\">" + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.familia, p.marca, p.modelo, p.ncm ? "NCM " + p.ncm : ""].filter(Boolean).join(" · ")) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + num(p.estoque) + '</td><td class="num">' + brl(p.preco_venda) + (pr.pendente ? '<div class="sub mk-pend" title="O cálculo da última compra deu um preço menor. Abra o produto para aplicar ou manter.">sugerido ' + brl(pr.pendente) + "</div>" : "") + '</td><td class="num">' + brl(p.custo) + '</td><td class="num">' + (p.ultima ? brl(p.ultima.preco) + '<div class="sub">' + esc(p.ultima.fornecedor || "") + " · " + esc(String(p.ultima.data).split("-").reverse().join("/")) + "</div>" : '<span class="sub">sem compra no SGO</span>') + '</td><td class="num">' + (pr.fator == null ? '<span class="sub">' + (pr.custo_ref ? "sem preço" : "sem custo") + "</span>" : '<span class="' + (pr.alerta ? "mk-al" : "mk-ok") + '">' + fat(pr.fator) + "</span>" + (pr.alerta ? '<div class="sub mk-al">abaixo de ' + fat(pr.minimo) + "</div>" : "")) + "</td></tr>";
-    }).join("") || '<tr><td colspan="8" class="vazio">Nenhum produto encontrado.</td></tr>';
+      return '<tr class="lin' + (pr.alerta ? " alerta" : "") + '" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + "</td><td><div style=\"font-weight:500\">" + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.marca, p.modelo, p.ncm ? "NCM " + p.ncm : ""].filter(Boolean).join(" · ")) + "</div></td><td>" + (p.familia ? '<span class="fam">' + esc(p.familia) + "</span>" : '<span class="sub">—</span>') + "</td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + num(p.estoque) + '</td><td class="num">' + brl(p.preco_venda) + (pr.pendente ? '<div class="sub mk-pend" title="O cálculo da última compra deu um preço menor. Abra o produto para aplicar ou manter.">sugerido ' + brl(pr.pendente) + "</div>" : "") + '</td><td class="num">' + brl(p.custo) + '</td><td class="num">' + (p.ultima ? brl(p.ultima.preco) + '<div class="sub">' + esc(p.ultima.fornecedor || "") + " · " + esc(String(p.ultima.data).split("-").reverse().join("/")) + "</div>" : '<span class="sub">sem compra no SGO</span>') + '</td><td class="num">' + (pr.fator == null ? '<span class="sub">' + (pr.custo_ref ? "sem preço" : "sem custo") + "</span>" : '<span class="' + (pr.alerta ? "mk-al" : "mk-ok") + '">' + fat(pr.fator) + "</span>" + (pr.alerta ? '<div class="sub mk-al">abaixo de ' + fat(pr.minimo) + "</div>" : "")) + "</td></tr>";
+    }).join("") || '<tr><td colspan="9" class="vazio">' + (S.fCusto || S.fMarkup || S.famFora.length ? "Nenhum produto neste filtro." : "Nenhum produto encontrado.") + "</td></tr>";
   }
   var ini = d.total ? (d.pagina - 1) * d.por + 1 : 0, fim = Math.min(d.total, d.pagina * d.por);
   $("#tot").textContent = d.total ? ini + "–" + fim + " de " + d.total + (S.tipo === "parceiros" ? " cadastros" : S.tipo === "servicos" ? " serviços" : S.tipo === "maoobra" ? " itens de mão de obra" : " produtos") : "";
@@ -79,7 +168,7 @@ var CAMPOS = {
     ["sec", "Fiscal"], ["ie", "Inscrição estadual"], ["im", "Inscrição municipal"], ["obs", "Observação", "full", "area"],
   ],
   produtos: [
-    ["sec", "Produto"], ["codigo", "Código *"], ["unidade", "Unidade (sigla)"], ["descricao", "Descrição *", "full"], ["familia", "Família"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]], ["marca", "Marca"], ["modelo", "Modelo"],
+    ["sec", "Produto"], ["codigo", "Código *"], ["unidade", "Unidade (sigla)"], ["descricao", "Descrição *", "full"], ["familia", "Família", "", "fam"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]], ["marca", "Marca"], ["modelo", "Modelo"],
     ["sec", "Valores e estoque"], ["preco_venda", "Preço de venda (R$)", "", "dec"], ["custo", "Custo médio / CMC (R$)", "", "dec"], ["markup", "Markup do produto (vazio = automático)", "", "dec"], ["estoque", "Estoque disponível", "", "dec"], ["garantia_dias", "Garantia (dias)", "", "dec"], ["prec"],
     ["sec", "Fiscal"], ["ncm", "NCM"], ["cest", "CEST"], ["ean", "EAN (código de barras)"], ["tipo_item", "Tipo do item"], ["caracteristicas", "Características", "full", "area"],
   ],
@@ -114,7 +203,8 @@ function abrir(item) {
     if (c[0] === "documento") v = doc(v);
     if (c[0] === "caracteristicas" && String(v || "").trim() === "[object Object]") v = "";
     var id = "f-" + c[0], cls = "f" + (c[2] === "full" ? " full" : ""), inp;
-    if (c[3] === "sel") inp = '<select class="field" id="' + id + '">' + c[4].map(function (o) { return "<option" + (o === v ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select>";
+    if (c[3] === "fam") inp = famSelect(id, v);
+    else if (c[3] === "sel") inp = '<select class="field" id="' + id + '">' + c[4].map(function (o) { return "<option" + (o === v ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select>";
     else if (c[3] === "area") inp = '<textarea class="field" id="' + id + '">' + esc(v || "") + "</textarea>";
     else inp = '<input class="field" id="' + id + '" value="' + esc(valIn(v, c[3] === "dec")) + '"' + (c[3] === "dec" ? ' inputmode="decimal"' : "") + ">";
     h += '<div class="' + cls + '"><label class="flabel" for="' + id + '">' + c[1] + "</label>" + inp + "</div>";
@@ -255,11 +345,84 @@ function importar() {
 }
 function fecharImp() { $("#mimp").classList.remove("on"); }
 
+// ---------- famílias de produto (cadastro próprio; o produto escolhe da lista) ----------
+function famCarregar() {
+  return api("GET", "/api/cadastros/familias").then(function (d) { S.familias = d.itens || []; S.semFamilia = d.sem_familia || 0; famAtualizarSelect(); if (S.tipo === "produtos" && S.dados && $("#th-fam")) { var th = $("#th-fam").closest("th"); if (th) th.innerHTML = thFamilia(); } return d; })
+    .catch(function (e) { toast(e.message); });
+}
+function famSelect(id, v) {
+  var atual = String(v || "").trim(), lista = S.familias || [], tem = false;
+  var h = '<select class="field" id="' + id + '"><option value="">— Sem família —</option>';
+  lista.forEach(function (f) {
+    var sel = atual && f.nome.toLowerCase() === atual.toLowerCase();
+    if (sel) tem = true;
+    if (f.situacao === "Inativo" && !sel) return;
+    h += '<option value="' + esc(f.nome) + '"' + (sel ? " selected" : "") + ">" + esc(f.nome) + (f.situacao === "Inativo" ? " (inativa)" : "") + "</option>";
+  });
+  if (atual && !tem) h += '<option value="' + esc(atual) + '" selected>' + esc(atual) + (S.familias ? " (não cadastrada)" : "") + "</option>";
+  return h + "</select>";
+}
+// a gaveta pode abrir antes da lista chegar: refaz o select mantendo o valor escolhido
+function famAtualizarSelect() {
+  var s = $("#f-familia"); if (!s) return;
+  var w = document.createElement("div"); w.innerHTML = famSelect("f-familia", s.value);
+  s.parentNode.replaceChild(w.firstChild, s);
+}
+function famAbrir() { $("#mfam").classList.add("on"); famDesenhar(); famCarregar().then(famDesenhar); setTimeout(function () { var i = $("#mf-novo"); if (i) i.focus(); }, 60); }
+function famFechar() { $("#mfam").classList.remove("on"); }
+function famDesenhar() {
+  var L = S.familias, c = $("#mf-corpo");
+  var h = '<div style="display:flex;gap:8px;flex-wrap:wrap"><label for="mf-novo" style="position:absolute;width:1px;height:1px;overflow:hidden">Nova família</label><input class="field" id="mf-novo" placeholder="Nova família (ex.: CFTV)" maxlength="80" style="flex:1 1 220px"><button type="button" class="btn adv" id="mf-add">Adicionar</button></div>';
+  if (!L) { c.innerHTML = h + '<div class="sub">Carregando…</div>'; famLigar(); return; }
+  h += '<div class="tw"><table class="tbl"><thead><tr><th>Família</th><th style="text-align:right">Produtos</th><th>Situação</th><th style="text-align:right">Ações</th></tr></thead><tbody>' +
+    (L.map(function (f) {
+      return '<tr data-id="' + f.id + '"><td style="font-weight:600">' + esc(f.nome) + '</td><td class="num">' + num(f.produtos) + "</td><td>" + (f.situacao === "Inativo" ? '<span class="pill t-ina">Inativa</span>' : "Ativa") + '</td><td style="text-align:right;white-space:nowrap"><button type="button" class="btn ghost sm" data-a="ren">Renomear</button> <button type="button" class="btn ghost sm" data-a="sit">' + (f.situacao === "Inativo" ? "Ativar" : "Inativar") + "</button>" + (Number(f.produtos) ? "" : ' <button type="button" class="btn ghost sm" data-a="del">Excluir</button>') + "</td></tr>";
+    }).join("") || '<tr><td colspan="4" class="vazio">Nenhuma família cadastrada.</td></tr>') + "</tbody></table></div>";
+  h += '<div class="info">' + L.length + (L.length === 1 ? " família" : " famílias") + (S.semFamilia ? " · <b>" + num(S.semFamilia) + " produto(s) sem família</b>" : "") + ". Renomear muda o nome em todos os produtos da família. Família inativa não aparece para novos produtos. Só dá para excluir família sem produtos.</div>";
+  c.innerHTML = h; famLigar();
+}
+function famLigar() {
+  var inp = $("#mf-novo"), add = $("#mf-add");
+  add.onclick = function () {
+    var v = inp.value.trim(); if (!v) { inp.focus(); return; }
+    add.disabled = true;
+    api("POST", "/api/cadastros/familias", { nome: v }).then(function (r) { toast("Família " + r.item.nome + " cadastrada."); return famCarregar(); }).then(famDesenhar)
+      .catch(function (e) { toast(e.message); add.disabled = false; });
+  };
+  inp.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); add.onclick(); } };
+  var tb = $("#mf-corpo tbody"); if (!tb) return;
+  tb.onclick = function (e) {
+    var b = e.target.closest("[data-a]"); if (!b) return;
+    var tr = b.closest("tr"), id = Number(tr.dataset.id), f = (S.familias || []).filter(function (x) { return Number(x.id) === id; })[0]; if (!f) return;
+    var a = b.dataset.a;
+    if (a === "ren") {
+      var td = tr.children[0];
+      td.innerHTML = '<span style="display:flex;gap:6px"><input class="field" value="' + esc(f.nome) + '" maxlength="80" aria-label="Novo nome da família" style="min-width:160px"><button type="button" class="btn adv sm">Salvar</button></span>';
+      var i2 = td.querySelector("input"), s2 = td.querySelector("button"); i2.focus(); i2.select();
+      s2.onclick = function () {
+        var nv = i2.value.trim(); if (!nv || nv.toUpperCase() === f.nome) { famDesenhar(); return; }
+        s2.disabled = true;
+        api("PUT", "/api/cadastros/familias/" + id, { nome: nv }).then(function (r) { toast("Família renomeada para " + r.item.nome + (r.renomeados ? " em " + r.renomeados + " produto(s)" : "") + "."); return famCarregar(); })
+          .then(function () { famDesenhar(); carregar(); }).catch(function (er) { toast(er.message); s2.disabled = false; });
+      };
+      i2.onkeydown = function (ev) { if (ev.key === "Enter") { ev.preventDefault(); s2.onclick(); } else if (ev.key === "Escape") { ev.stopPropagation(); famDesenhar(); } };
+      return;
+    }
+    b.disabled = true;
+    var req = a === "sit" ? api("PUT", "/api/cadastros/familias/" + id, { situacao: f.situacao === "Inativo" ? "Ativo" : "Inativo" }) : api("DELETE", "/api/cadastros/familias/" + id);
+    req.then(function () { toast(a === "del" ? "Família " + f.nome + " excluída." : "Família " + f.nome + (f.situacao === "Inativo" ? " ativada." : " inativada.")); return famCarregar(); })
+      .then(famDesenhar).catch(function (er) { toast(er.message); b.disabled = false; });
+  };
+}
+
 // ---------- eventos ----------
 document.querySelectorAll(".seg button").forEach(function (b) { b.onclick = function () { if (S.tipo === b.dataset.tipo) return; S.tipo = b.dataset.tipo; S.pag = 1; S.tags = []; history.replaceState(null, "", "?tipo=" + S.tipo); try { window.parent.postMessage({ sgo: "rota", url: S.tipo === "produtos" ? "/cadastros/produtos" : S.tipo === "servicos" ? "/cadastros/servicos" : S.tipo === "maoobra" ? "/cadastros/maoobra" : "/cadastros/parceiros" }, location.origin); } catch (e) {} carregar(); }; });
 var tq; $("#q").oninput = function () { clearTimeout(tq); tq = setTimeout(function () { S.q = $("#q").value.trim(); S.pag = 1; carregar(); }, 250); };
 $("#sit").onchange = function () { S.sit = $("#sit").value; S.pag = 1; carregar(); };
 $("#est").onchange = function () { S.est = $("#est").checked; S.pag = 1; carregar(); };
+$("#th").onclick = function (e) { var b = e.target.closest("[data-f]"); if (!b) return; if (b.dataset.f === "fam") { S.famFora = []; famPopFechar(); } else if (b.dataset.f === "custo") S.fCusto = !S.fCusto; else S.fMarkup = !S.fMarkup; S.pag = 1; carregar(); };
+$("#th").addEventListener("click", function (e) { if (e.target.closest("#th-fam")) { if ($("#fam-pop").hidden) famPopAbrir(); else famPopFechar(); } });
+document.addEventListener("mousedown", function (e) { var pop = $("#fam-pop"); if (pop && !pop.hidden && !e.target.closest("#fam-pop") && !e.target.closest("#th-fam")) famPopFechar(); });
 $("#tags").onclick = function (e) { var b = e.target.closest("[data-tag]"); if (!b) return; var t = b.dataset.tag, i = S.tags.indexOf(t); if (i >= 0) S.tags.splice(i, 1); else S.tags.push(t); S.pag = 1; carregar(); };
 $("#ant").onclick = function () { S.pag--; carregar(); };
 $("#prox").onclick = function () { S.pag++; carregar(); };
@@ -326,6 +489,8 @@ if (bSyncOmie) bSyncOmie.onclick = function () {
 };
 $("#g-x").onclick = fechar; $("#g-cancel").onclick = fechar; $("#fundo").onclick = fechar; $("#g-salvar").onclick = salvar;
 $("#mi-x").onclick = fecharImp;
-document.addEventListener("keydown", function (e) { if (e.key === "Escape") { if ($("#mimp").classList.contains("on")) fecharImp(); else if (S.aberto) fechar(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "Escape") { if (!$("#fam-pop").hidden) famPopFechar(); else if ($("#mfam").classList.contains("on")) famFechar(); else if ($("#mimp").classList.contains("on")) fecharImp(); else if (S.aberto) fechar(); } });
+$("#b-fam").onclick = famAbrir; $("#mf-x").onclick = famFechar;
+$("#mfam").onclick = function (e) { if (e.target === $("#mfam")) famFechar(); };
 desenhar(); carregar(); syncRetomar();
 

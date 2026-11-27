@@ -343,6 +343,16 @@ async function upsertProdutoFromOmie(
   const agora = agoraMs();
   const sql = sgoSql();
 
+  // Família é cadastro do SGO (produto_familias): a da Omie entra na lista se ainda não existir.
+  if (familia) {
+    const nomeFam = familia.replace(/\s+/g, " ").trim().toUpperCase().slice(0, 80);
+    await sql`
+      insert into produto_familias (nome, situacao, criado_em, atualizado_em, atualizado_por)
+      values (${nomeFam}, 'Ativo', ${agora}, ${agora}, ${porLogin})
+      on conflict ((lower(nome))) do nothing
+    `;
+  }
+
   const existing = await sql<{ id: number }[]>`
     select id from produtos where lower(codigo::text) = ${codigo.toLowerCase()} limit 1
   `;
@@ -351,7 +361,8 @@ async function upsertProdutoFromOmie(
     await sql`
       update produtos set
         descricao = ${descricao},
-        familia = ${familia},
+        -- A família é do SGO: a Omie só preenche produto ainda sem família.
+        familia = coalesce(nullif(trim(familia), ''), ${familia}),
         unidade = ${unidade},
         ncm = ${ncm},
         cest = ${cest},
