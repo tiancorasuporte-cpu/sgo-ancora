@@ -6,6 +6,7 @@
     <button type="button" data-tipo="maoobra">Mão de obra</button>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn ghost" type="button" id="b-fam" style="display:none">Famílias</button>
     <button class="btn ghost" type="button" id="b-sync-omie">Sync Omie (API)</button>
     <button class="btn ghost" type="button" id="b-imp">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg>Importar do Omie (CSV)</button>
@@ -26,7 +27,9 @@
     <label id="l-est" style="display:none;gap:6px;align-items:center;font:500 13px Inter,sans-serif;cursor:pointer"><input type="checkbox" id="est" style="width:18px;height:18px;accent-color:#141414"> Só com estoque</label>
   </div>
   <div class="chips" id="tags" aria-label="Filtrar por tag"></div>
+  <div id="mk-acao" class="mk-acao" role="region" aria-label="Aplicar preço sugerido" style="display:none"></div>
   <section class="card">
+    <div class="pop" id="fam-pop" role="dialog" aria-label="Mostrar famílias" hidden></div>
     <div class="tw"><table class="tbl"><thead id="th"></thead><tbody id="tb"></tbody></table></div>
     <div class="rodape"><span id="tot"></span><span style="display:flex;gap:6px"><button class="btn ghost sm" id="ant" type="button">‹ Anterior</button><button class="btn ghost sm" id="prox" type="button">Próxima ›</button></span></div>
   </section>
@@ -42,6 +45,11 @@
 <div class="modal" id="mimp"><section class="mbox" role="dialog" aria-modal="true" aria-labelledby="mi-t">
   <div class="g-topo" style="border-radius:14px 14px 0 0"><div><div class="kick">Cadastros</div><h2 id="mi-t">Importar do Omie</h2></div><button class="x" type="button" id="mi-x" aria-label="Fechar">×</button></div>
   <div class="m-corpo" id="mi-corpo"></div>
+</section></div>
+
+<div class="modal" id="mfam"><section class="mbox" role="dialog" aria-modal="true" aria-labelledby="mf-t">
+  <div class="g-topo" style="border-radius:14px 14px 0 0"><div><div class="kick">Cadastros › Produtos</div><h2 id="mf-t">Famílias de produto</h2></div><button class="x" type="button" id="mf-x" aria-label="Fechar">×</button></div>
+  <div class="m-corpo" id="mf-corpo"></div>
 </section></div>
 
 <div class="toast" id="toast" role="status"></div>

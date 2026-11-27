@@ -75,3 +75,32 @@ table.tbl{width:100%;border-collapse:collapse;font:400 13.5px Inter,sans-serif;m
 .prec-hist{font-size:12px;color:#3D3D3D;display:flex;flex-direction:column;gap:2px}
 @media (max-width:640px){.prec-g{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .prec-hist:empty{display:none}
+/* Filtros no cabeçalho (Custo / Markup) */
+.tbl th .th-f{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:4px;font:inherit;text-transform:inherit;letter-spacing:inherit;color:inherit;padding:3px 8px;margin:-3px -8px;border-radius:999px}
+.tbl th .th-f:hover{background:#2A2A2A}.tbl th .th-f:focus-visible{outline:2px solid #FFD200;outline-offset:2px}
+.tbl th .th-f span{font-size:10px;opacity:.8}
+.tbl th .th-f.on{background:#FFD200;color:#141414;margin:-3px 0}
+/* Barra "Aplicar regra em todos" (filtro abaixo do markup) */
+.mk-acao{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#FDECEA;color:#5C1414;border-radius:10px;padding:10px 14px;margin:0 0 12px;font:400 13px/1.45 Inter,sans-serif;box-shadow:inset 0 0 0 1px #F2C4BE}
+.mk-acao>div{flex:1 1 380px;min-width:0}
+/* Coluna Família e filtro no cabeçalho */
+.fam{display:inline-block;font:600 11.5px Inter,sans-serif;color:#141414;background:#EEEEEA;border-radius:999px;padding:3px 9px;white-space:nowrap}
+.tbl th .th-sel{appearance:none;-webkit-appearance:none;cursor:pointer;font:inherit;text-transform:inherit;letter-spacing:inherit;color:inherit;background:transparent;border:0;border-radius:999px;padding:3px 8px;margin:-3px -8px;max-width:200px}
+.tbl th .th-sel:hover{background:#2A2A2A}.tbl th .th-sel:focus-visible{outline:2px solid #FFD200;outline-offset:2px}
+.tbl th .th-sel.on{background:#FFD200;color:#141414;margin:-3px 0}
+.tbl th .th-sel option{background:#fff;color:#141414;text-transform:none;letter-spacing:0;font-weight:500}
+.tbl th .th-x{all:unset;cursor:pointer;color:#FFD200;font-size:12px;padding:2px 4px;border-radius:4px}.tbl th .th-x:focus-visible{outline:2px solid #FFD200}
+/* Lista "Mostrar famílias" (todas menos as desmarcadas) */
+.card{position:relative}
+.pop{position:absolute;z-index:30;width:300px;max-width:calc(100% - 16px);background:#fff;border-radius:12px;box-shadow:0 0 0 1px #0000001a,0 14px 40px #00000033;padding:10px;display:flex;flex-direction:column;gap:8px;font:400 13px Inter,sans-serif;color:#141414}
+.pop[hidden]{display:none}
+.pop-t{display:flex;justify-content:space-between;align-items:baseline;padding:2px 4px}
+.pop-a,.pop-r{display:flex;gap:6px;flex-wrap:wrap}.pop-r{justify-content:flex-end}
+.pop-l{max-height:320px;overflow:auto;display:flex;flex-direction:column;border-top:1px solid #EEEEEA;border-bottom:1px solid #EEEEEA;padding:4px 0}
+.pop-i{display:flex;align-items:center;justify-content:space-between;gap:6px;border-radius:6px;padding:0 4px}.pop-i:hover{background:#F4F4F2}
+.pop-i label{display:flex;align-items:center;gap:8px;cursor:pointer;min-height:34px;flex:1;min-width:0}
+.pop-i label span:first-of-type{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pop-i input{width:18px;height:18px;accent-color:#141414;flex:none}
+.pop-so{all:unset;cursor:pointer;font:600 11.5px Inter,sans-serif;color:#5A5A5A;padding:4px 6px;border-radius:6px;opacity:0}.pop-i:hover .pop-so,.pop-so:focus-visible{opacity:1}
+.pop-so:hover{background:#EEEEEA;color:#141414}.pop-so:focus-visible{outline:2px solid #141414}
+@media (hover:none){.pop-so{opacity:1}}
