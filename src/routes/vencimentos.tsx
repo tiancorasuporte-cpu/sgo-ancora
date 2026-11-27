@@ -560,7 +560,7 @@ function VencimentosPage() {
                     type: "info",
                     text: started.alreadyRunning
                       ? "Sincronização já em andamento — acompanhando progresso..."
-                      : "Sincronização iniciada em segundo plano...",
+                      : "Sincronização rápida iniciada (boletos em aberto + notas recentes)...",
                   });
 
                   // 3 empresas × etapas Omie pode passar de 15–20 min.

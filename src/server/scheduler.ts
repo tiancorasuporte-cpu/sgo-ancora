@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { getSetting, setSetting } from "@/db/settings";
 import { sendDueReminders } from "@/server/omie/notifications";
-import { syncAllOmieApps, syncForNotificationWindow } from "@/server/omie/sync";
+import { syncAllOmieApps } from "@/server/omie/sync";
 
 let schedulerStarted = false;
 
@@ -24,9 +24,14 @@ async function runNotificationsOnce() {
   notifyInProgress = true;
   try {
     // Banco fresco na janela D-1/atraso; o gate Omie ao vivo ainda bloqueia pagos.
+    // Usa o mesmo lock do sync manual — senão o botão fica em 0% e a Omie recebe 2 syncs juntos.
     try {
-      await syncForNotificationWindow();
+      const daysBack = 12;
+      const daysAhead = 2;
+      console.info("[sync-notify] start", { daysBack, daysAhead });
+      await runExclusiveSync(daysBack, daysAhead);
       lastSyncAt = Date.now();
+      console.info("[sync-notify] done");
     } catch (error) {
       console.warn("[scheduler] sync pré-alerta falhou; seguindo com gate Omie ao vivo", error);
     }
@@ -171,8 +176,9 @@ let manualSyncJob: ManualSyncJob = {
   label: "",
 };
 
-/** Uma sync por vez (manual + scheduler). */
+/** Uma sync por vez (manual + scheduler), em fila — não mistura janelas diferentes. */
 let activeSyncPromise: Promise<ManualSyncResult> | null = null;
+let syncChain: Promise<unknown> = Promise.resolve();
 
 function snapshotManualSyncJob() {
   return {
@@ -186,26 +192,34 @@ function snapshotManualSyncJob() {
   };
 }
 
-async function runExclusiveSync(
+function runExclusiveSync(
   daysBack = 90,
   daysAhead = 120,
   onProgress?: Parameters<typeof syncAllOmieApps>[2],
+  options?: Parameters<typeof syncAllOmieApps>[3],
 ) {
-  if (activeSyncPromise) return activeSyncPromise;
-
-  lastSyncAt = Date.now();
-  activeSyncPromise = (async () => {
-    try {
+  const run = async (): Promise<ManualSyncResult> => {
+    lastSyncAt = Date.now();
+    const work = (async () => {
       const { abandonStaleOpenSyncLogs } = await import("@/db/due-items");
       const abandoned = await abandonStaleOpenSyncLogs();
       if (abandoned > 0) console.warn("[sync] fechou sync_log órfãos:", abandoned);
-      return await syncAllOmieApps(daysBack, daysAhead, onProgress);
+      return await syncAllOmieApps(daysBack, daysAhead, onProgress, options);
+    })();
+    activeSyncPromise = work;
+    try {
+      return await work;
     } finally {
-      activeSyncPromise = null;
+      if (activeSyncPromise === work) activeSyncPromise = null;
     }
-  })();
+  };
 
-  return activeSyncPromise;
+  const queued = syncChain.then(run, run);
+  syncChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 /** Sync síncrono (scheduler / admin). Preferir `startManualSyncBackground` na UI. */
@@ -216,9 +230,12 @@ export async function runManualSync() {
 /**
  * Dispara o sync Omie sem segurar a conexão HTTP.
  * Cloudflare corta requests ~100s; o sync de 3 apps + sleep passa disso.
+ *
+ * Modo quick (padrão na UI): pula movimentos, busca notas recentes e
+ * contas a receber em aberto — bem mais rápido nas sincronizações do dia a dia.
  */
 export function startManualSyncBackground() {
-  if (manualSyncJob.status === "running" || activeSyncPromise) {
+  if (manualSyncJob.status === "running") {
     return {
       ok: true as const,
       started: false as const,
@@ -227,23 +244,38 @@ export function startManualSyncBackground() {
     };
   }
 
+  const waitingOther = Boolean(activeSyncPromise);
   manualSyncJob = {
     status: "running",
     startedAt: Date.now(),
     finishedAt: null,
     result: null,
     error: null,
-    percent: 0,
-    label: "Iniciando sincronização Omie...",
+    percent: waitingOther ? 1 : 0,
+    label: waitingOther
+      ? "Aguardando outro sync terminar..."
+      : "Iniciando sincronização rápida...",
   };
 
   void (async () => {
     try {
-      const result = await runExclusiveSync(90, 120, (progress) => {
+      while (activeSyncPromise) {
         if (manualSyncJob.status !== "running") return;
-        manualSyncJob.percent = progress.percent;
-        manualSyncJob.label = progress.label;
-      });
+        manualSyncJob.label = "Aguardando outro sync terminar...";
+        manualSyncJob.percent = Math.max(manualSyncJob.percent, 1);
+        await activeSyncPromise.catch(() => {});
+      }
+
+      const result = await runExclusiveSync(
+        90,
+        120,
+        (progress) => {
+          if (manualSyncJob.status !== "running") return;
+          manualSyncJob.percent = progress.percent;
+          manualSyncJob.label = progress.label;
+        },
+        { mode: "quick" },
+      );
       const avisos = (result.results ?? []).flatMap((item) =>
         !item.ok
           ? [item.error || item.appId]
@@ -262,7 +294,7 @@ export function startManualSyncBackground() {
           ? `Concluído com avisos (${avisos.length})`
           : "Sincronização concluída",
       };
-      console.info("[sync] manual background done", { avisos: avisos.length });
+      console.info("[sync] manual background done", { avisos: avisos.length, mode: "quick" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha na sincronização";
       manualSyncJob = {

@@ -192,25 +192,37 @@ const STAGE_LABELS: Record<string, string> = {
   notas: "NFe/NFS-e",
 };
 
+export type SyncOmieOptions = {
+  /** quick = UI diária (pula movimentos, notas só recentes). full = varredura completa. */
+  mode?: "full" | "quick";
+  /** Dias de emissão para NFe/NFS-e no modo quick (padrão 30). */
+  invoiceDaysBack?: number;
+};
+
 export async function syncOmieApp(
   app: OmieAppConfig,
   daysBack = 90,
   daysAhead = 120,
   onStage?: (stage: string) => void,
+  options?: SyncOmieOptions,
 ) {
+  const mode = options?.mode === "quick" ? "quick" : "full";
+  const invoiceDaysBack = options?.invoiceDaysBack ?? (mode === "quick" ? 30 : daysBack);
   const logId = await startSyncLog(app.id);
   clearClienteCache();
   const { from, to } = syncWindow(daysBack, daysAhead);
+  const invoiceWindow = syncWindow(invoiceDaysBack, 0);
   const breakdown: Record<string, number> = {};
   const errors: string[] = [];
 
   const stageTimeoutMs = syncStageTimeoutMs();
 
   try {
-    const tasks: Array<[string, (app: OmieAppConfig, from: Date, to: Date) => Promise<number>]> = [
-      ["movimentos", syncMovimentosFinanceiros],
-      ["contas_receber", syncContasReceber],
-    ];
+    const tasks: Array<[string, (app: OmieAppConfig, from: Date, to: Date) => Promise<number>]> = [];
+    if (mode === "full") {
+      tasks.push(["movimentos", syncMovimentosFinanceiros]);
+    }
+    tasks.push(["contas_receber", syncContasReceber]);
 
     for (const [name, fn] of tasks) {
       onStage?.(name);
@@ -227,7 +239,11 @@ export async function syncOmieApp(
     onStage?.("notas");
     try {
       const invoiceResult = await withTimeout(
-        syncInvoiceDocuments(app, from, to),
+        syncInvoiceDocuments(app, invoiceWindow.from, invoiceWindow.to, {
+          enforceDueWindow: true,
+          dueFrom: from,
+          dueTo: to,
+        }),
         stageTimeoutMs,
         `${app.name}/notas`,
       );
@@ -243,7 +259,7 @@ export async function syncOmieApp(
 
     const total = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
     await finishSyncLog(logId, total, errors.length ? errors.join(" | ") : null);
-    console.info("[sync] app done", app.id, app.name, { total, errors: errors.length });
+    console.info("[sync] app done", app.id, app.name, { total, errors: errors.length, mode });
     return {
       ok: true as const,
       appId: app.id,
@@ -264,20 +280,22 @@ export async function syncAllOmieApps(
   daysBack = 90,
   daysAhead = 120,
   onProgress?: SyncProgressHandler,
+  options?: SyncOmieOptions,
 ) {
   const apps = listOmieApps();
   if (apps.length === 0) {
     return { ok: false as const, error: "Nenhum aplicativo Omie configurado no .env." };
   }
 
-  const stagesPerApp = 3;
+  const mode = options?.mode === "quick" ? "quick" : "full";
+  const stagesPerApp = mode === "quick" ? 2 : 3;
   const totalUnits = apps.length * stagesPerApp + 1; // +1 finalização
   let completedUnits = 0;
 
   const report = (label: string, app?: OmieAppConfig, appIndex?: number) => {
     const percent = Math.min(99, Math.round((completedUnits / totalUnits) * 100));
     onProgress?.({
-      percent,
+      percent: Math.max(percent, completedUnits > 0 ? 1 : 0),
       label,
       appId: app?.id,
       appName: app?.name,
@@ -286,7 +304,7 @@ export async function syncAllOmieApps(
     });
   };
 
-  report("Iniciando sincronização Omie...");
+  report(mode === "quick" ? "Iniciando sincronização rápida..." : "Iniciando sincronização Omie...");
 
   const results = [];
   for (let index = 0; index < apps.length; index++) {
@@ -296,7 +314,7 @@ export async function syncAllOmieApps(
       await sleep(500);
     }
 
-    console.info("[sync] app start", app.id, app.name, `${index + 1}/${apps.length}`);
+    console.info("[sync] app start", app.id, app.name, `${index + 1}/${apps.length}`, mode);
     results.push(
       await syncOmieApp(app, daysBack, daysAhead, (stage) => {
         completedUnits += 1;
@@ -305,7 +323,7 @@ export async function syncAllOmieApps(
           app,
           index,
         );
-      }),
+      }, options),
     );
   }
 

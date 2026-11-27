@@ -362,12 +362,18 @@ export async function saveDueItemFromMovement(
   return savedPrimary || savedCompanion;
 }
 
-async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date, enforceDueWindow = true) {
+async function syncNfeInvoices(
+  app: OmieAppConfig,
+  from: Date,
+  to: Date,
+  enforceDueWindow = true,
+  dueWindow?: { from: Date; to: Date },
+) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
   const fromIso = parseOmieDate(fromStr) ?? fromStr;
   const toIso = parseOmieDate(toStr) ?? toStr;
-  const saveWindow = enforceDueWindow ? { from, to } : undefined;
+  const saveWindow = enforceDueWindow ? dueWindow ?? { from, to } : undefined;
 
   // ListarNF da Omie ignora filtrar_por_data_* — ordenamos por emissão DESC e
   // paramos quando a data cair antes da janela (senão varre o histórico inteiro).
@@ -526,10 +532,16 @@ async function syncNfeInvoices(app: OmieAppConfig, from: Date, to: Date, enforce
   return count;
 }
 
-async function syncNfseInvoices(app: OmieAppConfig, from: Date, to: Date, enforceDueWindow = true) {
+async function syncNfseInvoices(
+  app: OmieAppConfig,
+  from: Date,
+  to: Date,
+  enforceDueWindow = true,
+  dueWindow?: { from: Date; to: Date },
+) {
   const fromStr = formatOmieDate(from);
   const toStr = formatOmieDate(to);
-  const saveWindow = enforceDueWindow ? { from, to } : undefined;
+  const saveWindow = enforceDueWindow ? dueWindow ?? { from, to } : undefined;
 
   const items = await omiePaginate<{
     nPagina?: number;
@@ -619,21 +631,30 @@ export async function syncInvoiceDocuments(
   app: OmieAppConfig,
   from: Date,
   to: Date,
-  options?: { enforceDueWindow?: boolean },
+  options?: {
+    enforceDueWindow?: boolean;
+    /** Janela de vencimento ao gravar (pode ser maior que a janela de emissão). */
+    dueFrom?: Date;
+    dueTo?: Date;
+  },
 ) {
   let nfe = 0;
   let nfse = 0;
   const errors: string[] = [];
   const enforceDueWindow = options?.enforceDueWindow !== false;
+  const dueWindow =
+    options?.dueFrom && options?.dueTo
+      ? { from: options.dueFrom, to: options.dueTo }
+      : undefined;
 
   try {
-    nfe = await syncNfeInvoices(app, from, to, enforceDueWindow);
+    nfe = await syncNfeInvoices(app, from, to, enforceDueWindow, dueWindow);
   } catch (error) {
     errors.push(`nfe: ${error instanceof Error ? error.message : "erro"}`);
   }
 
   try {
-    nfse = await syncNfseInvoices(app, from, to, enforceDueWindow);
+    nfse = await syncNfseInvoices(app, from, to, enforceDueWindow, dueWindow);
   } catch (error) {
     errors.push(`nfse: ${error instanceof Error ? error.message : "erro"}`);
   }
