@@ -19,6 +19,7 @@ import {
 
 import { clearClienteCache } from "@/server/omie/clients";
 import { saveDueItemFromMovement, syncInvoiceDocuments } from "@/server/omie/invoice-sync";
+import { reconcilePaidOpenDueItems } from "@/server/omie/receivable-live";
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -344,6 +345,15 @@ export async function syncAllOmieApps(
     if (companions > 0) console.info("[sync] companions fiscais fechados", { companions });
   } catch (error) {
     console.warn("[sync] cleanup companions", error);
+  }
+  try {
+    report("Conferindo títulos pagos na Omie...");
+    const live = await reconcilePaidOpenDueItems(80);
+    if (live.closed > 0) {
+      console.info("[sync] reconcile live fechou pagos", live);
+    }
+  } catch (error) {
+    console.warn("[sync] reconcile live", error);
   }
   completedUnits = totalUnits;
   const failed = results.filter((r) => !r.ok || ("errors" in r && r.errors.length > 0));

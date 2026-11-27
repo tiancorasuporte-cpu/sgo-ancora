@@ -330,6 +330,62 @@ export async function closeFiscalCompanionsOfPaidBoletos() {
   return rows.length;
 }
 
+/**
+ * Fecha NF-e/NFS-e abertas cujo título (omie_code) não está mais na lista Omie de
+ * contas a receber em aberto — mesmo critério dos boletos stale.
+ * Só atua quando existe boleto do mesmo código (evita fechar NF pura sem título).
+ */
+export async function closeStaleFiscalCompanions(input: {
+  omieAppId: string;
+  from: string;
+  to: string;
+  openOmieCodes: number[];
+}) {
+  const db = await getDb();
+  const codes = input.openOmieCodes.filter((code) => Number.isFinite(code) && code > 0);
+
+  if (codes.length === 0) {
+    const rows = await db<{ id: number }[]>`
+      update due_items f
+      set status = 'RECEBIDO', synced_at = now()
+      where f.omie_app_id = ${input.omieAppId}
+        and f.due_date between ${input.from}::date and ${input.to}::date
+        and f.item_type in ('nfe', 'nfse')
+        and f.omie_code is not null
+        and upper(trim(coalesce(f.status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
+        and exists (
+          select 1 from due_items b
+          where b.item_type = 'boleto'
+            and b.omie_app_id = f.omie_app_id
+            and b.omie_code = f.omie_code
+            and b.due_date = f.due_date
+        )
+      returning f.id
+    `;
+    return rows.length;
+  }
+
+  const rows = await db<{ id: number }[]>`
+    update due_items f
+    set status = 'RECEBIDO', synced_at = now()
+    where f.omie_app_id = ${input.omieAppId}
+      and f.due_date between ${input.from}::date and ${input.to}::date
+      and f.item_type in ('nfe', 'nfse')
+      and f.omie_code is not null
+      and upper(trim(coalesce(f.status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
+      and not (f.omie_code = any(${codes}))
+      and exists (
+        select 1 from due_items b
+        where b.item_type = 'boleto'
+          and b.omie_app_id = f.omie_app_id
+          and b.omie_code = f.omie_code
+          and b.due_date = f.due_date
+      )
+    returning f.id
+  `;
+  return rows.length;
+}
+
 /** Marca como RECEBIDO itens que sumiram da lista de títulos em aberto do Omie. */
 export async function markStaleOpenDueItems(input: {
   omieAppId: string;
@@ -339,6 +395,7 @@ export async function markStaleOpenDueItems(input: {
 }) {
   const db = await getDb();
   const codes = input.openOmieCodes.filter((code) => Number.isFinite(code) && code > 0);
+  let closedBoletos = 0;
   if (codes.length === 0) {
     const rows = await db<{ count: number }[]>`
       update due_items
@@ -349,20 +406,44 @@ export async function markStaleOpenDueItems(input: {
         and item_type = 'boleto'
       returning 1
     `;
-    return rows.length;
+    closedBoletos = rows.length;
+  } else {
+    const rows = await db<{ count: number }[]>`
+      update due_items
+      set status = 'RECEBIDO', synced_at = now()
+      where omie_app_id = ${input.omieAppId}
+        and due_date between ${input.from}::date and ${input.to}::date
+        and upper(trim(coalesce(status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
+        and item_type = 'boleto'
+        and (omie_code is null or not (omie_code = any(${codes})))
+      returning 1
+    `;
+    closedBoletos = rows.length;
   }
 
-  const rows = await db<{ count: number }[]>`
-    update due_items
-    set status = 'RECEBIDO', synced_at = now()
-    where omie_app_id = ${input.omieAppId}
-      and due_date between ${input.from}::date and ${input.to}::date
+  const closedFiscal = await closeStaleFiscalCompanions(input);
+  const closedCompanions = await closeFiscalCompanionsOfPaidBoletos();
+  return closedBoletos + closedFiscal + closedCompanions;
+}
+
+/** IDs em aberto (boletos primeiro) para reconciliação ao vivo na Omie. */
+export async function listOpenBoletosForLiveReconcile(limit = 80) {
+  const db = await getDb();
+  const lim = Math.max(1, Math.min(200, Math.floor(limit)));
+  const rows = await db`
+    select *
+    from due_items
+    where item_type = 'boleto'
       and upper(trim(coalesce(status, ''))) in ${db(OPEN_STATUS_SQL_LIST)}
-      and item_type = 'boleto'
-      and (omie_code is null or not (omie_code = any(${codes})))
-    returning 1
+      and omie_code is not null
+      and due_date <= (current_date + 7)
+    order by
+      case when due_date < current_date then 0 else 1 end,
+      due_date asc,
+      id asc
+    limit ${lim}
   `;
-  return rows.length;
+  return (rows as DueItemRow[]).map(toDueItem);
 }
 
 /** Fecha NF-e/NFS-e sem status cobrável (evita alerta de nota já quitada). */

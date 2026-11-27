@@ -52,10 +52,13 @@ export const listDueItemsFn = createServerFn({ method: "GET" }).handler(async ()
   const { requireModule } = await import("@/lib/require-auth");
   await requireModule("vencimentos");
   // Em aberto + Recebidos (abas separadas na UI).
-  const [open, received] = await Promise.all([
+  const [openRaw, received] = await Promise.all([
     listDueItems({ currentMonthOnly: false, openOnly: true }),
     listDueItems({ currentMonthOnly: false, closedOnly: true }),
   ]);
+  // Um título (boleto+NF) vira uma linha na aba Em aberto — prioriza boleto.
+  const { preferPayableDocsPerTitle } = await import("@/server/omie/receivable-live");
+  const open = preferPayableDocsPerTitle(openRaw);
   return { open, received };
 });
 

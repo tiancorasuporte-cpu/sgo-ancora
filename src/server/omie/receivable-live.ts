@@ -270,3 +270,34 @@ export async function verifyDueItemOpenLive(item: DueItem): Promise<LiveOpenChec
     };
   }
 }
+
+/**
+ * Confere na Omie boletos locais ainda "em aberto" (vencidos/perto do vencimento)
+ * e fecha título + companions se já estiverem pagos.
+ */
+export async function reconcilePaidOpenDueItems(limit = 80) {
+  const { listOpenBoletosForLiveReconcile, updateDueItemStatus, closeCompanionFiscalDueItems } =
+    await import("@/db/due-items");
+  const items = await listOpenBoletosForLiveReconcile(limit);
+  let checked = 0;
+  let closed = 0;
+
+  for (const item of items) {
+    checked += 1;
+    const live = await verifyDueItemOpenLive(item);
+    if (!live.ok || live.open) continue;
+    const status = live.closedAs;
+    await updateDueItemStatus(item.id, status);
+    if (item.omieCode) {
+      await closeCompanionFiscalDueItems({
+        omieAppId: item.omieAppId,
+        omieCode: item.omieCode,
+        dueDate: item.dueDate,
+        status,
+      });
+    }
+    closed += 1;
+  }
+
+  return { checked, closed };
+}
