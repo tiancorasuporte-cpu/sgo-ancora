@@ -100,7 +100,13 @@ export const Route = createFileRoute("/d/$token")({
                   (refreshed.document?.url ? refreshed.document.url.trim() : "") ||
                   "";
                 if (freshUrl && /^https?:\/\//i.test(freshUrl)) {
-                  await touchDocLink(row.token, freshUrl);
+                  // Redirect sempre com URL fresca; só persiste se a antiga era efêmera
+                  // (evita contaminar o link salvo com outro documento no refresh).
+                  if (looksLikeEphemeralOmieUrl(row.targetUrl)) {
+                    await touchDocLink(row.token, freshUrl);
+                  } else {
+                    await touchDocLink(row.token);
+                  }
                   return Response.redirect(freshUrl, 302);
                 }
                 if (refreshed.document?.base64) {

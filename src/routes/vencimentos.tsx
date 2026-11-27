@@ -349,19 +349,31 @@ function VencimentosPage() {
   async function viewDocument(item: DueItem) {
     setViewingId(item.id);
     setFeedback(null);
+    // Abre no gesto do clique (antes do await) com nome por id — evita o browser
+    // reaproveitar a mesma aba e "trocar" o documento no próximo clique.
+    const tab = window.open("about:blank", `sgo-doc-${item.id}`);
     try {
       const result = await getDueItemBoletoViewFn({
         data: { dueItemId: item.id },
       });
       if (!result.ok) {
+        tab?.close();
         setFeedback({ type: "error", text: result.error });
         return;
       }
       if (result.mode === "link") {
-        window.open(result.url, "_blank", "noopener,noreferrer");
+        if (tab) tab.location.replace(result.url);
+        else window.open(result.url, `sgo-doc-${item.id}-${Date.now()}`, "noopener,noreferrer");
         return;
       }
+      tab?.close();
       downloadPdfBase64(result.filename, result.base64);
+    } catch (error) {
+      tab?.close();
+      setFeedback({
+        type: "error",
+        text: error instanceof Error ? error.message : "Falha ao abrir documento.",
+      });
     } finally {
       setViewingId(null);
     }

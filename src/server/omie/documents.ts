@@ -877,21 +877,13 @@ export async function resolveDueItemPdfWithStatus(app: OmieAppConfig, item: DueI
       documentNumber: item.documentNumber,
     });
   }
+  // Sem fallback cruzado nfe↔nfse: no 2º clique/refresh isso trocava o documento
+  // (e o /d/$token ainda gravava a URL errada em target_url).
   if (item.itemType === "nfe") {
-    const nfe = await resolveNfePdfWithStatus(app, item);
-    if (nfe.document?.base64 || nfe.document?.url || nfe.link) return nfe;
-    // Título de OS/serviço às vezes cai como NF-e (NF homolog vazia no Omie) — tenta NFS-e.
-    const nfse = await resolveNfsePdfWithStatus(app, item);
-    if (nfse.document?.base64 || nfse.document?.url || nfse.link) return nfse;
-    return nfe;
+    return resolveNfePdfWithStatus(app, item);
   }
   if (item.itemType === "nfse") {
-    const nfse = await resolveNfsePdfWithStatus(app, item);
-    if (nfse.document?.base64 || nfse.document?.url || nfse.link) return nfse;
-    // Companion fiscal às vezes marca NFS-e por nCodOS residual em título de NF-e de produto.
-    const nfe = await resolveNfePdfWithStatus(app, item);
-    if (nfe.document?.base64 || nfe.document?.url || nfe.link) return nfe;
-    return nfse;
+    return resolveNfsePdfWithStatus(app, item);
   }
   return {
     document: null,
