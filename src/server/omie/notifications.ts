@@ -17,7 +17,7 @@ import type { DueItem } from "@/db/schema";
 import type { NotificationKind } from "@/db/schema";
 import { APP_NAME } from "@/lib/brand";
 import { formatDisplayDate, listOmieApps } from "@/server/omie/client";
-import { resolveDueItemPdfWithStatus } from "@/server/omie/documents";
+import { resolveDueItemPdfWithStatus, resolveDueItemXml } from "@/server/omie/documents";
 import { clientDisplayName, clientPhones, getCliente } from "@/server/omie/clients";
 import {
   preferPayableDocsPerTitle,
@@ -312,7 +312,38 @@ async function resolveItemNotifyPhones(item: DueItem) {
   };
 }
 
-async function sendItemPdf(chatId: string, item: DueItem, errors: string[]) {
+async function sendItemXml(chatId: string, item: DueItem, errors: string[]) {
+  const app = listOmieApps().find((entry) => entry.id === item.omieAppId);
+  if (!app) return;
+
+  try {
+    const document = await resolveDueItemXml(app, item);
+    if (!document) {
+      errors.push(
+        `${item.clientName ?? "Sem cliente"}: XML da nota indisponível no Omie (envio seguiu sem o XML).`,
+      );
+      return;
+    }
+    const caption = [
+      "XML da nota",
+      item.clientName?.trim(),
+      item.documentNumber ? `Doc. ${item.documentNumber}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    await sendWhatsAppDocument(chatId, document, caption);
+  } catch (error) {
+    const err = error instanceof Error ? error.message : "Falha ao enviar XML";
+    errors.push(`${item.clientName ?? "Sem cliente"} (XML): ${err}`);
+  }
+}
+
+async function sendItemPdf(
+  chatId: string,
+  item: DueItem,
+  errors: string[],
+  options?: { includeXml?: boolean },
+) {
   const app = listOmieApps().find((entry) => entry.id === item.omieAppId);
   if (!app) return;
 
@@ -330,21 +361,25 @@ async function sendItemPdf(chatId: string, item: DueItem, errors: string[]) {
   try {
     if (result.document) {
       await sendWhatsAppDocument(chatId, result.document, caption);
+      if (options?.includeXml) await sendItemXml(chatId, item, errors);
       return;
     }
     if (result.link) {
       const lines = [`📎 *${label}*`, caption, "", result.link];
       if (result.barcode) lines.push("", `Linha digitável:\n${result.barcode}`);
       await sendWhatsAppText(chatId, lines.filter(Boolean).join("\n"));
+      if (options?.includeXml) await sendItemXml(chatId, item, errors);
       return;
     }
     if (result.status) {
       errors.push(`${item.clientName ?? "Sem cliente"} (${label}): ${result.status}`);
     }
+    if (options?.includeXml) await sendItemXml(chatId, item, errors);
   } catch (pdfError) {
     if (result.link) {
       try {
         await sendWhatsAppText(chatId, [`📎 *${label}*`, caption, "", result.link].join("\n"));
+        if (options?.includeXml) await sendItemXml(chatId, item, errors);
         return;
       } catch {
         // fallthrough
@@ -352,6 +387,7 @@ async function sendItemPdf(chatId: string, item: DueItem, errors: string[]) {
     }
     const pdfErr = pdfError instanceof Error ? pdfError.message : "Falha ao enviar PDF";
     errors.push(`${item.clientName ?? "Sem cliente"} (${label}): ${pdfErr}`);
+    if (options?.includeXml) await sendItemXml(chatId, item, errors);
   }
 }
 
@@ -360,7 +396,7 @@ async function sendItemToPhone(
   chatId: string,
   message: string,
   errors: string[],
-  options?: { allowPaid?: boolean },
+  options?: { allowPaid?: boolean; includeXml?: boolean },
 ) {
   if (usesWabaTemplateForCobranca()) {
     // Botão manual / envio avulso → templates envio_para_pagamento_*.
@@ -368,10 +404,12 @@ async function sendItemToPhone(
       kind: "envio",
       allowPaid: options?.allowPaid === true,
     });
+    // XML é arquivo avulso (fora do template). Tenta na sequência; se a janela não abrir, só avisa.
+    if (options?.includeXml) await sendItemXml(chatId, item, errors);
     return;
   }
   await sendWhatsAppText(chatId, message);
-  await sendItemPdf(chatId, item, errors);
+  await sendItemPdf(chatId, item, errors, { includeXml: options?.includeXml });
 }
 
 type LiveGateMode = "strict" | "advise";
@@ -474,7 +512,11 @@ export async function previewDueItemsSend(dueItemIds: number[]) {
   return { warnings };
 }
 
-export async function sendDueItemReminder(dueItemId: number) {
+export async function sendDueItemReminder(
+  dueItemId: number,
+  options?: { includeXml?: boolean },
+) {
+  const includeXml = options?.includeXml === true;
   const row = await getDueItemById(dueItemId);
   if (!row) {
     return { ok: false as const, error: "Documento não encontrado." };
@@ -527,7 +569,7 @@ export async function sendDueItemReminder(dueItemId: number) {
     }
 
     try {
-      await sendItemToPhone(item, chatId, message, errors, { allowPaid: true });
+      await sendItemToPhone(item, chatId, message, errors, { allowPaid: true, includeXml });
       await insertNotificationLog({
         dueItemId: item.id,
         phone,
@@ -600,10 +642,13 @@ async function sendReminderBatch(
     liveGate?: LiveGateMode;
     /** Manual: permite link/PDF mesmo se Omie disser pago. */
     allowPaid?: boolean;
+    /** Manual: anexa XML da NF-e/NFS-e quando disponível. */
+    includeXml?: boolean;
   },
 ): Promise<ReminderBatchResult & { quotaUsed: number }> {
   const liveGateMode: LiveGateMode = options.liveGate ?? "strict";
   const allowPaid = options.allowPaid === true || liveGateMode === "advise";
+  const includeXml = options.includeXml === true;
   let quota = await remainingHourlyQuota();
   let sent = 0;
   let skipped = 0;
@@ -759,7 +804,13 @@ async function sendReminderBatch(
       } else {
         await sendWhatsAppText(group.chatId, message);
         for (const item of group.items) {
-          await sendItemPdf(group.chatId, item, errors);
+          await sendItemPdf(group.chatId, item, errors, { includeXml });
+          if (options.delayMs > 0) await sleep(options.delayMs);
+        }
+      }
+      if (includeXml && usesWabaTemplateForCobranca()) {
+        for (const item of deliveredItems) {
+          await sendItemXml(group.chatId, item, errors);
           if (options.delayMs > 0) await sleep(options.delayMs);
         }
       }
@@ -820,7 +871,10 @@ async function sendReminderBatch(
 }
 
 /** Envio manual em lote (Vencimentos): agrupa por WhatsApp e usa templates envio_*. */
-export async function sendSelectedDueItems(dueItemIds: number[]) {
+export async function sendSelectedDueItems(
+  dueItemIds: number[],
+  options?: { includeXml?: boolean },
+) {
   if (!acquireNotifyLock()) {
     return {
       ok: false as const,
@@ -860,6 +914,7 @@ export async function sendSelectedDueItems(dueItemIds: number[]) {
       markAs: "pre_due",
       liveGate: "advise",
       allowPaid: true,
+      includeXml: options?.includeXml === true,
     });
 
     if (result.sent === 0) {

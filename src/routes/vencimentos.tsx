@@ -213,6 +213,7 @@ function VencimentosPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sendingId, setSendingId] = useState<number | null>(null);
   const [bulkSending, setBulkSending] = useState(false);
+  const [includeXml, setIncludeXml] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [editingPhoneId, setEditingPhoneId] = useState<number | null>(null);
@@ -464,7 +465,7 @@ function VencimentosPage() {
         return;
       }
       const result = await sendDueItemNotificationFn({
-        data: { dueItemId: item.id },
+        data: { dueItemId: item.id, includeXml },
       });
       if (!result.ok) {
         setFeedback({ type: "error", text: result.error });
@@ -496,7 +497,7 @@ function VencimentosPage() {
         return;
       }
       const result = await sendSelectedDueItemsFn({
-        data: { dueItemIds: ids },
+        data: { dueItemIds: ids, includeXml },
       });
       if (!result.ok) {
         setFeedback({ type: "error", text: result.error });
@@ -886,13 +887,28 @@ function VencimentosPage() {
             </section>
           ) : null}
 
-          {selectedIds.size > 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-sm rounded-xl border border-secondary-container/60 bg-secondary-container/25 px-md py-sm">
-              <p className="text-body-md text-primary">
-                <span className="font-semibold tabular-nums">{selectedIds.size}</span>{" "}
-                documento(s) selecionado(s)
-              </p>
-              <div className="flex flex-wrap gap-xs">
+          <div className="flex flex-wrap items-center justify-between gap-sm rounded-xl border border-outline-variant bg-surface-container-lowest px-md py-sm">
+            <label className="inline-flex cursor-pointer items-start gap-sm text-body-md text-primary">
+              <input
+                type="checkbox"
+                checked={includeXml}
+                disabled={busy}
+                onChange={(e) => setIncludeXml(e.target.checked)}
+                className="mt-0.5 size-4 accent-[var(--color-secondary)]"
+              />
+              <span>
+                <span className="font-semibold">Anexar XML da nota</span>
+                <span className="mt-0.5 block text-label-md text-on-surface-variant">
+                  Opcional. No envio pelo WhatsApp, manda o XML da NF-e/NFS-e quando a Omie tiver.
+                </span>
+              </span>
+            </label>
+            {selectedIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-sm">
+                <p className="text-body-md text-primary">
+                  <span className="font-semibold tabular-nums">{selectedIds.size}</span>{" "}
+                  documento(s) selecionado(s)
+                </p>
                 <button
                   type="button"
                   disabled={busy}
@@ -911,8 +927,8 @@ function VencimentosPage() {
                   {bulkSending ? "Enviando..." : "Enviar selecionados"}
                 </button>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
 
           <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
             <div className="overflow-x-auto p-md">

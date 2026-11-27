@@ -137,11 +137,18 @@ export const previewDueItemsSendFn = createServerFn({ method: "POST" })
   });
 
 export const sendDueItemNotificationFn = createServerFn({ method: "POST" })
-  .validator((input) => z.object({ dueItemId: z.number().int().positive() }).parse(input))
+  .validator((input) =>
+    z
+      .object({
+        dueItemId: z.number().int().positive(),
+        includeXml: z.boolean().optional(),
+      })
+      .parse(input),
+  )
   .handler(async ({ data }) => {
     const { requireModule } = await import("@/lib/require-auth");
     await requireModule("vencimentos");
-    return sendDueItemReminder(data.dueItemId);
+    return sendDueItemReminder(data.dueItemId, { includeXml: data.includeXml === true });
   });
 
 export const sendSelectedDueItemsFn = createServerFn({ method: "POST" })
@@ -149,13 +156,14 @@ export const sendSelectedDueItemsFn = createServerFn({ method: "POST" })
     z
       .object({
         dueItemIds: z.array(z.number().int().positive()).min(1).max(80),
+        includeXml: z.boolean().optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { requireModule } = await import("@/lib/require-auth");
     await requireModule("vencimentos");
-    return sendSelectedDueItems(data.dueItemIds);
+    return sendSelectedDueItems(data.dueItemIds, { includeXml: data.includeXml === true });
   });
 
 export const updateDueItemClientPhoneFn = createServerFn({ method: "POST" })

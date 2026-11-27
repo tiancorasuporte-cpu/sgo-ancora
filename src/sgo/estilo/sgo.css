@@ -54,6 +54,12 @@
 .ue-os{background:#f7f7f3;border-radius:12px;padding:14px;margin-top:4px}
 .ue-os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 12px;margin-top:8px}
 body.modo-consulta .btn-adv,body.modo-consulta [data-salvar],body.modo-consulta [data-mover],body.modo-consulta [data-excluir],body.modo-consulta button.mover,body.modo-consulta .os-mover{pointer-events:none;opacity:.45}
+.senha-campo{position:relative}
+.senha-campo .field{padding-right:44px}
+.senha-olho{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:#5A5A5A;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.senha-olho:hover{background:#F3F3EF;color:#141414}
+.senha-olho:focus-visible{outline:2px solid #141414;outline-offset:1px}
+.senha-olho[aria-pressed="true"]{color:#141414}
 /* impressão disparada por uma tela isolada (proposta, relatório): só a tela sai no papel */
 @media print{
 html.sgo-imprimindo-tela .band,html.sgo-imprimindo-tela .side,html.sgo-imprimindo-tela .topbar,html.sgo-imprimindo-tela #btn-ajuda{display:none!important}

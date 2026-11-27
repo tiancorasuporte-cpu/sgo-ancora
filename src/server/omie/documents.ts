@@ -138,7 +138,7 @@ function documentNumberMatches(doc: Record<string, unknown>, numero?: string | n
   return got === want || got.endsWith(want) || want.endsWith(got);
 }
 
-async function lookupFiscalDocumentId(
+async function lookupFiscalDocument(
   app: OmieAppConfig,
   input: {
     modelo: "55" | "99";
@@ -146,8 +146,9 @@ async function lookupFiscalDocumentId(
     numero?: string | null;
     nIdOS?: number | null;
     nIdReceb?: number | null;
+    nIdNF?: number | null;
   },
-) {
+): Promise<{ nIdNF: number; cXml: string | null } | null> {
   const param: Record<string, unknown> = {
     nPagina: 1,
     nRegPorPagina: 20,
@@ -157,14 +158,15 @@ async function lookupFiscalDocumentId(
   if (input.chave) param.nChave = input.chave;
   if (input.nIdOS) param.nIdOS = input.nIdOS;
   if (input.nIdReceb) param.nIdReceb = input.nIdReceb;
+  if (input.nIdNF) param.nIdNF = input.nIdNF;
 
   const numero = parseDocumentNumber(input.numero ?? null);
-  if (!input.chave && !input.nIdOS && numero) {
+  if (!input.chave && !input.nIdOS && !input.nIdNF && numero) {
     param.nDocInicial = numero;
     param.nDocFinal = numero;
   }
 
-  if (!param.nChave && !param.nIdOS && !param.nIdReceb && param.nDocInicial == null) {
+  if (!param.nChave && !param.nIdOS && !param.nIdReceb && !param.nIdNF && param.nDocInicial == null) {
     return null;
   }
 
@@ -176,6 +178,8 @@ async function lookupFiscalDocumentId(
     for (const doc of response.documentosEncontrados ?? []) {
       const nIdNF = Number(doc.nIdNF ?? 0) || null;
       if (!nIdNF) continue;
+
+      if (input.nIdNF && nIdNF !== input.nIdNF) continue;
 
       if (input.nIdOS) {
         const docOs = Number(doc.nIdOS ?? 0) || null;
@@ -190,14 +194,78 @@ async function lookupFiscalDocumentId(
       }
 
       if (input.numero && !documentNumberMatches(doc, input.numero)) continue;
-      if (!input.chave && !input.nIdOS && !input.numero && Number(doc.nNumero ?? 0) === 0) continue;
+      if (!input.chave && !input.nIdOS && !input.nIdNF && !input.numero && Number(doc.nNumero ?? 0) === 0) {
+        continue;
+      }
 
-      return nIdNF;
+      const cXml = typeof doc.cXml === "string" && doc.cXml.trim() ? doc.cXml.trim() : null;
+      return { nIdNF, cXml };
     }
   } catch {
     // sem documento fiscal indexado
   }
 
+  return null;
+}
+
+async function lookupFiscalDocumentId(
+  app: OmieAppConfig,
+  input: {
+    modelo: "55" | "99";
+    chave?: string | null;
+    numero?: string | null;
+    nIdOS?: number | null;
+    nIdReceb?: number | null;
+  },
+) {
+  const hit = await lookupFiscalDocument(app, input);
+  return hit?.nIdNF ?? null;
+}
+
+function decodeOmieXmlPayload(raw: string) {
+  let text = raw.replace(/^\uFEFF/, "").trim();
+  if (!text) return null;
+  // Omie às vezes devolve o XML com entidades HTML (&lt;?xml ...).
+  if (/&lt;\??xml/i.test(text) || text.includes("&lt;") || text.includes("&gt;")) {
+    text = text
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&");
+  }
+  if (text.startsWith("<") || /^<\?xml/i.test(text)) return text;
+  try {
+    const decoded = Buffer.from(cleanBase64Payload(text), "base64")
+      .toString("utf8")
+      .replace(/^\uFEFF/, "")
+      .trim();
+    if (decoded.includes("&lt;")) {
+      return decodeOmieXmlPayload(decoded);
+    }
+    if (decoded.startsWith("<") || /^<\?xml/i.test(decoded)) return decoded;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function materializeXmlDocument(raw: string, label: string): DueItemDocument | null {
+  const xmlText = decodeOmieXmlPayload(raw);
+  if (!xmlText) return null;
+
+  return {
+    filename: `${safeFilename(label)}.xml`,
+    mimetype: "application/xml",
+    base64: Buffer.from(xmlText, "utf8").toString("base64"),
+  };
+}
+
+function pickXmlFromOmieResponse(response: Record<string, unknown>) {
+  for (const key of ["cXmlNfe", "cXmlNFSe", "cXml", "cXmlNFe", "xml"]) {
+    const value = response[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
   return null;
 }
 
@@ -271,20 +339,26 @@ async function resolveNfeLookup(
 
   const nCodNF = Number(titulo?.["nCodNF"] ?? titulo?.["nIdNfe"] ?? 0) || null;
 
-  let nIdNfe: number | null = nCodNF;
-  if (!nIdNfe && chaveNfe) {
-    nIdNfe = await lookupFiscalDocumentId(app, { modelo: "55", chave: chaveNfe });
+  // nCodNF do título financeiro às vezes vem igual ao código do título — não serve como nIdNfe.
+  let nIdNfe: number | null = nCodNF && nCodNF !== tituloId ? nCodNF : null;
+  let cXml: string | null = null;
+  if (chaveNfe) {
+    const hit = await lookupFiscalDocument(app, { modelo: "55", chave: chaveNfe });
+    if (hit?.nIdNF) nIdNfe = hit.nIdNF;
+    cXml = hit?.cXml ?? null;
   }
   if (!nIdNfe && tituloId) {
-    nIdNfe = await lookupFiscalDocumentId(app, {
+    const hit = await lookupFiscalDocument(app, {
       modelo: "55",
       nIdReceb: tituloId,
       numero,
     });
+    nIdNfe = hit?.nIdNF ?? null;
+    cXml = cXml || hit?.cXml || null;
   }
   // Não buscar só por número: o mesmo nNF existe em clientes diferentes.
 
-  return { nIdNfe, chaveNfe, numeroNfe: item.documentNumber };
+  return { nIdNfe, chaveNfe, numeroNfe: item.documentNumber, cXml };
 }
 
 async function resolveNfseLookup(
@@ -839,4 +913,150 @@ export async function resolveBoletoPdfByOmieCode(
 ) {
   const result = await resolveBoletoPdfWithStatus(app, input);
   return result.document;
+}
+
+async function resolveNfeXml(app: OmieAppConfig, item: DueItem): Promise<DueItemDocument | null> {
+  const lookup = await resolveNfeLookup(app, item);
+  const label = item.documentNumber?.trim() || (lookup.nIdNfe ? `nfe-${lookup.nIdNfe}` : "nfe");
+
+  if (lookup.cXml) {
+    const fromLookup = materializeXmlDocument(lookup.cXml, label);
+    if (fromLookup) return fromLookup;
+  }
+
+  // IDs candidatos: nfe: explícito, id achado pela chave, ou nIdNfe do lookup
+  // (desde que não seja o próprio código do título financeiro).
+  const nfeFromCode = parseIntegrationRef(item.integrationCode, "nfe");
+  const nIdCandidates = [
+    ...new Set(
+      [nfeFromCode, lookup.nIdNfe].filter(
+        (value): value is number =>
+          value != null && Number.isFinite(value) && value > 0 && value !== item.omieCode,
+      ),
+    ),
+  ];
+
+  for (const nIdNfe of nIdCandidates) {
+    try {
+      const response = await omieCall<Record<string, unknown>>(app, "/produtos/dfedocs/", "ObterNfe", {
+        nIdNfe,
+      });
+      if (!omieDocumentSoftError(response)) {
+        const xml = pickXmlFromOmieResponse(response);
+        const doc = xml ? materializeXmlDocument(xml, label) : null;
+        if (doc) return doc;
+      }
+    } catch {
+      // tenta ListarDocumentos
+    }
+
+    const byId = await lookupFiscalDocument(app, { modelo: "55", nIdNF: nIdNfe });
+    if (byId?.cXml) {
+      const doc = materializeXmlDocument(byId.cXml, label);
+      if (doc) return doc;
+    }
+  }
+
+  if (lookup.chaveNfe) {
+    const byChave = await lookupFiscalDocument(app, { modelo: "55", chave: lookup.chaveNfe });
+    if (byChave?.cXml) {
+      const doc = materializeXmlDocument(byChave.cXml, label);
+      if (doc) return doc;
+    }
+    if (byChave?.nIdNF) {
+      try {
+        const response = await omieCall<Record<string, unknown>>(app, "/produtos/dfedocs/", "ObterNfe", {
+          nIdNfe: byChave.nIdNF,
+        });
+        if (!omieDocumentSoftError(response)) {
+          const xml = pickXmlFromOmieResponse(response);
+          const doc = xml ? materializeXmlDocument(xml, label) : null;
+          if (doc) return doc;
+        }
+      } catch {
+        // sem XML
+      }
+    }
+  }
+
+  return null;
+}
+
+async function resolveNfseXml(app: OmieAppConfig, item: DueItem): Promise<DueItemDocument | null> {
+  const lookup = await resolveNfseLookup(app, item);
+  const label = item.documentNumber?.trim() || (lookup.nIdNf ? `nfse-${lookup.nIdNf}` : "nfse");
+  const nIdCandidates = [
+    ...new Set(
+      [lookup.nIdNf, item.omieCode ?? null].filter(
+        (value): value is number => value != null && Number.isFinite(value) && value > 0,
+      ),
+    ),
+  ];
+
+  for (const nIdNf of nIdCandidates) {
+    try {
+      const response = await omieCall<Record<string, unknown>>(app, "/servicos/osdocs/", "ObterNFSe", {
+        nIdNf,
+      });
+      if (!omieDocumentSoftError(response)) {
+        const xml = pickXmlFromOmieResponse(response);
+        const doc = xml ? materializeXmlDocument(xml, label) : null;
+        if (doc) return doc;
+      }
+    } catch {
+      // tenta próximo
+    }
+
+    const byId = await lookupFiscalDocument(app, {
+      modelo: "99",
+      nIdNF: nIdNf,
+      numero: item.documentNumber,
+    });
+    if (byId?.cXml) {
+      const doc = materializeXmlDocument(byId.cXml, label);
+      if (doc) return doc;
+    }
+  }
+
+  if (lookup.nCodOS) {
+    const byOs = await lookupFiscalDocument(app, {
+      modelo: "99",
+      nIdOS: lookup.nCodOS,
+      numero: item.documentNumber,
+    });
+    if (byOs?.cXml) {
+      const doc = materializeXmlDocument(byOs.cXml, label);
+      if (doc) return doc;
+    }
+  }
+
+  const tituloId = parseIntegrationRef(item.integrationCode, "titulo") ?? item.omieCode ?? null;
+  if (tituloId && item.documentNumber) {
+    const byReceb = await lookupFiscalDocument(app, {
+      modelo: "99",
+      nIdReceb: tituloId,
+      numero: item.documentNumber,
+    });
+    if (byReceb?.cXml) {
+      const doc = materializeXmlDocument(byReceb.cXml, label);
+      if (doc) return doc;
+    }
+  }
+
+  return null;
+}
+
+/** XML da NF-e/NFS-e (opcional no envio). Boleto tenta achar a nota ligada ao título. */
+export async function resolveDueItemXml(app: OmieAppConfig, item: DueItem): Promise<DueItemDocument | null> {
+  if (item.itemType === "nfe") {
+    return (await resolveNfeXml(app, item)) ?? (await resolveNfseXml(app, item));
+  }
+  if (item.itemType === "nfse") {
+    return (await resolveNfseXml(app, item)) ?? (await resolveNfeXml(app, item));
+  }
+  if (item.itemType === "boleto") {
+    // Título de boleto pode ter companion fiscal — tenta NFS-e e NF-e.
+    return (await resolveNfseXml(app, item)) ?? (await resolveNfeXml(app, item));
+  }
+  return null;
 }

@@ -80,6 +80,10 @@ table.tbl{width:100%;border-collapse:collapse;font:400 13.5px Inter,sans-serif}
 .itens .q{width:86px}.itens .p{width:120px}.itens .d{width:78px}
 .prod-d{font:600 13.5px Inter,sans-serif}
 .prod-c{font:500 11.5px Inter,sans-serif;color:#5A5A5A}
+.sug-preco{font:600 11px Inter,sans-serif;color:#5A5A5A;margin-top:4px;line-height:1.25}
+.sug-preco.abaixo,.itens .p.abaixo-sug .sug-preco{color:#8E1B1B}
+.itens input.num.abaixo-sug{border-color:#B3261E;background:#FDE2E1;color:#8E1B1B;font-weight:700}
+.itens tr.abaixo-sug-row td{background:#FFF5F4}
 .obs-in{font:400 12.5px Inter,sans-serif;width:100%;margin-top:6px;border:1px dashed #C9C9C1;border-radius:6px;padding:5px 8px;background:#fff}
 .obs-in:focus{outline:2px solid #141414}
 .lt-orig{font:600 12px Inter,sans-serif;color:#7a5d00;margin-bottom:6px}

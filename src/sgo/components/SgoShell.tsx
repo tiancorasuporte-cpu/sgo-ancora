@@ -664,6 +664,79 @@ export function SemAcesso() {
   );
 }
 
+function IconeOlho({ aberto }: { aberto: boolean }) {
+  return aberto ? (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.1A10.4 10.4 0 0 1 12 4.8c5 0 9.3 3.3 10.7 7.7a11.2 11.2 0 0 1-1.7 3.1M6.1 6.1A11.3 11.3 0 0 0 1.3 12.5C2.7 16.9 7 20.2 12 20.2c1.7 0 3.3-.4 4.7-1"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ) : (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M1.3 12.5C2.7 8.1 7 4.8 12 4.8s9.3 3.3 10.7 7.7C21.3 16.9 17 20.2 12 20.2S2.7 16.9 1.3 12.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12.5" r="3" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function CampoSenha({
+  id,
+  label,
+  value,
+  onChange,
+  autoComplete,
+  autoFocus,
+  dica,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete: string;
+  autoFocus?: boolean;
+  dica?: string;
+}) {
+  const [mostrar, setMostrar] = useState(false);
+  return (
+    <>
+      <label className="flabel" htmlFor={id}>
+        {label}
+      </label>
+      <div className="senha-campo">
+        <input
+          id={id}
+          className="field"
+          type={mostrar ? "text" : "password"}
+          autoComplete={autoComplete}
+          autoFocus={autoFocus}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          className="senha-olho"
+          aria-label={mostrar ? "Ocultar senha" : "Mostrar senha"}
+          aria-pressed={mostrar}
+          onClick={() => setMostrar((v) => !v)}
+        >
+          <IconeOlho aberto={mostrar} />
+        </button>
+      </div>
+      {dica ? <span className="dica">{dica}</span> : null}
+    </>
+  );
+}
+
 function TrocarSenha({ fechar }: { fechar: () => void }) {
   const [erro, setErro] = useState("");
   const [atual, setAtual] = useState("");
@@ -695,19 +768,16 @@ function TrocarSenha({ fechar }: { fechar: () => void }) {
           <div className="erro-form" role="alert" hidden={!erro}>
             {erro}
           </div>
-          <label className="flabel" htmlFor="ts-a">
-            Senha atual
-          </label>
-          <input id="ts-a" className="field" type="password" autoComplete="current-password" autoFocus value={atual} onChange={(e) => setAtual(e.target.value)} />
-          <label className="flabel" htmlFor="ts-n">
-            Nova senha
-          </label>
-          <input id="ts-n" className="field" type="password" autoComplete="new-password" value={nova} onChange={(e) => setNova(e.target.value)} />
-          <span className="dica">Mínimo de 8 caracteres, com letras e números.</span>
-          <label className="flabel" htmlFor="ts-c">
-            Repita a nova senha
-          </label>
-          <input id="ts-c" className="field" type="password" autoComplete="new-password" value={conf} onChange={(e) => setConf(e.target.value)} />
+          <CampoSenha id="ts-a" label="Senha atual" value={atual} onChange={setAtual} autoComplete="current-password" autoFocus />
+          <CampoSenha
+            id="ts-n"
+            label="Nova senha"
+            value={nova}
+            onChange={setNova}
+            autoComplete="new-password"
+            dica="Mínimo de 8 caracteres, com letras e números."
+          />
+          <CampoSenha id="ts-c" label="Repita a nova senha" value={conf} onChange={setConf} autoComplete="new-password" />
         </div>
         <div className="modal-acoes">
           <button type="button" className="btn-ghost" onClick={fechar}>

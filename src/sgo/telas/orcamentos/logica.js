@@ -9,6 +9,17 @@ function n2(v){return(+v||0).toLocaleString("pt-BR",{minimumFractionDigits:2,max
 function qtdTxt(v){return(+v||0).toLocaleString("pt-BR",{maximumFractionDigits:3})}
 function num(v){if(typeof v==="number")return v;var s=String(v==null?"":v).trim().replace(/[^\d,.-]/g,"");if(!s)return 0;if(s.indexOf(",")>=0)s=s.replace(/\./g,"").replace(",",".");var n=parseFloat(s);return isFinite(n)?n:0}
 function r2(v){return Math.round((+v||0)*100)/100}
+function round90(v){return!(v>0)?null:Math.floor(v)+0.9}
+function sugPreco(custo,markup){var c=+custo,m=+markup;if(!(c>0))return null;if(!(m>0))m=1.7;return round90(c*m)}
+function abaixoSug(preco,sug){return sug!=null&&sug>0&&isFinite(+preco)&&(+preco)+0.0001<sug}
+function aplicarCatalogoNoItem(i,p){
+  if(!i||!p||ehSvc(i))return i;
+  i.estoque=p.estoque!=null?Number(p.estoque):i.estoque;
+  i.custo=p.custo!=null?Number(p.custo):i.custo;
+  i.markup=p.markup!=null&&Number(p.markup)>0?Number(p.markup):(i.markup||1.7);
+  i.preco_sug=p.preco_sug!=null?Number(p.preco_sug):sugPreco(i.custo,i.markup);
+  return i;
+}
 function dataHora(ms){return ms?new Date(ms).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"}):""}
 function dataBR(iso){if(!iso)return"";var p=String(iso).slice(0,10).split("-");return p.length===3?p[2]+"/"+p[1]+"/"+p[0]:iso}
 function hojeISO(n){var d=new Date();d.setDate(d.getDate()+(n||0));return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
@@ -144,10 +155,10 @@ function converter(id,bt){
     var L=s.lt,E=novoE();
     E.lt={id:L.id,num:L.num,os_num:L.os_num,tecnico:L.tecnico,data:L.data,obs:L.obs,cliente:L.cliente};
     E.cliSug=s.clientes||[];if(s.op)E.op={id:s.op.id,cod:s.op.cod};
-    E.itens=L.itens.map(function(i){var p=i.produto;return{produto_id:p?p.id:null,codigo:p?p.codigo:"",descricao:p?p.descricao:"",unidade:p?p.unidade:"",qtd:i.qtd,preco:p?+p.preco_venda||0:0,desc:0,obs:i.obs||"",lt_nome:i.nome,lt_qtd:i.qtd}});
+    E.itens=L.itens.map(function(i){var p=i.produto;var it={produto_id:p?p.id:null,codigo:p?p.codigo:"",descricao:p?p.descricao:"",unidade:p?p.unidade:"",qtd:i.qtd,preco:p?+p.preco_venda||0:0,desc:0,obs:i.obs||"",lt_nome:i.nome,lt_qtd:i.qtd};if(p)aplicarCatalogoNoItem(it,p);return it});
     if(L.obs)E.obs="";
-    var fim=function(){E.base=snap(E);S.E=E;desenhar();window.scrollTo(0,0)};
-    if(s.cliente)return carregarCliente(E,s.cliente.id).then(fim);fim();
+    var fim=function(){return enriquecerItensCatalogo(E).then(function(){E.base=snap(E);S.E=E;desenhar();window.scrollTo(0,0)})};
+    if(s.cliente)return carregarCliente(E,s.cliente.id).then(fim);return fim();
   }).catch(function(e){toast(e.message);if(bt)bt.disabled=false})}
 
 /* ===================== EDITOR ===================== */
@@ -167,8 +178,17 @@ function edDe(it){var D=it.dados||{},c=D.cliente||{},Co=D.comodato&&D.comodato.a
 function snap(E){return JSON.stringify({c:E.cli&&E.cli.id,i:E.itens.map(function(i){return[i.tipo==="servico"?"s"+i.mo_id:i.produto_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),d:r2(num(E.desconto)),v:E.validade,p:E.pagamento,z:E.prazo,g:E.garantia,o:E.obs,r:E.ref,oi:E.ocultarItens,ot:E.ocultarTotal,m:E.mensal.ativo?[E.mensal.itens.map(function(i){return[i.servico_id,r2(num(i.qtd)),r2(num(i.preco)),r2(num(i.desc)),i.obs]}),String(E.mensal.prazo_meses||""),E.mensal.inicio]:0,co:E.comodato&&E.comodato.ativo?[String(E.comodato.pct_mes||""),String(E.comodato.meses||""),String(E.comodato.pct_depreciacao||"")]:0})}
 function sujo(){var E=S.E;if(!E||E.os_num)return false;return E.id?snap(E)!==E.base:!!(E.itens.length||E.cli||E.mensal.itens.length||(E.comodato&&E.comodato.ativo))}
 function sairEditor(){return!sujo()||confirm("Há alterações não salvas neste orçamento. Sair mesmo assim?")}
-function abrirOrc(id){if(S.E&&S.E.id!==id&&!sairEditor())return;api("GET","/api/orcamentos/"+id).then(function(d){var E=edDe(d.item);E.base=snap(E);S.E=E;desenhar();window.scrollTo(0,0)}).catch(function(e){toast(e.message)})}
-function duplicar(it){var E=edDe(it);E.id=null;E.num=null;E.versao=0;E.status="salvo";E.os_num=null;E.lt=null;E.criado_nome="";E.criado_em=null;E.validade=hojeISO(15);E.base="";S.E=E;desenhar();window.scrollTo(0,0);toast("Cópia de "+it.num+": confira e clique em Salvar para gerar o número novo.",5000)}
+function enriquecerItensCatalogo(E){
+  var ids=E.itens.filter(function(i){return!ehSvc(i)&&i.produto_id}).map(function(i){return i.produto_id});
+  if(!ids.length)return Promise.resolve(E);
+  return api("POST","/api/cadastros/produtos/info",{ids:ids}).then(function(d){
+    var map={};(d.itens||[]).forEach(function(p){map[p.id]=p});
+    E.itens.forEach(function(i){if(i.produto_id&&map[i.produto_id])aplicarCatalogoNoItem(i,map[i.produto_id])});
+    return E;
+  }).catch(function(){return E});
+}
+function abrirOrc(id){if(S.E&&S.E.id!==id&&!sairEditor())return;api("GET","/api/orcamentos/"+id).then(function(d){var E=edDe(d.item);return enriquecerItensCatalogo(E).then(function(){E.base=snap(E);S.E=E;desenhar();window.scrollTo(0,0)})}).catch(function(e){toast(e.message)})}
+function duplicar(it){var E=edDe(it);E.id=null;E.num=null;E.versao=0;E.status="salvo";E.os_num=null;E.lt=null;E.criado_nome="";E.criado_em=null;E.validade=hojeISO(15);E.base="";enriquecerItensCatalogo(E).then(function(){S.E=E;desenhar();window.scrollTo(0,0);toast("Cópia de "+it.num+": confira e clique em Salvar para gerar o número novo.",5000)})}
 function carregarCliente(E,id){return api("GET","/api/cadastros/parceiros/"+id).then(function(d){var p=d.item;E.cli={id:p.id,razao:p.razao,fantasia:p.fantasia,documento:p.documento,endereco:p.endereco,bairro:p.bairro,cidade:p.cidade,uf:p.uf,cep:p.cep,telefone:p.telefone,email:p.email,contato:p.contato,ie:p.ie}})}
 function calc(E){var sub=0,sv=0;E.itens.forEach(function(i){i._t=r2(num(i.qtd)*num(i.preco)*(1-Math.min(100,Math.max(0,num(i.desc)))/100));sub+=i._t;if(ehSvc(i))sv+=i._t});sub=r2(sub);sv=r2(sv);var d=Math.min(sub,Math.max(0,r2(num(E.desconto))));return{sub:sub,desc:d,total:r2(sub-d),sv:sv,pr:r2(sub-sv)}}
 function ehSvc(i){return!!i&&i.tipo==="servico"}
@@ -237,17 +257,13 @@ function desenharEditor(){
   h+="</section>";
   // comodato
   var C=E.comodato||novoC(),CC=calcC(E);
-  h+='<section class="card m-card c-card'+(C.ativo?" on":"")+'"><div class="card-h"><label class="m-flag"><input type="checkbox" id="c-ativo"'+(C.ativo?" checked":"")+dis0+'><span>Comodato</span></label><span class="dica">'+(C.ativo?"Empresa Angela · mensalidade calculada sobre o total do orçamento":"Marque para gerar contrato de comodato (OS e faturamento na Angela)")+"</span></div>";
+  h+='<section class="card m-card c-card'+(C.ativo?" on":"")+'"><div class="card-h"><label class="m-flag"><input type="checkbox" id="c-ativo"'+(C.ativo?" checked":"")+dis0+'><span>Comodato</span></label><span class="dica">'+(C.ativo?"Empresa Angela · mensalidade sobre o total do orçamento":"Marque para gerar contrato de comodato (OS e faturamento na Angela)")+"</span></div>";
   if(C.ativo){
-    h+='<div class="card-b"><div class="aviso azul" style="margin-bottom:12px">Base: <b>'+brl(CC.valor)+'</b> (total dos produtos/serviços). Fórmula: <b>% a.m. × meses × valor</b> = taxa · (<b>valor + taxa</b>) ÷ meses (arred. p/ cima) · + % depreciação (arred.).</div>';
+    h+='<div class="card-b">';
     h+='<div class="grid2"><div class="f"><label class="flabel" for="c-pct">Porcentagem ao mês (%) · mín. 1%</label><input class="field" id="c-pct" inputmode="decimal" value="'+esc(C.pct_mes)+'" placeholder="Ex.: 1,5" min="1"'+dis0+'></div>';
     h+='<div class="f"><label class="flabel" for="c-meses">Meses do contrato</label><input class="field" id="c-meses" inputmode="numeric" value="'+esc(C.meses)+'" placeholder="Ex.: 36"'+dis0+'></div>';
     h+='<div class="f"><label class="flabel" for="c-dep">Depreciação (%) · mín. 10%</label><input class="field" id="c-dep" inputmode="decimal" value="'+esc(C.pct_depreciacao)+'" placeholder="Ex.: 20" min="10"'+dis0+"></div></div>";
-    h+='<div class="tot" style="margin-top:14px"><div class="tot-box m-tot" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">';
-    h+='<div class="tot-l"><span>Taxa do período</span><b id="c-taxa">'+brl(CC.taxa)+'</b></div>';
-    h+='<div class="tot-l"><span>Parcela base</span><b id="c-parc">'+brl(CC.parcela)+'</b></div>';
-    h+='<div class="tot-l g"><span>Mensalidade comodato</span><span id="c-men">'+brl(CC.mensalidade)+"</span></div></div></div>";
-    if(CC.meses)h+='<div class="dica" style="margin-top:10px" id="c-resumo">'+esc(n2(CC.pct))+"% × "+CC.meses+" × "+brl(CC.valor)+" = "+brl(CC.taxa)+" · ("+brl(CC.valor)+" + "+brl(CC.taxa)+") ÷ "+CC.meses+" = "+brl(CC.parcela)+" · + "+esc(n2(CC.dep))+"% = "+brl(CC.mensalidade)+"/mês</div>";
+    h+='<div class="tot" style="margin-top:14px"><div class="tot-box m-tot"><div class="tot-l g"><span>Mensalidade comodato</span><span id="c-men">'+brl(CC.mensalidade)+"</span></div></div></div>";
     h+="</div>";
   }
   h+="</section>";
@@ -296,11 +312,14 @@ function linhasItens(){
   var E=S.E,tv=travado();
   if(!E.itens.length)return'<tr><td colspan="8" class="vazio">Nenhum item. Use o campo acima para adicionar produtos e serviços do cadastro.</td></tr>';
   return E.itens.map(function(i,k){var falta=faltaProd(i),sv=ehSvc(i),dis=tv?" disabled":"";
+    var sug=sv?null:(i.preco_sug!=null?Number(i.preco_sug):sugPreco(i.custo,i.markup));
+    var baixo=!sv&&abaixoSug(i.preco,sug);
     var prod=sv?'<div class="prod-d"><span class="sv-tag">Serviço</span>'+esc(i.descricao)+'</div><div class="prod-c">Cód. '+esc(i.codigo)+" · mão de obra</div>":falta?'<div class="lt-orig">L.T.: '+qtdTxt(i.lt_qtd||i.qtd)+"x "+esc(i.lt_nome||"")+"</div>"+(tv?"":'<input class="field" type="text" data-busca="produto" data-escolher="'+k+'" placeholder="Escolha o produto do cadastro para este item" autocomplete="off" aria-label="Produto para '+esc(i.lt_nome||"item")+'">')
-      :(i.lt_nome&&norm(i.lt_nome)!==norm(i.descricao)?'<div class="lt-orig">L.T.: '+esc(i.lt_nome)+(tv?"":' · <button class="lnk" type="button" data-trocar="'+k+'" style="all:unset;cursor:pointer;text-decoration:underline">trocar produto</button>')+"</div>":"")+'<div class="prod-d">'+esc(i.descricao)+'</div><div class="prod-c">Cód. '+esc(i.codigo)+"</div>";
+      :(i.lt_nome&&norm(i.lt_nome)!==norm(i.descricao)?'<div class="lt-orig">L.T.: '+esc(i.lt_nome)+(tv?"":' · <button class="lnk" type="button" data-trocar="'+k+'" style="all:unset;cursor:pointer;text-decoration:underline">trocar produto</button>')+"</div>":"")+'<div class="prod-d">'+esc(i.descricao)+'</div><div class="prod-c">Cód. '+esc(i.codigo)+(i.estoque!=null?" · estoque "+qtdTxt(i.estoque):"")+"</div>";
     prod+=tv?(i.obs?'<div class="sub">'+esc(i.obs)+"</div>":""):'<input class="obs-in" data-obs="'+k+'" value="'+esc(i.obs)+'" placeholder="Complemento (opcional) · ex.: Portão social" aria-label="Complemento do item '+(k+1)+'">';
-    return'<tr class="'+(falta?"falta":"")+(sv?" sv-row":"")+'"><td>'+(k+1)+"</td><td>"+prod+"</td><td>"+esc(i.unidade||"")+'</td><td class="q"><input class="num" data-q="'+k+'" inputmode="decimal" value="'+qtdTxt(i.qtd)+'" aria-label="Quantidade item '+(k+1)+'"'+dis+'></td><td class="p"><input class="num" data-p="'+k+'" inputmode="decimal" value="'+n2(i.preco)+'" aria-label="Preço item '+(k+1)+'"'+dis+'></td><td class="d"><input class="num" data-d="'+k+'" inputmode="decimal" value="'+(i.desc?n2(i.desc):"")+'" placeholder="0" aria-label="Desconto % item '+(k+1)+'"'+dis+'></td><td class="r" style="white-space:nowrap;font-weight:700" data-t="'+k+'">'+brl(r2(num(i.qtd)*num(i.preco)*(1-num(i.desc)/100)))+"</td>"+(tv?"":'<td class="r" style="white-space:nowrap"><button class="ico" type="button" data-up="'+k+'" aria-label="Subir item '+(k+1)+'"'+(k===0||ehSvc(E.itens[k-1])!==sv?" disabled":"")+'>↑</button> <button class="ico" type="button" data-dn="'+k+'" aria-label="Descer item '+(k+1)+'"'+(k===E.itens.length-1||ehSvc(E.itens[k+1])!==sv?" disabled":"")+'>↓</button> <button class="ico del" type="button" data-rm="'+k+'" aria-label="Remover item '+(k+1)+'">✕</button></td>')+"</tr>"}).join("")}
-function totais(){var E=S.E,T=calc(E),M=calcM(E),C=calcC(E);$("#t-sub").textContent=brl(T.sub);var tp=$("#t-pr"),ts=$("#t-sv");if(tp){tp.textContent=brl(T.pr);ts.textContent=brl(T.sv);$$(".sv-l").forEach(function(x){x.hidden=!T.sv})}$("#t-tot").textContent=brl(T.total);$("#b-tot").innerHTML=barraTot(E);E.itens.forEach(function(i,k){var c=$('[data-t="'+k+'"]');if(c)c.textContent=brl(i._t)});var mt=$("#m-tot");if(mt)mt.textContent=brl(M);E.mensal.itens.forEach(function(i,k){var c=$('[data-mt="'+k+'"]');if(c)c.textContent=brl(i._t)});var ct=$("#c-taxa"),cp=$("#c-parc"),cm=$("#c-men"),cr=$("#c-resumo");if(ct)ct.textContent=brl(C.taxa);if(cp)cp.textContent=brl(C.parcela);if(cm)cm.textContent=brl(C.mensalidade);if(cr&&C.meses)cr.textContent=n2(C.pct)+"% × "+C.meses+" × "+brl(C.valor)+" = "+brl(C.taxa)+" · ("+brl(C.valor)+" + "+brl(C.taxa)+") ÷ "+C.meses+" = "+brl(C.parcela)+" · + "+n2(C.dep)+"% = "+brl(C.mensalidade)+"/mês";marcar()}
+    var precoCell='<td class="p'+(baixo?" abaixo-sug":"")+'"><input class="num'+(baixo?" abaixo-sug":"")+'" data-p="'+k+'" inputmode="decimal" value="'+n2(i.preco)+'" aria-label="Preço item '+(k+1)+'"'+dis+'>'+(sug>0?'<div class="sug-preco'+(baixo?" abaixo":"")+'">Sugestão '+brl(sug)+(baixo?" · abaixo":"")+"</div>":"")+"</td>";
+    return'<tr class="'+(falta?"falta":"")+(sv?" sv-row":"")+(baixo?" abaixo-sug-row":"")+'"><td>'+(k+1)+"</td><td>"+prod+"</td><td>"+esc(i.unidade||"")+'</td><td class="q"><input class="num" data-q="'+k+'" inputmode="decimal" value="'+qtdTxt(i.qtd)+'" aria-label="Quantidade item '+(k+1)+'"'+dis+'></td>'+precoCell+'<td class="d"><input class="num" data-d="'+k+'" inputmode="decimal" value="'+(i.desc?n2(i.desc):"")+'" placeholder="0" aria-label="Desconto % item '+(k+1)+'"'+dis+'></td><td class="r" style="white-space:nowrap;font-weight:700" data-t="'+k+'">'+brl(r2(num(i.qtd)*num(i.preco)*(1-num(i.desc)/100)))+"</td>"+(tv?"":'<td class="r" style="white-space:nowrap"><button class="ico" type="button" data-up="'+k+'" aria-label="Subir item '+(k+1)+'"'+(k===0||ehSvc(E.itens[k-1])!==sv?" disabled":"")+'>↑</button> <button class="ico" type="button" data-dn="'+k+'" aria-label="Descer item '+(k+1)+'"'+(k===E.itens.length-1||ehSvc(E.itens[k+1])!==sv?" disabled":"")+'>↓</button> <button class="ico del" type="button" data-rm="'+k+'" aria-label="Remover item '+(k+1)+'">✕</button></td>')+"</tr>"}).join("")}
+function totais(){var E=S.E,T=calc(E),M=calcM(E),C=calcC(E);$("#t-sub").textContent=brl(T.sub);var tp=$("#t-pr"),ts=$("#t-sv");if(tp){tp.textContent=brl(T.pr);ts.textContent=brl(T.sv);$$(".sv-l").forEach(function(x){x.hidden=!T.sv})}$("#t-tot").textContent=brl(T.total);$("#b-tot").innerHTML=barraTot(E);E.itens.forEach(function(i,k){var c=$('[data-t="'+k+'"]');if(c)c.textContent=brl(i._t);var sug=ehSvc(i)?null:(i.preco_sug!=null?Number(i.preco_sug):sugPreco(i.custo,i.markup));var baixo=!ehSvc(i)&&abaixoSug(i.preco,sug);var inp=$('[data-p="'+k+'"]');if(inp){inp.classList.toggle("abaixo-sug",!!baixo);var cell=inp.closest("td");if(cell)cell.classList.toggle("abaixo-sug",!!baixo);var row=inp.closest("tr");if(row)row.classList.toggle("abaixo-sug-row",!!baixo);var lab=cell&&cell.querySelector(".sug-preco");if(lab&&sug>0){lab.textContent="Sugestão "+brl(sug)+(baixo?" · abaixo":"");lab.classList.toggle("abaixo",!!baixo)}}});var mt=$("#m-tot");if(mt)mt.textContent=brl(M);E.mensal.itens.forEach(function(i,k){var c=$('[data-mt="'+k+'"]');if(c)c.textContent=brl(i._t)});var cm=$("#c-men");if(cm)cm.textContent=brl(C.mensalidade);marcar()}
 function marcar(){var E=S.E,el=$("#b-st");if(!el)return;var falta=E.itens.filter(faltaProd).length;
   el.textContent=E.os_num?"Enviado ao pedido · OS "+E.os_num:!E.id?"Ainda não salvo"+(falta?" · "+falta+" item(ns) sem produto":""):sujo()?"Alterações não salvas"+(falta?" · "+falta+" item(ns) sem produto":""):"Salvo";
   var bs=$("#bt-salvar");if(bs)bs.disabled=!!(E.id&&!sujo())}
@@ -315,7 +334,7 @@ function ligarItens(){if(window.SGOBusca){$$("[data-busca=produto]").forEach(fun
   $$("[data-up]").forEach(function(b){b.onclick=function(){var k=+b.dataset.up;if(k<1)return;var t=E.itens[k];E.itens[k]=E.itens[k-1];E.itens[k-1]=t;redesenharItens();var n=$('[data-up="'+(k-1)+'"]');if(n&&!n.disabled)n.focus()}});
   $$("[data-dn]").forEach(function(b){b.onclick=function(){var k=+b.dataset.dn;if(k>=E.itens.length-1)return;var t=E.itens[k];E.itens[k]=E.itens[k+1];E.itens[k+1]=t;redesenharItens();var n=$('[data-dn="'+(k+1)+'"]');if(n&&!n.disabled)n.focus()}});
   $$("[data-trocar]").forEach(function(b){b.onclick=function(){var i=E.itens[+b.dataset.trocar];i.produto_id=null;i.codigo="";i.descricao="";i.unidade="";redesenharItens();var x=$('[data-escolher="'+b.dataset.trocar+'"]');if(x)x.focus()}});
-  $$("[data-escolher]").forEach(function(x){x.addEventListener("sgo-busca",function(e){var p=e.detail.item,i=E.itens[+x.dataset.escolher];i.produto_id=p.id;i.codigo=p.codigo;i.descricao=p.descricao;i.unidade=p.unidade;if(!num(i.preco))i.preco=+p.preco_venda||0;setTimeout(redesenharItens,0)})});
+  $$("[data-escolher]").forEach(function(x){x.addEventListener("sgo-busca",function(e){var p=e.detail.item,i=E.itens[+x.dataset.escolher];i.produto_id=p.id;i.codigo=p.codigo;i.descricao=p.descricao;i.unidade=p.unidade;aplicarCatalogoNoItem(i,p);if(!num(i.preco))i.preco=+p.preco_venda||0;setTimeout(redesenharItens,0)})});
 }
 function ligarEditor(){
   var E=S.E;
@@ -323,7 +342,7 @@ function ligarEditor(){
   var cb=$("#cli-busca");if(cb){if(window.SGOBusca)window.SGOBusca.ligar(cb,{tipo:"cliente"});cb.addEventListener("sgo-busca",function(e){carregarCliente(E,e.detail.item.id).then(function(){desenharEditor()}).catch(function(er){toast(er.message)})});setTimeout(function(){if(!E.itens.length||E.lt)cb.focus()},50)}
   $$("[data-cli]").forEach(function(b){b.onclick=function(){carregarCliente(E,+b.dataset.cli).then(function(){desenharEditor()}).catch(function(er){toast(er.message)})}});
   var tr=$("#cli-trocar");if(tr)tr.onclick=function(){E.cli=null;desenharEditor()};
-  var ap=$("#add-prod");if(ap){if(window.SGOBusca)window.SGOBusca.ligar(ap,{tipo:"produto"});ap.addEventListener("sgo-busca",function(e){var p=e.detail.item;var ks=E.itens.findIndex(ehSvc);E.itens.splice(ks<0?E.itens.length:ks,0,{produto_id:p.id,codigo:p.codigo,descricao:p.descricao,unidade:p.unidade,qtd:1,preco:+p.preco_venda||0,desc:0,obs:""});setTimeout(function(){ap.value="";redesenharItens();ap.focus();toast("Adicionado: "+p.descricao,2200)},0)})};
+  var ap=$("#add-prod");if(ap){if(window.SGOBusca)window.SGOBusca.ligar(ap,{tipo:"produto"});ap.addEventListener("sgo-busca",function(e){var p=e.detail.item;var ks=E.itens.findIndex(ehSvc);var novo={produto_id:p.id,codigo:p.codigo,descricao:p.descricao,unidade:p.unidade,qtd:1,preco:+p.preco_venda||0,desc:0,obs:""};aplicarCatalogoNoItem(novo,p);E.itens.splice(ks<0?E.itens.length:ks,0,novo);setTimeout(function(){ap.value="";redesenharItens();ap.focus();toast("Adicionado: "+p.descricao,2200)},0)})};
   var as=$("#add-svc");if(as){if(!S.mos)carregarMO().then(function(){if(S.E===E&&$("#add-svc"))desenharEditor()}).catch(function(er){toast(er.message)});as.onchange=function(){var m=(S.mos||[]).find(function(x){return String(x.id)===as.value});if(!m)return;E.itens.push({tipo:"servico",mo_id:m.id,codigo:m.codigo,descricao:m.descricao,unidade:m.unidade,qtd:1,preco:+m.preco_venda||0,desc:0,obs:""});as.value="";redesenharItens();toast("Serviço incluído: "+m.descricao,2200);var q=$('[data-q="'+(E.itens.length-1)+'"]');if(q)q.focus()}}
   ligarItens();ligarM();
   var ma=$("#m-ativo");if(ma)ma.onchange=function(){E.mensal.ativo=ma.checked;if(ma.checked){carregarSvcs().catch(function(e){toast(e.message)})}desenharEditor();if(ma.checked){var s=$("#m-add");if(s)s.focus()}};
@@ -390,7 +409,7 @@ function docDados(E){
   if(E.comodato&&E.comodato.ativo)E.empresaDoc="angela";
   var c=E.cli||{},T=calc(E),Mt=calcM(E),M=E.mensal.ativo?{itens:E.mensal.itens,total:Mt,prazo:E.mensal.prazo_meses,inicio:E.mensal.inicio}:null,CC=calcC(E),Co=E.comodato&&E.comodato.ativo?CC:null,emp=empDoc(E.empresaDoc);
   var cond=[["Validade da proposta",dataBR(E.validade)],["Forma de pagamento",E.pagamento],["Prazo de execução",E.prazo],["Garantia",E.garantia]].concat(M&&M.prazo?[["Prazo contratual",M.prazo+" meses"]]:[]).concat(M&&M.inicio?[["Início da cobrança mensal",M.inicio]]:[]);
-  if(Co)cond=cond.concat([["Comodato (meses)",String(Co.meses)],["Comodato % a.m.",n2(Co.pct)+"%"],["Depreciação",n2(Co.dep)+"%"],["Mensalidade comodato",brl(Co.mensalidade)]]);
+  if(Co)cond=cond.concat([["Comodato (meses)",String(Co.meses)],["Mensalidade comodato",brl(Co.mensalidade)]]);
   return{M:M,C:Co,num:E.num||"(rascunho — não salvo)",emissao:E.criado_em?new Date(E.criado_em).toLocaleDateString("pt-BR"):new Date().toLocaleDateString("pt-BR"),validade:dataBR(E.validade),resp:E.criado_nome||"",c:c,itens:E.itens,T:T,oi:E.ocultarItens,ot:E.ocultarTotal,emp:emp,cond:cond.filter(function(x){return x[1]}),ref:E.ref,obs:E.obs};
 }
 function lnTot(i){return r2(num(i.qtd)*num(i.preco)*(1-num(i.desc)/100))}
@@ -408,10 +427,8 @@ function docHTML(D){
     if(!D.ot)h+='<div class="ptot"><div><div class="g" style="display:flex;justify-content:space-between;gap:20px"><span>Valor mensal</span><span>'+brl(D.M.total)+"</span></div>"+(D.M.prazo?'<div class="l" style="justify-content:flex-end;color:#555">Contrato de '+esc(D.M.prazo)+" meses</div>":"")+"</div></div>";
   }
   if(D.C&&!D.ot){
-    h+='<div class="pt-sec">Comodato (Angela)</div><div class="pcond" style="margin-top:8px">';
-    h+="<div><span>Valor base</span><b>"+brl(D.C.valor)+"</b></div><div><span>% ao mês × prazo</span><b>"+esc(n2(D.C.pct))+"% × "+D.C.meses+" meses</b></div>";
-    h+="<div><span>Taxa do período</span><b>"+brl(D.C.taxa)+"</b></div><div><span>Parcela base</span><b>"+brl(D.C.parcela)+"</b></div>";
-    h+="<div><span>Depreciação</span><b>"+esc(n2(D.C.dep))+"%</b></div><div><span>Mensalidade</span><b>"+brl(D.C.mensalidade)+"</b></div></div>";
+    h+='<div class="pt-sec">Comodato (Angela)</div>';
+    h+='<div class="ptot"><div><div class="g" style="display:flex;justify-content:space-between;gap:20px"><span>Mensalidade comodato</span><span>'+brl(D.C.mensalidade)+"</span></div>"+(D.C.meses?'<div class="l" style="justify-content:flex-end;color:#555">Contrato de '+esc(String(D.C.meses))+" meses</div>":"")+"</div></div>";
   }
   if(D.cond.length)h+='<div class="pcond">'+D.cond.map(function(x){return"<div><span>"+esc(x[0])+"</span><b>"+esc(x[1])+"</b></div>"}).join("")+"</div>";
   if(D.obs)h+='<div class="pobs"><b>Observações</b>'+esc(D.obs)+"</div>";
@@ -487,15 +504,7 @@ function baixarPDF(D,bt){
       if(!D.ot)caixa("VALOR MENSAL",brl(D.M.total),D.M.prazo?"Contrato de "+D.M.prazo+" meses":"")}
     if(D.C&&!D.ot){
       secao("Comodato (Angela)");
-      J.autoTable({startY:y,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:55},1:{fontStyle:"bold",textColor:P}},body:[
-        ["Valor base",T(brl(D.C.valor))],
-        ["% ao mês × prazo",T(n2(D.C.pct)+"% × "+D.C.meses+" meses")],
-        ["Taxa do período",T(brl(D.C.taxa))],
-        ["Parcela base",T(brl(D.C.parcela))],
-        ["Depreciação",T(n2(D.C.dep)+"%")]
-      ]});
-      y=J.lastAutoTable.finalY+3;
-      caixa("MENSALIDADE COMODATO",brl(D.C.mensalidade),D.C.meses+" meses")}
+      caixa("MENSALIDADE COMODATO",brl(D.C.mensalidade),D.C.meses?"Contrato de "+D.C.meses+" meses":"")}
     if(D.cond.length){J.autoTable({startY:y,margin:{left:M,right:M},theme:"plain",styles:{fontSize:8.8,cellPadding:1},columnStyles:{0:{textColor:G,cellWidth:45},1:{fontStyle:"bold",textColor:P}},body:D.cond.map(function(r){return[T(r[0]),T(r[1])]})});y=J.lastAutoTable.finalY+4}
     if(D.obs){if(y>255){J.addPage();y=20}J.setFont("helvetica","bold");J.setFontSize(8.5);J.setTextColor(122,93,0);J.text("OBSERVAÇÕES",M,y);y+=4.5;J.setFont("helvetica","normal");J.setFontSize(8.8);J.setTextColor.apply(J,P);var ls=J.splitTextToSize(T(D.obs),W-2*M);ls.forEach(function(l){if(y>280){J.addPage();y=20}J.text(l,M,y);y+=4.2})}
     var n=J.getNumberOfPages();for(var p=1;p<=n;p++){J.setPage(p);J.setDrawColor(210,210,205);J.line(M,285,W-M,285);J.setFont("helvetica","normal");J.setFontSize(7.2);J.setTextColor.apply(J,G);J.text(T(emp.nome+(emp.cnpj?" · CNPJ "+emp.cnpj:"")+(D.resp?" · Resp.: "+D.resp:"")),M,289.5);J.text(T(emp.email+" · pág. "+p+"/"+n),W-M,289.5,{align:"right"})}
