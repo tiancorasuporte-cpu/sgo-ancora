@@ -180,6 +180,18 @@ async function atenderBuscaCadastrosOmie(request: Request): Promise<Response | n
   }
 }
 
+/** Progresso do sync (o botão mostra "Sincronizando… 45%"). GET ?tipo=produtos|clientes */
+async function atenderProgressoSyncOmie(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/cadastros/sync-omie/progresso" || request.method !== "GET") return null;
+  const { usuarioSgo } = await import("./sessao");
+  const eu = await usuarioSgo(request);
+  if (!eu) return Response.json({ erro: "Faça login para continuar." }, { status: 401 });
+  const tipo = url.searchParams.get("tipo") === "clientes" ? "clientes" : "produtos";
+  const { progressoSyncOmie } = await import("@/server/omie/sgo-cadastros-sync");
+  return Response.json(progressoSyncOmie(tipo), { headers: { "cache-control": "no-store" } });
+}
+
 async function atenderSyncOmieCadastros(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/cadastros/sync-omie" || request.method !== "POST") return null;
@@ -360,6 +372,9 @@ export async function atenderSgo(request: Request): Promise<Response> {
   const { garantirInstalacao } = await import("./instalar");
   await garantirInstalacao();
   await carregarAppTecnico();
+
+  const progResp = await atenderProgressoSyncOmie(request);
+  if (progResp) return progResp;
 
   const syncResp = await atenderSyncOmieCadastros(request);
   if (syncResp) return syncResp;

@@ -48,6 +48,25 @@ function cadTxt(v: unknown, max = 200) {
   return String(v).replace(/\s+/g, " ").trim().slice(0, max) || null;
 }
 
+/** Características do Omie: pode vir texto, lista ou objeto. Nunca devolve "[object Object]". */
+function textoLivre(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string") return v.trim() && v.trim() !== "[object Object]" ? v : null;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  const umItem = (o: unknown): string => {
+    if (o == null) return "";
+    if (typeof o !== "object") return String(o);
+    const r = o as Record<string, unknown>;
+    const nome = r["nomeCaract"] || r["cNomeCaract"] || r["nome"] || r["descricao"] || r["cDescricao"] || "";
+    const cont = r["conteudo"] || r["cConteudo"] || r["valor"] || r["cValor"] || "";
+    if (nome || cont) return [nome, cont].filter(Boolean).join(": ");
+    return "";
+  };
+  if (!Array.isArray(v) && !("nomeCaract" in (v as object)) && !("cNomeCaract" in (v as object))) return null;
+  const t = (Array.isArray(v) ? v.map(umItem) : [umItem(v)]).filter(Boolean).join("; ");
+  return t || null;
+}
+
 function agoraMs() {
   return Date.now();
 }
@@ -101,6 +120,38 @@ function buscaProduto(p: {
 function productInactive(raw: Record<string, unknown>) {
   const flag = String(raw["inativo"] ?? raw["inactive"] ?? "N").trim().toUpperCase();
   return flag === "S" || flag === "1" || flag === "TRUE";
+}
+
+// ---------- progresso do sync (para o botão "Sincronizando… 45%") ----------
+export type SyncOmieProgresso = {
+  ativo: boolean;
+  pct: number;
+  etapa: string;
+  inicio: number | null;
+  fim: number | null;
+};
+type ProgTipo = "clientes" | "produtos";
+const PROG: Record<ProgTipo, SyncOmieProgresso> = ((globalThis as Record<string, unknown>)[
+  "__sgoSyncOmieProg"
+] ??= {
+  clientes: { ativo: false, pct: 0, etapa: "", inicio: null, fim: null },
+  produtos: { ativo: false, pct: 0, etapa: "", inicio: null, fim: null },
+}) as Record<ProgTipo, SyncOmieProgresso>;
+
+export function progressoSyncOmie(tipo: ProgTipo): SyncOmieProgresso {
+  return { ...PROG[tipo] };
+}
+function progIniciar(tipo: ProgTipo) {
+  PROG[tipo] = { ativo: true, pct: 0, etapa: "Iniciando", inicio: Date.now(), fim: null };
+}
+function progFim(tipo: ProgTipo) {
+  PROG[tipo] = { ...PROG[tipo], ativo: false, pct: 100, etapa: "Concluído", fim: Date.now() };
+}
+/** pct dentro da faixa [de, ate] (0–100), só para frente; 100 só no fim. */
+function progMarcar(tipo: ProgTipo, de: number, ate: number, fracao: number, etapa: string) {
+  const f = Math.max(0, Math.min(1, fracao || 0));
+  const pct = Math.min(99, Math.floor(de + (ate - de) * f));
+  PROG[tipo] = { ...PROG[tipo], pct: Math.max(PROG[tipo].pct, pct), etapa };
 }
 
 async function upsertParceiroFromOmie(
@@ -268,7 +319,13 @@ async function upsertProdutoFromOmie(
     raw["nCMC"] ?? raw["cmc"] ?? raw["valor_custo"] ?? raw["custo_unitario"] ?? raw["nValorCusto"],
   );
   const situacao = productInactive(raw) ? "Inativo" : "Ativo";
-  const caracteristicas = cadTxt(raw["recomendacoes_fiscais"] ?? raw["obs_internas"], 500);
+  // Texto livre do Omie. "recomendacoes_fiscais" é objeto e virava "[object Object]": nunca grava objeto cru.
+  const caracteristicas = cadTxt(
+    textoLivre(raw["descr_detalhada"]) ??
+      textoLivre(raw["caracteristicas"]) ??
+      textoLivre(raw["obs_internas"]),
+    500,
+  );
   const extra = {
     omie_codigo: codigoProduto,
     omie_app: app.id,
@@ -301,7 +358,8 @@ async function upsertProdutoFromOmie(
         ean = ${ean},
         marca = ${marca},
         modelo = ${modelo},
-        preco_venda = ${preco},
+        -- O preço de venda é do SGO: a Omie só preenche produto novo (ou ainda sem preço).
+        preco_venda = coalesce(preco_venda, ${preco}),
         custo = coalesce(${custo}, custo),
         caracteristicas = ${caracteristicas},
         situacao = ${situacao},
@@ -337,8 +395,13 @@ async function syncClientesParaSgo(porLogin: string) {
   let total = 0;
   const erros: string[] = [];
 
-  for (const app of apps) {
+  for (const [ai, app] of apps.entries()) {
+    const fx = (a: number, b: number, f: number, etapa: string) => {
+      const ini = (ai / apps.length) * 100, tam = 100 / apps.length;
+      progMarcar("clientes", ini + (tam * a) / 100, ini + (tam * b) / 100, f, etapa);
+    };
     try {
+      fx(0, 40, 0, `Baixando clientes da Omie (${app.name})`);
       const items = await omiePaginate<{
         pagina?: number;
         total_de_paginas?: number;
@@ -352,14 +415,15 @@ async function syncClientesParaSgo(porLogin: string) {
           registros_por_pagina: 100,
           apenas_importado_api: "N",
         }),
-        (response) => ({
-          page: response.pagina ?? 1,
-          totalPages: response.total_de_paginas ?? 1,
-          items: response.clientes_cadastro ?? [],
-        }),
+        (response) => {
+          const pg = response.pagina ?? 1, tp = response.total_de_paginas ?? 1;
+          fx(0, 40, pg / Math.max(1, tp), `Baixando clientes da Omie (${app.name}) · página ${pg} de ${tp}`);
+          return { page: pg, totalPages: tp, items: response.clientes_cadastro ?? [] };
+        },
       );
 
-      for (const item of items) {
+      for (const [i, item] of items.entries()) {
+        if (i % 10 === 0) fx(40, 100, i / Math.max(1, items.length), `Gravando clientes (${app.name}) · ${i} de ${items.length}`);
         const raw = item as Record<string, unknown>;
         const result = await upsertParceiroFromOmie(app, raw, porLogin);
         if (!result) continue;
@@ -395,8 +459,13 @@ async function syncProdutosParaSgo(porLogin: string) {
     };
   }
 
-  for (const app of apps) {
+  for (const [ai, app] of apps.entries()) {
+    const fx = (a: number, b: number, f: number, etapa: string) => {
+      const ini = (ai / apps.length) * 100, tam = 100 / apps.length;
+      progMarcar("produtos", ini + (tam * a) / 100, ini + (tam * b) / 100, f, etapa);
+    };
     try {
+      fx(0, 30, 0, `Baixando produtos da Omie (${app.name})`);
       const items = await omiePaginate<{
         pagina?: number;
         total_de_paginas?: number;
@@ -411,14 +480,15 @@ async function syncProdutosParaSgo(porLogin: string) {
           apenas_importado_api: "N",
           filtrar_apenas_omiepdv: "N",
         }),
-        (response) => ({
-          page: response.pagina ?? 1,
-          totalPages: response.total_de_paginas ?? 1,
-          items: response.produto_servico_cadastro ?? [],
-        }),
+        (response) => {
+          const pg = response.pagina ?? 1, tp = response.total_de_paginas ?? 1;
+          fx(0, 30, pg / Math.max(1, tp), `Baixando produtos da Omie (${app.name}) · página ${pg} de ${tp}`);
+          return { page: pg, totalPages: tp, items: response.produto_servico_cadastro ?? [] };
+        },
       );
 
-      for (const item of items) {
+      for (const [i, item] of items.entries()) {
+        if (i % 10 === 0) fx(30, 90, i / Math.max(1, items.length), `Gravando produtos (${app.name}) · ${i} de ${items.length}`);
         const raw = item as Record<string, unknown>;
         const result = await upsertProdutoFromOmie(app, raw, porLogin);
         if (!result) continue;
@@ -429,6 +499,7 @@ async function syncProdutosParaSgo(porLogin: string) {
 
       // CMC vem de ListarPosEstoque (não de ListarProdutos) → omie_products + sgo.produtos.custo
       try {
+        fx(90, 100, 0, `Atualizando custo (CMC) da Omie (${app.name})`);
         await syncProductCmcFromStock(app);
       } catch (error) {
         erros.push(
@@ -455,14 +526,24 @@ export async function syncOmieParaCadastrosSgo(
   let produtos = vazios;
 
   if (tipo === "clientes" || tipo === "ambos") {
-    const r = await syncClientesParaSgo(porLogin);
-    clientes = { novos: r.novos, atualizados: r.atualizados, total: r.total };
-    erros.push(...r.erros);
+    progIniciar("clientes");
+    try {
+      const r = await syncClientesParaSgo(porLogin);
+      clientes = { novos: r.novos, atualizados: r.atualizados, total: r.total };
+      erros.push(...r.erros);
+    } finally {
+      progFim("clientes");
+    }
   }
   if (tipo === "produtos" || tipo === "ambos") {
-    const r = await syncProdutosParaSgo(porLogin);
-    produtos = { novos: r.novos, atualizados: r.atualizados, total: r.total };
-    erros.push(...r.erros);
+    progIniciar("produtos");
+    try {
+      const r = await syncProdutosParaSgo(porLogin);
+      produtos = { novos: r.novos, atualizados: r.atualizados, total: r.total };
+      erros.push(...r.erros);
+    } finally {
+      progFim("produtos");
+    }
   }
 
   return { ok: true, clientes, produtos, erros };

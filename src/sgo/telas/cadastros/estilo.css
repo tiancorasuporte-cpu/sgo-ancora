@@ -62,3 +62,16 @@ table.tbl{width:100%;border-collapse:collapse;font:400 13.5px Inter,sans-serif;m
 .drop:hover{border-color:#141414}
 .barra{height:10px;border-radius:5px;background:#EEEEEA;overflow:hidden}.barra i{display:block;height:100%;background:#FFD200;width:0}
 @media (max-width:700px){.topo-in,.pagina{padding-left:16px;padding-right:16px}.g-corpo{grid-template-columns:1fr}}
+/* Precificação por markup */
+.tbl tr.lin.alerta td{background:#FDECEA}.tbl tr.lin.alerta:hover td{background:#FAD9D5}
+.mk-al{color:#8E1B1B;font-weight:700}.mk-ok{color:#1E5A2D;font-weight:600}.mk-pend{color:#7A4A00}
+.prec{display:flex;flex-direction:column;gap:10px}
+.prec-g{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.prec-g>div{background:#fff;border-radius:8px;padding:8px 10px;box-shadow:inset 0 0 0 1px #E2E2DC}
+.prec-g small,.prec-hist small{display:block;font:700 10.5px Inter,sans-serif;text-transform:uppercase;letter-spacing:.4px;color:#5A5A5A}
+.prec-g b{display:block;font-size:15px;color:#141414;font-variant-numeric:tabular-nums}.prec-g span{font-size:11.5px;color:#5A5A5A}
+.prec-g .prec-al{background:#FDECEA;box-shadow:inset 0 0 0 1.5px #8E1B1B}.prec-g .prec-al b,.prec-g .prec-al span{color:#8E1B1B}
+.prec-pend{background:#FFF1D6;color:#7A4A00;border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.prec-hist{font-size:12px;color:#3D3D3D;display:flex;flex-direction:column;gap:2px}
+@media (max-width:640px){.prec-g{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.prec-hist:empty{display:none}

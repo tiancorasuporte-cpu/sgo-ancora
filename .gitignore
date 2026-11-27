@@ -38,3 +38,8 @@ data/
 *.njsproj
 *.sln
 *.sw?
+
+# Arquivos locais de cada máquina (não sobem para o GitHub)
+RODAR-NO-WINDOWS.bat
+env
+Claude outputs/

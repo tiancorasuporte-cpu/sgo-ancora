@@ -18,6 +18,7 @@ function api(m, u, b) {
   });
 }
 function avisarShell() { try { window.parent.postMessage({ sgo: "alterou" }, location.origin); } catch (e) {} }
+function fat(n) { return n == null ? "—" : Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "×"; }
 function tagCls(t) { return t === "Cliente" ? "t-cli" : t === "Fornecedor" ? "t-for" : "t-out"; }
 function tagsHTML(ts) { return (ts || []).map(function (t) { return '<span class="pill ' + tagCls(t) + '">' + esc(t) + "</span>"; }).join(""); }
 
@@ -58,10 +59,11 @@ function desenhar() {
       return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + '</td><td><div style="font-weight:500">' + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.categoria, p.obs].filter(Boolean).join(" · ").slice(0, 140)) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + (p.preco_venda == null ? '<span class="sub">a definir</span>' : brl(p.preco_venda)) + '</td><td class="num">' + (p.custo == null ? '<span class="sub">a definir</span>' : brl(p.custo)) + '</td><td class="num">' + (mg == null ? "—" : String(mg).replace(".", ",") + "%") + "</td></tr>";
     }).join("") || '<tr><td colspan="6" class="vazio">Nenhum serviço mensal encontrado.</td></tr>';
   } else {
-    $("#th").innerHTML = '<tr><th>Código</th><th>Descrição</th><th>Un.</th><th style="text-align:right">Estoque</th><th style="text-align:right">Preço de venda</th><th style="text-align:right">Custo</th><th style="text-align:right">Última compra</th></tr>';
+    $("#th").innerHTML = '<tr><th>Código</th><th>Descrição</th><th>Un.</th><th style="text-align:right">Estoque</th><th style="text-align:right">Preço de venda</th><th style="text-align:right">Custo</th><th style="text-align:right">Última compra</th><th style="text-align:right" title="Preço de venda ÷ custo de referência (o maior entre o custo e a última compra). Abaixo do mínimo fica vermelho.">Markup</th></tr>';
     $("#tb").innerHTML = d.itens.map(function (p) {
-      return '<tr class="lin" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + "</td><td><div style=\"font-weight:500\">" + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.familia, p.marca, p.modelo, p.ncm ? "NCM " + p.ncm : ""].filter(Boolean).join(" · ")) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + num(p.estoque) + '</td><td class="num">' + brl(p.preco_venda) + '</td><td class="num">' + brl(p.custo) + '</td><td class="num">' + (p.ultima ? brl(p.ultima.preco) + '<div class="sub">' + esc(p.ultima.fornecedor || "") + " · " + esc(String(p.ultima.data).split("-").reverse().join("/")) + "</div>" : '<span class="sub">sem compra no SGO</span>') + "</td></tr>";
-    }).join("") || '<tr><td colspan="7" class="vazio">Nenhum produto encontrado.</td></tr>';
+      var pr = p.prec || {};
+      return '<tr class="lin' + (pr.alerta ? " alerta" : "") + '" tabindex="0" data-id="' + p.id + '"><td style="font-weight:700;white-space:nowrap">' + esc(p.codigo) + "</td><td><div style=\"font-weight:500\">" + esc(p.descricao) + (p.situacao === "Inativo" ? ' <span class="pill t-ina">Inativo</span>' : "") + '</div><div class="sub">' + esc([p.familia, p.marca, p.modelo, p.ncm ? "NCM " + p.ncm : ""].filter(Boolean).join(" · ")) + "</div></td><td>" + esc(p.unidade) + '</td><td class="num" style="font-weight:600">' + num(p.estoque) + '</td><td class="num">' + brl(p.preco_venda) + (pr.pendente ? '<div class="sub mk-pend" title="O cálculo da última compra deu um preço menor. Abra o produto para aplicar ou manter.">sugerido ' + brl(pr.pendente) + "</div>" : "") + '</td><td class="num">' + brl(p.custo) + '</td><td class="num">' + (p.ultima ? brl(p.ultima.preco) + '<div class="sub">' + esc(p.ultima.fornecedor || "") + " · " + esc(String(p.ultima.data).split("-").reverse().join("/")) + "</div>" : '<span class="sub">sem compra no SGO</span>') + '</td><td class="num">' + (pr.fator == null ? '<span class="sub">' + (pr.custo_ref ? "sem preço" : "sem custo") + "</span>" : '<span class="' + (pr.alerta ? "mk-al" : "mk-ok") + '">' + fat(pr.fator) + "</span>" + (pr.alerta ? '<div class="sub mk-al">abaixo de ' + fat(pr.minimo) + "</div>" : "")) + "</td></tr>";
+    }).join("") || '<tr><td colspan="8" class="vazio">Nenhum produto encontrado.</td></tr>';
   }
   var ini = d.total ? (d.pagina - 1) * d.por + 1 : 0, fim = Math.min(d.total, d.pagina * d.por);
   $("#tot").textContent = d.total ? ini + "–" + fim + " de " + d.total + (S.tipo === "parceiros" ? " cadastros" : S.tipo === "servicos" ? " serviços" : S.tipo === "maoobra" ? " itens de mão de obra" : " produtos") : "";
@@ -78,7 +80,7 @@ var CAMPOS = {
   ],
   produtos: [
     ["sec", "Produto"], ["codigo", "Código *"], ["unidade", "Unidade (sigla)"], ["descricao", "Descrição *", "full"], ["familia", "Família"], ["situacao", "Situação", "", "sel", ["Ativo", "Inativo"]], ["marca", "Marca"], ["modelo", "Modelo"],
-    ["sec", "Valores e estoque"], ["preco_venda", "Preço de venda (R$)", "", "dec"], ["custo", "Custo médio (R$)", "", "dec"], ["estoque", "Estoque disponível", "", "dec"], ["garantia_dias", "Garantia (dias)", "", "dec"],
+    ["sec", "Valores e estoque"], ["preco_venda", "Preço de venda (R$)", "", "dec"], ["custo", "Custo médio / CMC (R$)", "", "dec"], ["markup", "Markup do produto (vazio = automático)", "", "dec"], ["estoque", "Estoque disponível", "", "dec"], ["garantia_dias", "Garantia (dias)", "", "dec"], ["prec"],
     ["sec", "Fiscal"], ["ncm", "NCM"], ["cest", "CEST"], ["ean", "EAN (código de barras)"], ["tipo_item", "Tipo do item"], ["caracteristicas", "Características", "full", "area"],
   ],
   servicos: [
@@ -107,19 +109,22 @@ function abrir(item) {
   }
   CAMPOS[t].forEach(function (c) {
     if (c[0] === "sec") { h += '<div class="sec">' + c[1] + "</div>"; return; }
+    if (c[0] === "prec") { h += precBloco(item); return; }
     var v = item ? item[c[0]] : c[0] === "situacao" ? "Ativo" : c[0] === "unidade" && t === "servicos" ? "MÊS" : c[0] === "unidade" && t === "maoobra" ? "HORA" : "";
     if (c[0] === "documento") v = doc(v);
+    if (c[0] === "caracteristicas" && String(v || "").trim() === "[object Object]") v = "";
     var id = "f-" + c[0], cls = "f" + (c[2] === "full" ? " full" : ""), inp;
     if (c[3] === "sel") inp = '<select class="field" id="' + id + '">' + c[4].map(function (o) { return "<option" + (o === v ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select>";
     else if (c[3] === "area") inp = '<textarea class="field" id="' + id + '">' + esc(v || "") + "</textarea>";
     else inp = '<input class="field" id="' + id + '" value="' + esc(valIn(v, c[3] === "dec")) + '"' + (c[3] === "dec" ? ' inputmode="decimal"' : "") + ">";
     h += '<div class="' + cls + '"><label class="flabel" for="' + id + '">' + c[1] + "</label>" + inp + "</div>";
   });
-  if (t === "produtos" && item && item.id) h += '<div class="info">Última compra pelo SGO: <b>' + (item.ultima ? brl(item.ultima.preco) + " · " + esc(item.ultima.fornecedor || "") : "nenhuma ainda") + "</b>. O custo médio não vem na exportação do Omie: preencha aqui para o comparativo da cotação.</div>";
+  if (t === "produtos" && item && item.id) h += '<div class="info">Última compra pelo SGO: <b>' + (item.ultima ? brl(item.ultima.preco) + " · " + esc(item.ultima.fornecedor || "") : "nenhuma ainda") + "</b>. O custo médio (CMC) vem da sincronização com o Omie; se não vier, preencha aqui.</div>";
   if (t === "maoobra") h += '<div class="info">A mão de obra aparece na <b>Tabela de preços</b> (Comercial) junto com os serviços mensais, para o vendedor consultar. O custo e a margem só o administrador vê lá.</div>';
   if (t === "servicos") h += '<div class="info">Estes serviços aparecem nos orçamentos ao marcar <b>Incluir serviço mensal</b>. O valor de venda vem sugerido no orçamento e pode ser ajustado lá.</div>';
   h += '<p class="erro" id="f-erro"></p>';
   $("#form").innerHTML = h;
+  if (t === "produtos") precLigar(item);
   $("#g-meta").textContent = item && item.id ? (t === "servicos" || t === "maoobra" ? "" : "Origem: " + (item.origem === "omie" ? "Omie" : "SGO") + " · ") + "alterado " + dataBR(item.atualizado_em) + " por " + (item.atualizado_por || "") : "";
   if (t === "parceiros") {
     $("#f-tags").onclick = function (e) { var b = e.target.closest("[data-t]"); if (!b) return; var on = !b.classList.contains("on"); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); b.textContent = (on ? "✓ " : "") + b.dataset.t; };
@@ -128,10 +133,43 @@ function abrir(item) {
   $("#gav").classList.add("on"); $("#fundo").classList.add("on");
   setTimeout(function () { var p = $("#form .field"); if (p && novo) p.focus(); }, 60);
 }
+// ---------- precificação (produto) ----------
+// O preço de venda é do SGO. A cada compra aprovada ele é recalculado: sobe sozinho; se der menor, fica como sugestão.
+function precBloco(item) {
+  var pr = (item && item.prec) || null;
+  var h = '<div class="info full prec">';
+  if (!item || !item.id || !pr) return h + "<b>Preço automático:</b> a cada compra aprovada em Compras, o preço de venda é recalculado pelo custo de referência (o maior entre o custo e a última compra) × o markup, terminando em ,90. Sem markup próprio, usa " + fat(1.7) + ".</div>";
+  h += '<div class="prec-g"><div><small>Custo de referência</small><b>' + brl(pr.custo_ref) + "</b><span>" + (pr.fonte === "ultima" ? "última compra" : pr.fonte === "custo" ? "custo / CMC" : "sem custo") + "</span></div>";
+  h += "<div><small>Markup em uso</small><b>" + fat(pr.markup) + "</b><span>" + (pr.markup_proprio ? "gravado no produto" : pr.markup > pr.padrao + 0.0001 ? "mantido (já estava acima de " + fat(pr.padrao) + ")" : "padrão") + "</span></div>";
+  h += "<div><small>Preço sugerido</small><b>" + brl(pr.sugerido) + "</b><span>custo de ref. × markup</span></div>";
+  h += '<div class="' + (pr.alerta ? "prec-al" : "") + '"><small>Markup atual do preço</small><b>' + fat(pr.fator) + "</b><span>" + (pr.alerta ? "abaixo de " + fat(pr.minimo) + "!" : pr.fator == null ? "sem preço ou custo" : "mínimo " + fat(pr.minimo)) + "</span></div></div>";
+  if (pr.pendente) h += '<div class="prec-pend">A última compra calculou um preço <b>menor</b>: ' + brl(pr.pendente) + " (hoje " + brl(item.preco_venda) + '). <button type="button" class="btn ghost sm" id="f-aplicar" data-v="' + pr.pendente + '">Aplicar ' + brl(pr.pendente) + "</button> ou deixe como está e salve para manter.</div>";
+  else if (pr.sugerido && item.preco_venda && pr.sugerido > Number(item.preco_venda) + 0.004) h += '<div class="prec-pend">O preço atual está abaixo do sugerido. Ele sobe sozinho na próxima compra, ou <button type="button" class="btn ghost sm" id="f-aplicar" data-v="' + pr.sugerido + '">Aplicar ' + brl(pr.sugerido) + "</button> agora.</div>";
+  h += '<div class="prec-hist" id="f-hist">' + (item.prec_hist && item.prec_hist.length ? precHistHTML(item.prec_hist) : "") + "</div>";
+  return h + "</div>";
+}
+function precLigar(item) {
+  var b = $("#f-aplicar");
+  if (b) b.onclick = function () {
+    var f = $("#f-preco_venda"); if (!f) return;
+    f.value = Number(b.dataset.v).toFixed(2).replace(".", ",");
+    f.focus(); toast("Preço preenchido. Clique em Salvar para valer.");
+  };
+  // histórico de preços: vem só ao abrir o produto (a listagem não traz)
+  if (!item || !item.id || item.prec_hist) return;
+  api("GET", "/api/cadastros/produtos/" + item.id).then(function (d) {
+    var hi = (d.item && d.item.prec_hist) || [], alvo = $("#f-hist");
+    if (!alvo || !S.aberto || S.aberto.id !== item.id || !hi.length) return;
+    alvo.innerHTML = precHistHTML(hi);
+  }).catch(function () {});
+}
+function precHistHTML(hi) {
+  return "<small>Últimas mudanças de preço</small>" + hi.map(function (x) { return "<div>" + dataBR(x.quando) + " · " + esc(x.motivo === "compra" ? "compra " + (x.ref || "") : x.ref || "manual") + " · " + brl(x.preco_antigo) + " → <b>" + brl(x.preco_novo) + "</b>" + (x.markup ? " (" + fat(x.markup) + ")" : "") + " · " + esc(x.por || "") + "</div>"; }).join("");
+}
 function fechar() { $("#gav").classList.remove("on"); $("#fundo").classList.remove("on"); S.aberto = null; }
 function salvar() {
   var t = S.tipo, it = S.aberto || {}, d = { versao: it.versao };
-  CAMPOS[t].forEach(function (c) { if (c[0] !== "sec") d[c[0]] = $("#f-" + c[0]).value; });
+  CAMPOS[t].forEach(function (c) { if (c[0] !== "sec" && c[0] !== "prec") d[c[0]] = $("#f-" + c[0]).value; });
   if (t === "parceiros") d.tags = Array.prototype.map.call(document.querySelectorAll("#f-tags .chip.on"), function (b) { return b.dataset.t; });
   var b = $("#g-salvar"); b.disabled = true;
   api(it.id ? "PUT" : "POST", "/api/cadastros/" + t + (it.id ? "/" + it.id : ""), d).then(function () {
@@ -230,14 +268,49 @@ $("#tb").onkeydown = function (e) { if (e.key === "Enter") $("#tb").onclick(e); 
 $("#b-novo").onclick = function () { abrir(null); };
 $("#b-imp").onclick = abrirImp;
 var bSyncOmie = $("#b-sync-omie");
+var syncRotulo = bSyncOmie ? bSyncOmie.textContent : "";
+var syncTimer = null;
+// Porcentagem no botão: consulta o progresso no servidor a cada segundo enquanto sincroniza.
+function syncMostrar(p) {
+  if (!bSyncOmie) return;
+  bSyncOmie.textContent = "Sincronizando… " + Math.max(0, Math.min(100, Math.round((p && p.pct) || 0))) + "%";
+  bSyncOmie.title = (p && p.etapa) || "";
+}
+function syncAcompanhar(tipo) {
+  clearInterval(syncTimer);
+  syncTimer = setInterval(function () {
+    api("GET", "/api/cadastros/sync-omie/progresso?tipo=" + tipo).then(function (p) {
+      if (!bSyncOmie.disabled) { clearInterval(syncTimer); return; }
+      if (p && p.ativo) syncMostrar(p);
+    }).catch(function () {});
+  }, 1000);
+}
+function syncParar() { clearInterval(syncTimer); syncTimer = null; if (bSyncOmie) { bSyncOmie.disabled = false; bSyncOmie.textContent = syncRotulo; bSyncOmie.title = ""; } }
+// Se a página abrir no meio de um sync (ex.: recarregou), retoma a porcentagem e recarrega a lista no fim.
+function syncRetomar() {
+  if (!bSyncOmie || bSyncOmie.disabled || (S.tipo !== "parceiros" && S.tipo !== "produtos")) return;
+  var tipo = S.tipo === "produtos" ? "produtos" : "clientes";
+  api("GET", "/api/cadastros/sync-omie/progresso?tipo=" + tipo).then(function (p) {
+    if (!p || !p.ativo || bSyncOmie.disabled) return;
+    bSyncOmie.disabled = true; syncMostrar(p);
+    clearInterval(syncTimer);
+    syncTimer = setInterval(function () {
+      api("GET", "/api/cadastros/sync-omie/progresso?tipo=" + tipo).then(function (q) {
+        if (q && q.ativo) { syncMostrar(q); return; }
+        syncParar(); toast("Sincronização com a Omie concluída."); carregar(); avisarShell();
+      }).catch(function () {});
+    }, 1000);
+  }).catch(function () {});
+}
 if (bSyncOmie) bSyncOmie.onclick = function () {
   if (bSyncOmie.disabled) return;
   if (S.tipo !== "parceiros" && S.tipo !== "produtos") return;
   var tipo = S.tipo === "produtos" ? "produtos" : "clientes";
-  var rotulo = bSyncOmie.textContent;
   bSyncOmie.disabled = true;
-  bSyncOmie.textContent = "Sincronizando…";
+  syncMostrar({ pct: 0, etapa: "Iniciando" });
+  syncAcompanhar(tipo);
   api("POST", "/api/cadastros/sync-omie", { tipo: tipo }).then(function (d) {
+    clearInterval(syncTimer); syncMostrar({ pct: 100 });
     var bloco = tipo === "produtos" ? d.produtos : d.clientes;
     var msg = (bloco ? bloco.total : 0) + (tipo === "produtos" ? " produto(s)" : " cliente(s)") +
       " · " + (bloco ? bloco.novos : 0) + " novos · " + (bloco ? bloco.atualizados : 0) + " atualizados";
@@ -248,12 +321,11 @@ if (bSyncOmie) bSyncOmie.onclick = function () {
   }).catch(function (e) {
     toast(e.message);
   }).then(function () {
-    bSyncOmie.disabled = false;
-    bSyncOmie.textContent = rotulo;
+    setTimeout(syncParar, 600);
   });
 };
 $("#g-x").onclick = fechar; $("#g-cancel").onclick = fechar; $("#fundo").onclick = fechar; $("#g-salvar").onclick = salvar;
 $("#mi-x").onclick = fecharImp;
 document.addEventListener("keydown", function (e) { if (e.key === "Escape") { if ($("#mimp").classList.contains("on")) fecharImp(); else if (S.aberto) fechar(); } });
-desenhar(); carregar();
+desenhar(); carregar(); syncRetomar();
 

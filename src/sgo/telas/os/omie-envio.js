@@ -84,6 +84,29 @@ if (typeof window !== "undefined") {
       });
   }
 
+  /* ---------- conferência de margem (só leitura no SGO; nada vai para a Omie aqui) ----------
+     O preço da OS fica congelado no lançamento. Antes de faturar, compara com o custo atual:
+     item abaixo de 1,50 × custo de referência pede decisão: atualizar para o preço atual do SGO ou manter. */
+  function conferirMargem(prods) {
+    if (!prods || !prods.length) return Promise.resolve([]);
+    return fetch("/api/cadastros/precificacao/conferir", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-sgo": "1" }, body: JSON.stringify({ itens: prods.map(function (p) { return { codigo: p.codigo, descricao: p.descricao, unit: p.unit }; }) }) })
+      .then(function (r) { return r.ok ? r.json() : { itens: [] }; })
+      .then(function (j) { var m = j.minimo || 1.5; return (j.itens || []).filter(function (x) { return x.abaixo; }).map(function (x) { x.minimo = m; return x; }); })
+      .catch(function () { return []; });
+  }
+  function fatorTxt(n) { return n == null ? "—" : Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "×"; }
+  function blocoMargem(st) {
+    var L = st.margem || [];
+    if (!L.length) return "";
+    var podeAtualizar = L.some(function (x) { return x.preco_atual && x.preco_atual > x.unit + 0.004; });
+    var h = '<div class="om-warn" role="alert"><div style="margin-bottom:6px">' + L.length + (L.length === 1 ? " item está" : " itens estão") + " abaixo do markup mínimo de " + fatorTxt(L[0].minimo) + " sobre o custo atual. Atualizar ou manter?</div>";
+    h += '<table class="om-tb" style="background:#fff;border-radius:8px"><thead><tr><th>Produto</th><th class="r">Na OS</th><th class="r">Markup na OS</th><th class="r">Preço atual no SGO</th>' + (L.some(function (x) { return x.custo_ref != null; }) ? '<th class="r">Custo de ref.</th>' : "") + "</tr></thead><tbody>" +
+      L.map(function (x) { return "<tr><td>" + esc(x.descricao) + ' <span class="om-d">· ' + esc(x.codigo) + '</span></td><td class="r">' + brl(x.unit) + '</td><td class="r" style="color:#8C1D18;font-weight:700">' + fatorTxt(x.fator) + '</td><td class="r">' + (x.preco_atual ? brl(x.preco_atual) : "—") + "</td>" + (x.custo_ref != null ? '<td class="r">' + brl(x.custo_ref) + "</td>" : "") + "</tr>"; }).join("") + "</tbody></table>";
+    if (st.decisao) h += '<div style="margin-top:8px">' + (st.decisao === "atualizado" ? "Preços atualizados para o preço atual do SGO nesta prévia. O total faturado muda em relação à OS." : "Mantidos os preços da OS.") + ' <button type="button" class="om-b" data-mg="desfazer" style="min-height:34px">Rever</button></div>';
+    else h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + (podeAtualizar ? '<button type="button" class="om-b y" data-mg="atualizar">Atualizar para o preço atual</button>' : "") + '<button type="button" class="om-b" data-mg="manter">Manter preços da OS</button></div>';
+    return h + "</div>";
+  }
+
   /* ---------- montagem do que vai para a Omie em cada modo ---------- */
   function montar(modo, c, prods) {
     var M = maoDeObra(c), mo = M.valor;
@@ -191,7 +214,7 @@ if (typeof window !== "undefined") {
     css();
     var M = maoDeObra(c), mo = M.valor, emp = empresaOmie(c);
     var jaFoi = c.faturamento && c.faturamento.status === "enviado";
-    var st = { modo: (jaFoi && c.faturamento.modo) || "normal", prods: null, desconto: 0, err: "", carregando: true, enviando: false };
+    var st = { modo: (jaFoi && c.faturamento.modo) || "normal", prods: null, desconto: 0, err: "", carregando: true, enviando: false, margem: [], decisao: null, originais: null };
     var f = document.createElement("div"); f.className = "om-f";
     f.innerHTML = '<div class="om-m" role="dialog" aria-modal="true" aria-labelledby="om-tt"><div class="om-t"><div><div class="k">OS ' + esc(c.num) + " · " + esc(emp) + ' · coluna Faturar</div><h2 id="om-tt">Enviar para a Omie</h2><p>Produto vai para Vendas, passo 3. Serviço vai para Serviços, passo 3.' + (emp === "Angela" ? " Comodato: faturamento na Angela." : "") + '</p></div><button type="button" class="om-x" aria-label="Fechar">×</button></div><div class="om-c" id="om-c"></div><div class="om-a"><button type="button" class="om-b" data-x>Cancelar</button><button type="button" class="om-b y" id="om-ok" disabled>Enviar para a coluna Faturar</button></div></div>';
     document.body.appendChild(f);
@@ -209,6 +232,7 @@ if (typeof window !== "undefined") {
       var r = montar(st.modo, c, prods);
       var h = st.err ? '<div class="om-err" role="alert">' + esc(st.err) + "</div>" : "";
       if (M.semFech) h += '<div class="om-warn">Esta OS foi finalizada sem a tela de fechamento. A mão de obra veio do orçamento; confira antes de enviar.</div>';
+      h += blocoMargem(st);
       if (c.faturamento && c.faturamento.status === "enviado") h += '<div class="om-warn">Enviar de novo apaga o pedido e a OS de serviço na ' + esc(emp) + ' e cria outros. Se o anterior já foi apagado na Omie, só o novo é criado. Documento já faturado não pode ser substituído.</div>';
       else if (c.faturamento) h += '<div class="om-warn">O clique anterior só guardou o plano nesta OS. A Omie não recebeu. O modo Separado manda o produto para Vendas e a mão de obra para Serviços.</div>';
       if (emp === "Angela") h += '<div class="om-ok">Esta OS é de comodato: o envio vai para a empresa Angela na Omie.</div>';
@@ -226,8 +250,24 @@ if (typeof window !== "undefined") {
         "</small></span><b>" + brl(r.total) + "</b></div>";
       if (Math.abs(r.total - (totProd + mo)) > 0.009) h += '<div class="om-err">O total faturado não bate com o total da OS. Confira os valores antes de enviar.</div>';
       c0.innerHTML = h;
-      ok.disabled = st.enviando || !(r.total > 0);
+      ok.disabled = st.enviando || !(r.total > 0) || (st.margem.length > 0 && !st.decisao);
       ok.textContent = st.enviando ? ("Enviando para a " + emp + "…") : "Enviar para a coluna Faturar";
+      Array.prototype.forEach.call(f.querySelectorAll("[data-mg]"), function (b) {
+        b.onclick = function () {
+          var a = b.getAttribute("data-mg");
+          if (a === "desfazer") { if (st.originais) st.prods = st.originais; st.originais = null; st.decisao = null; }
+          else if (a === "manter") st.decisao = "mantido";
+          else {
+            st.originais = st.prods;
+            st.prods = st.prods.map(function (p, i) {
+              var x = st.margem.filter(function (m) { return m.i === i; })[0];
+              return x && x.preco_atual && x.preco_atual > p.unit + 0.004 ? Object.assign({}, p, { unit: x.preco_atual, unitOS: p.unit }) : p;
+            });
+            st.decisao = "atualizado";
+          }
+          desenhar();
+        };
+      });
       Array.prototype.forEach.call(f.querySelectorAll('input[name="om-modo"]'), function (i) { i.onchange = function () { st.modo = i.value; st.err = ""; desenhar(); var n = f.querySelector('input[name="om-modo"]:checked'); if (n) n.focus(); }; });
       st.ultimo = r;
     }
@@ -240,6 +280,8 @@ if (typeof window !== "undefined") {
       ok.textContent = "Enviando para a " + emp + "…";
       var quem = (window.EU && EU.nome) || "Assistência";
       var jaEnviado = c.faturamento && c.faturamento.status === "enviado";
+      if (st.margem.length) r = Object.assign({}, r, { margem: { decisao: st.decisao, itens: st.margem.map(function (x) { return { codigo: x.codigo, descricao: x.descricao, unit: x.unit, fator: x.fator, preco_atual: x.preco_atual }; }) } });
+      var txtMargem = st.margem.length ? " · " + st.margem.length + " item(ns) abaixo do markup mínimo: " + (st.decisao === "atualizado" ? "preços atualizados" : "preços da OS mantidos") : "";
       fetch("/api/os/faturar-omie", {
         method: "POST",
         credentials: "same-origin",
@@ -255,7 +297,7 @@ if (typeof window !== "undefined") {
         T.patch(c.id, function (o) {
           return Object.assign({}, o, {
             faturamento: fat,
-            hist: (o.hist || []).concat([{ quando: fat.quandoTxt || agoraTxt(), quem: quem + " (Assistência)", acao: "Enviado para a coluna Faturar da " + emp + " · " + (partes.join(" · ") || NOME[r.modo]) }])
+            hist: (o.hist || []).concat([{ quando: fat.quandoTxt || agoraTxt(), quem: quem + " (Assistência)", acao: "Enviado para a coluna Faturar da " + emp + " · " + (partes.join(" · ") || NOME[r.modo]) + txtMargem }])
           });
         });
         if (T.showToast) T.showToast("ok", "OS " + c.num + " na coluna Faturar (" + emp + ") · " + (partes.join(" · ") || brl(r.total)));
@@ -276,6 +318,7 @@ if (typeof window !== "undefined") {
         st.prods = fb;
         st.err = fb.length ? "" : "Não foi possível carregar os produtos: " + e.message + ".";
       })
+      .then(function () { return conferirMargem(st.prods).then(function (m) { st.margem = m; }); })
       .then(function () { st.carregando = false; if (document.body.contains(f)) desenhar(); });
   }
 
