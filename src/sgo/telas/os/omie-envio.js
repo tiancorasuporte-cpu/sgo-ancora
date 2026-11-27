@@ -6,7 +6,7 @@ if (typeof window !== "undefined") {
    Na OS finalizada, prepara o faturamento em um de três modos:
    - normal: produto vai como produto e mão de obra como serviço;
    - diluir: a mão de obra é rateada nos produtos, proporcional ao valor de cada um;
-   - servico: tudo numa nota de serviço, com os produtos listados na descrição.
+   - servico: ordem de serviço com valor total; produtos na aba Produtos utilizados da OS Omie.
    A OS não muda: o que vai para a Omie fica guardado em card.faturamento.
    Depende de window.sgoTela (tela de OS). */
 (function () {
@@ -96,12 +96,33 @@ if (typeof window !== "undefined") {
     } else if (modo === "diluir") {
       r.produtos = diluir(prods, mo) || [];
     } else {
+      /* Tudo como serviço: valor total na linha de serviço; produtos vão no payload
+         para a aba "Produtos utilizados" da OS na Omie (não cria pedido de venda). */
+      r.produtos = prods.map(function (p) {
+        return {
+          descricao: p.descricao,
+          codigo: p.codigo,
+          origem: p.origem,
+          qtd: p.qtd,
+          unitOriginal: p.unit,
+          unit: p.unit,
+          total: (cts(p.unit) * p.qtd) / 100,
+          rateio: 0,
+        };
+      });
       var lista = prods.map(function (p) { return p.qtd + " × " + p.descricao; }).join("; ");
-      r.servicos = [{ descricao: "Serviço de instalação · OS " + c.num, detalhe: descMo + (lista ? ". Materiais aplicados: " + lista : ""), valor: Math.round((totProd + mo) * 100) / 100 }];
+      r.servicos = [{
+        descricao: "Serviço de instalação · OS " + c.num,
+        detalhe: descMo + (lista ? ". Materiais (produtos do serviço): " + lista : ""),
+        valor: Math.round((totProd + mo) * 100) / 100,
+      }];
     }
     r.totalProdutos = r.produtos.reduce(function (s, p) { return s + cts(p.total); }, 0) / 100;
     r.totalServicos = r.servicos.reduce(function (s, x) { return s + cts(x.valor); }, 0) / 100;
-    r.total = Math.round((r.totalProdutos + r.totalServicos) * 100) / 100;
+    /* No modo serviço o valor dos produtos já está na linha de serviço. */
+    r.total = modo === "servico"
+      ? Math.round(r.totalServicos * 100) / 100
+      : Math.round((r.totalProdutos + r.totalServicos) * 100) / 100;
     return r;
   }
 
@@ -135,7 +156,7 @@ if (typeof window !== "undefined") {
   var MODOS = [
     { id: "normal", t: "Separado", d: "Produto vai para Vendas, coluna Faturar. A mão de obra vai para Serviços, coluna Faturar." },
     { id: "diluir", t: "Diluir serviço nos produtos", d: "Só um pedido de venda. A mão de obra entra no preço dos produtos e não cria ordem de serviço." },
-    { id: "servico", t: "Tudo como serviço", d: "Só uma ordem de serviço, com o valor total. Os produtos vão listados na descrição." }
+    { id: "servico", t: "Tudo como serviço", d: "Só uma ordem de serviço. O valor total fica no serviço; os produtos entram na aba Produtos do serviço na Omie." }
   ];
   var NOME = { normal: "faturar normal", diluir: "serviço diluído nos produtos", servico: "tudo como serviço" };
 
@@ -143,18 +164,21 @@ if (typeof window !== "undefined") {
     var h = "";
     if (r.produtos.length) {
       var dil = r.modo === "diluir";
+      var prodTitulo = r.modo === "servico"
+        ? "Total em produtos (aba Produtos do serviço na Omie)"
+        : "Total em produtos (pedido de venda)";
       h += '<table class="om-tb"><thead><tr><th>Produto</th><th class="r">Qtd.</th>' + (dil ? '<th class="r">Unit. original</th><th class="r">+ Mão de obra</th>' : "") + '<th class="r">Unit. faturado</th><th class="r">Total</th></tr></thead><tbody>' +
         r.produtos.map(function (p) {
           return "<tr><td><span class=\"om-tag\">Produto</span>" + esc(p.descricao) + (p.codigo ? ' <span class="om-d">· ' + esc(p.codigo) + "</span>" : "") + (p.ajuste ? ' <span class="om-d">· linha separada para fechar os centavos</span>' : "") + '</td><td class="r">' + p.qtd + "</td>" +
             (dil ? '<td class="r">' + brl(p.unitOriginal) + '</td><td class="r om-up">+' + brl(p.rateio) + "</td>" : "") +
             '<td class="r"><b>' + brl(p.unit) + '</b></td><td class="r">' + brl(p.total) + "</td></tr>";
         }).join("") +
-        '</tbody><tfoot><tr><td colspan="' + (dil ? 5 : 3) + '">Total em produtos (pedido de venda)</td><td class="r">' + brl(r.totalProdutos) + "</td></tr></tfoot></table>";
+        '</tbody><tfoot><tr><td colspan="' + (dil ? 5 : 3) + '">' + prodTitulo + '</td><td class="r">' + brl(r.totalProdutos) + "</td></tr></tfoot></table>";
     }
     if (r.servicos.length) {
       h += '<table class="om-tb"><thead><tr><th>Serviço</th><th class="r">Valor</th></tr></thead><tbody>' +
         r.servicos.map(function (s) { return '<tr><td><span class="om-tag s">Serviço</span>' + esc(s.descricao) + '<div class="om-d">' + esc(s.detalhe) + '</div></td><td class="r"><b>' + brl(s.valor) + "</b></td></tr>"; }).join("") +
-        '</tbody><tfoot><tr><td>Total em serviços (nota de serviço)</td><td class="r">' + brl(r.totalServicos) + "</td></tr></tfoot></table>";
+        '</tbody><tfoot><tr><td>Total em serviços (ordem de serviço)</td><td class="r">' + brl(r.totalServicos) + "</td></tr></tfoot></table>";
     }
     return h;
   }
@@ -195,7 +219,11 @@ if (typeof window !== "undefined") {
       }).join("") + "</div>";
       if (st.modo === "diluir" && totProd > 0) h += '<div class="om-ok">Cada produto sobe ' + ((mo / totProd) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "% (fator " + (1 + mo / totProd).toLocaleString("pt-BR", { maximumFractionDigits: 4 }) + "). O total fecha com a OS até o centavo.</div>";
       h += '<div class="om-h">Prévia do que vai para a Omie</div>' + (tabela(r) || '<div class="om-d">Nada a faturar nesta OS.</div>');
-      h += '<div class="om-geral"><span>Total faturado<small>' + (r.produtos.length ? "Produtos " + brl(r.totalProdutos) : "") + (r.produtos.length && r.servicos.length ? " + " : "") + (r.servicos.length ? "Serviços " + brl(r.totalServicos) : "") + "</small></span><b>" + brl(r.total) + "</b></div>";
+      h += '<div class="om-geral"><span>Total faturado<small>' +
+        (r.modo === "servico"
+          ? (r.produtos.length ? r.produtos.length + " produto(s) na OS · " : "") + "Serviço " + brl(r.totalServicos)
+          : (r.produtos.length ? "Produtos " + brl(r.totalProdutos) : "") + (r.produtos.length && r.servicos.length ? " + " : "") + (r.servicos.length ? "Serviços " + brl(r.totalServicos) : "")) +
+        "</small></span><b>" + brl(r.total) + "</b></div>";
       if (Math.abs(r.total - (totProd + mo)) > 0.009) h += '<div class="om-err">O total faturado não bate com o total da OS. Confira os valores antes de enviar.</div>';
       c0.innerHTML = h;
       ok.disabled = st.enviando || !(r.total > 0);

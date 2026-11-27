@@ -22,6 +22,8 @@ type LinhaServico = {
   descricao?: string;
   detalhe?: string;
   valor?: number;
+  qtd?: number;
+  unit?: number;
 };
 
 type FaturamentoIn = {
@@ -438,11 +440,21 @@ async function incluirOsServico(
     obs: string;
     servico: number;
     linhas: LinhaServico[];
+    /** Materiais na aba “Produtos utilizados” da OS Omie. */
+    produtosUtilizados?: Array<{
+      codigoProduto: number;
+      qtd: number;
+      unit: number;
+      descricao?: string;
+    }>;
     substituir?: boolean;
   },
   tentativa = 0,
 ) {
-  const payload = {
+  const materiais = (input.produtosUtilizados ?? []).filter(
+    (p) => p.codigoProduto > 0 && p.qtd > 0,
+  );
+  const payload: Record<string, unknown> = {
     Cabecalho: {
       cCodIntOS: input.codigo,
       nCodCli: input.cliente,
@@ -456,15 +468,37 @@ async function incluirOsServico(
       cDadosAdicNF: input.obs.slice(0, 500),
       ...(input.conta > 0 ? { nCodCC: input.conta } : {}),
     },
-    ServicosPrestados: input.linhas.map((linha) => ({
-      nCodServico: input.servico,
-      nQtde: 1,
-      nValUnit: Math.round(num(linha.valor) * 100) / 100,
-      cDescServ: txt(linha.descricao, 200) || "Mão de obra",
-      cDadosAdicItem: txt(linha.detalhe, 900),
-    })),
+    ServicosPrestados: input.linhas.map((linha) => {
+      const qtdRaw = num(linha.qtd);
+      const qtd = qtdRaw > 0 ? Math.round(qtdRaw * 1000) / 1000 : 1;
+      const unitRaw = num(linha.unit);
+      const valor = Math.round(num(linha.valor) * 100) / 100;
+      const unit =
+        unitRaw > 0
+          ? Math.round(unitRaw * 100) / 100
+          : Math.round((valor / qtd) * 100) / 100;
+      return {
+        nCodServico: input.servico,
+        nQtde: qtd,
+        nValUnit: unit,
+        cDescServ: txt(linha.descricao, 200) || "Serviço",
+        cDadosAdicItem: txt(linha.detalhe, 900),
+      };
+    }),
     Email: { cEnvBoleto: "N", cEnvLink: "N" },
   };
+
+  if (materiais.length) {
+    // EST = saída de estoque dos materiais usados no serviço (aba Produtos da OS).
+    payload["produtosUtilizados"] = {
+      cAcaoProdUtilizados: "EST",
+      produtoUtilizado: materiais.map((p) => ({
+        nCodProdutoPU: p.codigoProduto,
+        nQtdePU: p.qtd,
+        nValUnitPU: Math.round(p.unit * 100) / 100,
+      })),
+    };
+  }
   try {
     return await omieCall<{ nCodOS?: number; cNumOS?: string; cCodIntOS?: string }>(
       app,
@@ -622,7 +656,9 @@ export async function enviarOsParaFaturarOmie(input: {
   };
 
   try {
-    if (produtos.length) {
+    // Modo "servico": produtos vão na OS (produtosUtilizados), não em pedido de venda.
+    const criarPedido = produtos.length > 0 && fat.modo !== "servico";
+    if (criarPedido) {
       const etapa = await etapaColunaFaturar(app, "produto");
       omie["etapaPedido"] = etapa;
       const itens = [];
@@ -655,6 +691,26 @@ export async function enviarOsParaFaturarOmie(input: {
       const etapa = await etapaColunaFaturar(app, "servico");
       omie["etapaOs"] = etapa;
       const servico = await servicoCatalogo(app);
+      const materiaisOs =
+        fat.modo === "servico" && produtos.length
+          ? await Promise.all(
+              produtos.map(async (linha) => {
+                const vinculo = await produtoBelfer(app, linha);
+                return {
+                  codigoProduto: vinculo.codigoProduto,
+                  qtd: Math.max(0.001, num(linha.qtd)),
+                  unit: Math.round(num(linha.unit) * 100) / 100,
+                  descricao: vinculo.descricao,
+                };
+              }),
+            )
+          : [];
+      const semCodigo = materiaisOs.filter((m) => !(m.codigoProduto > 0));
+      if (semCodigo.length) {
+        throw new Error(
+          `Não achei na Omie o código de ${semCodigo.length} produto(s) para a aba Produtos do serviço (ex.: ${txt(semCodigo[0]?.descricao, 60) || "sem nome"}). Confira o cadastro/sync.`,
+        );
+      }
       const resp = await incluirOsServico(app, {
         codigo: codigoIntegracao(os.num, "S"),
         cliente,
@@ -664,6 +720,7 @@ export async function enviarOsParaFaturarOmie(input: {
         obs,
         servico,
         linhas: servicos,
+        produtosUtilizados: materiaisOs,
         substituir: input.substituir,
       });
       const osCodigo = num(resp.nCodOS);
@@ -672,6 +729,7 @@ export async function enviarOsParaFaturarOmie(input: {
       omie["osNumero"] = txt(resp.cNumOS, 20);
       omie["osEtapa"] = etapa;
       omie["servicoCodigo"] = servico;
+      if (materiaisOs.length) omie["produtosUtilizados"] = materiaisOs.length;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao enviar para a Omie.";
